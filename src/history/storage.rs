@@ -15,7 +15,9 @@ use super::types::{
     CONVERSATIONS_BRANCH, METADATA_END, METADATA_START,
 };
 
-fn acquire_conversation_write_lock(cwd: &Path) -> Result<fd_lock::RwLockWriteGuard<'static, std::fs::File>> {
+fn acquire_conversation_write_lock(
+    cwd: &Path,
+) -> Result<fd_lock::RwLockWriteGuard<'static, std::fs::File>> {
     let repo_root = crate::jj::get_repo_root(cwd)?;
     acquire_named_lock(&repo_root, "conversation-event-write")
 }
@@ -23,14 +25,23 @@ fn acquire_conversation_write_lock(cwd: &Path) -> Result<fd_lock::RwLockWriteGua
 fn set_conversations_bookmark(cwd: &Path, change_id: &str) -> Result<()> {
     let bm = jj_cmd()
         .current_dir(cwd)
-        .args(["bookmark", "set", CONVERSATIONS_BRANCH, "-r", change_id, "--ignore-working-copy"])
+        .args([
+            "bookmark",
+            "set",
+            CONVERSATIONS_BRANCH,
+            "-r",
+            change_id,
+            "--ignore-working-copy",
+        ])
         .output()
         .map_err(|e| AikiError::JjCommandFailed(format!("Failed to set bookmark: {}", e)))?;
 
     if !bm.status.success() {
         let stderr = String::from_utf8_lossy(&bm.stderr);
         return Err(AikiError::JjCommandFailed(format!(
-            "Failed to advance '{}': {}", CONVERSATIONS_BRANCH, stderr.trim()
+            "Failed to advance '{}': {}",
+            CONVERSATIONS_BRANCH,
+            stderr.trim()
         )));
     }
     Ok(())

@@ -34,7 +34,6 @@ impl ScopeSet {
     }
 }
 
-
 /// Get the ready queue (open, unblocked tasks sorted by priority)
 ///
 /// Get tasks currently in progress
@@ -76,7 +75,6 @@ pub fn get_in_progress_task_ids_for_session(
     result.into_iter().map(|t| t.id.clone()).collect()
 }
 
-
 /// Find a task by ID or prefix
 ///
 /// Accepts full IDs or unique prefixes. Returns the task or an error
@@ -89,13 +87,18 @@ pub fn find_task<'a>(tasks: &'a FastHashMap<String, Task>, id_or_prefix: &str) -
 
     // Try prefix resolution (without slug support — use find_task_in_graph for slug resolution)
     let full_id = resolve_task_id_internal(tasks, None, id_or_prefix)?;
-    tasks.get(&full_id).ok_or_else(|| AikiError::TaskNotFound(full_id))
+    tasks
+        .get(&full_id)
+        .ok_or_else(|| AikiError::TaskNotFound(full_id))
 }
 
 /// Find a task by ID, prefix, or slug notation (parent:slug).
 ///
 /// Like `find_task`, but accepts a `TaskGraph` to enable slug resolution.
-pub fn find_task_in_graph<'a>(graph: &'a super::graph::TaskGraph, id_or_prefix: &str) -> Result<&'a Task> {
+pub fn find_task_in_graph<'a>(
+    graph: &'a super::graph::TaskGraph,
+    id_or_prefix: &str,
+) -> Result<&'a Task> {
     // Fast path: exact match
     if let Some(task) = graph.tasks.get(id_or_prefix) {
         return Ok(task);
@@ -103,7 +106,10 @@ pub fn find_task_in_graph<'a>(graph: &'a super::graph::TaskGraph, id_or_prefix: 
 
     // Try resolution with slug support
     let full_id = resolve_task_id_internal(&graph.tasks, Some(&graph.slug_index), id_or_prefix)?;
-    graph.tasks.get(&full_id).ok_or_else(|| AikiError::TaskNotFound(full_id))
+    graph
+        .tasks
+        .get(&full_id)
+        .ok_or_else(|| AikiError::TaskNotFound(full_id))
 }
 
 /// Resolve a task ID prefix to a full ID
@@ -170,7 +176,9 @@ fn resolve_task_id_internal(
 fn resolve_root_prefix(tasks: &FastHashMap<String, Task>, prefix: &str) -> Result<String> {
     // Enforce minimum prefix length (3 chars)
     if prefix.len() < 3 {
-        return Err(AikiError::PrefixTooShort { prefix: prefix.to_string() });
+        return Err(AikiError::PrefixTooShort {
+            prefix: prefix.to_string(),
+        });
     }
 
     // Collect unique root IDs matching the prefix
@@ -196,7 +204,11 @@ fn resolve_root_prefix(tasks: &FastHashMap<String, Task>, prefix: &str) -> Resul
         _ => {
             let match_list = matches
                 .iter()
-                .filter_map(|id| tasks.get(id).map(|t| format!("  {} — {}", &id[..id.len().min(8)], t.name)))
+                .filter_map(|id| {
+                    tasks
+                        .get(id)
+                        .map(|t| format!("  {} — {}", &id[..id.len().min(8)], t.name))
+                })
                 .collect::<Vec<_>>()
                 .join("\n");
 
@@ -461,10 +473,7 @@ fn get_current_scopes(graph: &super::graph::TaskGraph) -> Vec<String> {
 }
 
 #[cfg(test)]
-fn get_unclosed_subtasks<'a>(
-    graph: &'a super::graph::TaskGraph,
-    parent_id: &str,
-) -> Vec<&'a Task> {
+fn get_unclosed_subtasks<'a>(graph: &'a super::graph::TaskGraph, parent_id: &str) -> Vec<&'a Task> {
     get_subtasks(graph, parent_id)
         .into_iter()
         .filter(|t| t.status != TaskStatus::Closed)
@@ -803,7 +812,7 @@ mod tests {
                 session_id: None,
                 turn_id: None,
                 timestamp: Utc::now(),
-                },
+            },
         ];
         let graph = make_graph(&events);
         let scopes = get_current_scopes(&graph);
@@ -825,7 +834,7 @@ mod tests {
                 session_id: None,
                 turn_id: None,
                 timestamp: Utc::now(),
-                },
+            },
         ];
         let graph = make_graph(&events);
         let scopes = get_current_scopes(&graph);
@@ -1847,7 +1856,10 @@ mod tests {
         let tasks = materialize_graph(&events).tasks;
         let task = tasks.get("a1b2").expect("Task should exist");
 
-        assert_eq!(task.instructions, Some("Step 1: do X\nStep 2: do Y".to_string()));
+        assert_eq!(
+            task.instructions,
+            Some("Step 1: do X\nStep 2: do Y".to_string())
+        );
         assert_eq!(task.name, "Test task"); // Name unchanged
     }
 
@@ -2098,11 +2110,36 @@ mod tests {
 
     fn make_tasks_for_prefix_tests() -> FastHashMap<String, Task> {
         let events = vec![
-            make_created_event("mvslrspmoynoxyyywqyutmovxpvztkls", "Task Alpha", TaskPriority::P2, 3),
-            make_created_event("mvslrspmoynoxyyywqyutmovxpvztkls.1", "Subtask 1", TaskPriority::P2, 2),
-            make_created_event("mvslrspmoynoxyyywqyutmovxpvztkls.2", "Subtask 2", TaskPriority::P2, 1),
-            make_created_event("nrqklspxopmwtryzyzkqnlmsqvpwtkls", "Task Beta", TaskPriority::P2, 3),
-            make_created_event("mvslxyymoynoxyyywqyutmovxpvztkls", "Task Gamma", TaskPriority::P2, 3),
+            make_created_event(
+                "mvslrspmoynoxyyywqyutmovxpvztkls",
+                "Task Alpha",
+                TaskPriority::P2,
+                3,
+            ),
+            make_created_event(
+                "mvslrspmoynoxyyywqyutmovxpvztkls.1",
+                "Subtask 1",
+                TaskPriority::P2,
+                2,
+            ),
+            make_created_event(
+                "mvslrspmoynoxyyywqyutmovxpvztkls.2",
+                "Subtask 2",
+                TaskPriority::P2,
+                1,
+            ),
+            make_created_event(
+                "nrqklspxopmwtryzyzkqnlmsqvpwtkls",
+                "Task Beta",
+                TaskPriority::P2,
+                3,
+            ),
+            make_created_event(
+                "mvslxyymoynoxyyywqyutmovxpvztkls",
+                "Task Gamma",
+                TaskPriority::P2,
+                3,
+            ),
         ];
         materialize_graph(&events).tasks
     }
@@ -2128,7 +2165,11 @@ mod tests {
         // "mvsl" matches both mvslrsp... and mvslxyy...
         let err = find_task(&tasks, "mvsl").unwrap_err();
         match err {
-            AikiError::AmbiguousTaskId { prefix, count, matches } => {
+            AikiError::AmbiguousTaskId {
+                prefix,
+                count,
+                matches,
+            } => {
                 assert_eq!(prefix, "mvsl");
                 assert_eq!(count, 2);
                 assert!(matches.contains("Task Alpha"));
@@ -2224,7 +2265,12 @@ mod tests {
 
     fn make_graph_with_slugs() -> crate::tasks::graph::TaskGraph {
         let events = vec![
-            make_created_event("mvslrspmoynoxyyywqyutmovxpvztkls", "Task Alpha", TaskPriority::P2, 3),
+            make_created_event(
+                "mvslrspmoynoxyyywqyutmovxpvztkls",
+                "Task Alpha",
+                TaskPriority::P2,
+                3,
+            ),
             TaskEvent::Created {
                 task_id: "mvslrspmoynoxyyywqyutmovxpvztkls.1".to_string(),
                 name: "Build step".to_string(),
@@ -2253,7 +2299,12 @@ mod tests {
                 data: std::collections::HashMap::new(),
                 timestamp: Utc::now(),
             },
-            make_created_event("nrqklspxopmwtryzyzkqnlmsqvpwtkls", "Task Beta", TaskPriority::P2, 3),
+            make_created_event(
+                "nrqklspxopmwtryzyzkqnlmsqvpwtkls",
+                "Task Beta",
+                TaskPriority::P2,
+                3,
+            ),
         ];
         materialize_graph(&events)
     }
@@ -2427,7 +2478,13 @@ mod tests {
         // 4. Verify descendants are closed with WontDo and correct summary
         let summary = "Parent orchestrator stopped";
         let events = vec![
-            make_created_event_with_type("parent", "Build: plan.md", "orchestrator", TaskPriority::P2, 5),
+            make_created_event_with_type(
+                "parent",
+                "Build: plan.md",
+                "orchestrator",
+                TaskPriority::P2,
+                5,
+            ),
             make_created_event("parent.1", "Decompose", TaskPriority::P2, 4),
             make_created_event("parent.2", "Execute", TaskPriority::P2, 3),
             make_created_event("parent.2.1", "Step 1", TaskPriority::P2, 2),
@@ -2492,7 +2549,13 @@ mod tests {
         // cascade-closed with "Parent orchestrator failed" summary
         let summary = "Parent orchestrator failed";
         let events = vec![
-            make_created_event_with_type("orch", "Build: feature", "orchestrator", TaskPriority::P2, 4),
+            make_created_event_with_type(
+                "orch",
+                "Build: feature",
+                "orchestrator",
+                TaskPriority::P2,
+                4,
+            ),
             make_created_event("orch.1", "Subtask A", TaskPriority::P2, 3),
             make_created_event("orch.2", "Subtask B", TaskPriority::P2, 2),
             make_started_event("orch"),
@@ -2568,7 +2631,10 @@ mod tests {
 
         let cascade_task = tasks.get("p.2").unwrap();
         assert_eq!(cascade_task.closed_outcome, Some(TaskOutcome::WontDo));
-        assert_eq!(cascade_task.summary.as_deref(), Some("Parent orchestrator stopped"));
+        assert_eq!(
+            cascade_task.summary.as_deref(),
+            Some("Parent orchestrator stopped")
+        );
     }
 
     // --- blocking integration tests ---
@@ -2669,7 +2735,11 @@ mod tests {
 
         let graph = make_graph(&events);
         let activity = get_task_activity_by_turn(&graph, "turn-zzz");
-        assert!(activity.closed.is_empty() && activity.started.is_empty() && activity.stopped.is_empty());
+        assert!(
+            activity.closed.is_empty()
+                && activity.started.is_empty()
+                && activity.stopped.is_empty()
+        );
     }
 
     #[test]
@@ -2793,6 +2863,10 @@ mod tests {
         assert_eq!(activity.started.len(), 1);
         assert_eq!(activity.closed.len(), 1);
         assert_eq!(activity.stopped.len(), 1);
-        assert!(!activity.closed.is_empty() || !activity.started.is_empty() || !activity.stopped.is_empty());
+        assert!(
+            !activity.closed.is_empty()
+                || !activity.started.is_empty()
+                || !activity.stopped.is_empty()
+        );
     }
 }

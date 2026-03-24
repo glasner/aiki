@@ -97,10 +97,7 @@ fn parse_plan_content(content: &str) -> PlanMetadata {
         }
     }
 
-    PlanMetadata {
-        title,
-        draft,
-    }
+    PlanMetadata { title, draft }
 }
 
 #[cfg(test)]
@@ -191,8 +188,11 @@ mod tests {
     fn test_parse_frontmatter_file() {
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("draft.md");
-        std::fs::write(&path, "---\ndraft: true\n---\n\n# Draft Plan\n\nStill writing.\n")
-            .unwrap();
+        std::fs::write(
+            &path,
+            "---\ndraft: true\n---\n\n# Draft Plan\n\nStill writing.\n",
+        )
+        .unwrap();
 
         let meta = parse_plan_metadata(&path);
         assert_eq!(meta.title.as_deref(), Some("Draft Plan"));

@@ -9,9 +9,9 @@ use crate::validation::is_valid_flow_identifier;
 
 use super::state::{ActionResult, AikiState};
 use super::types::{
-    Action, AutoreplyAction, AutoreplyContent, CommitMessageAction, CommitMessageOp, ContextAction,
-    HookStatement, IfStatement, JjAction, LetAction, LogAction, OnFailure, OnFailureShortcut,
-    ReviewAction, CallAction, ShellAction, SwitchStatement, TaskRunAction,
+    Action, AutoreplyAction, AutoreplyContent, CallAction, CommitMessageAction, CommitMessageOp,
+    ContextAction, HookStatement, IfStatement, JjAction, LetAction, LogAction, OnFailure,
+    OnFailureShortcut, ReviewAction, ShellAction, SwitchStatement, TaskRunAction,
 };
 use super::variables::VariableResolver;
 use crate::error::{AikiError, Result};
@@ -911,7 +911,12 @@ impl HookEngine {
         }
 
         // Resolve optional agent override
-        let agent_override = action.task_run.agent.as_ref().map(|a| resolver.resolve(a)).transpose()?;
+        let agent_override = action
+            .task_run
+            .agent
+            .as_ref()
+            .map(|a| resolver.resolve(a))
+            .transpose()?;
 
         // Build options
         let mut options = TaskRunOptions::new();
@@ -954,7 +959,7 @@ impl HookEngine {
     /// `review: { task_id: X, template: Y }` is equivalent to
     /// `aiki review X --template Y --async`. Flows always use async mode.
     fn execute_review(action: &ReviewAction, state: &mut AikiState) -> Result<ActionResult> {
-        use crate::commands::review::{create_review, CreateReviewParams, detect_target};
+        use crate::commands::review::{create_review, detect_target, CreateReviewParams};
         use crate::tasks::runner::{task_run_async, TaskRunOptions};
 
         // Create variable resolver
@@ -969,10 +974,20 @@ impl HookEngine {
             .transpose()?;
 
         // Resolve optional agent override
-        let agent_override = action.review.agent.as_ref().map(|a| resolver.resolve(a)).transpose()?;
+        let agent_override = action
+            .review
+            .agent
+            .as_ref()
+            .map(|a| resolver.resolve(a))
+            .transpose()?;
 
         // Resolve optional template name
-        let template = action.review.template.as_ref().map(|t| resolver.resolve(t)).transpose()?;
+        let template = action
+            .review
+            .template
+            .as_ref()
+            .map(|t| resolver.resolve(t))
+            .transpose()?;
 
         // Get cwd from state
         let cwd = state.cwd();
@@ -1599,8 +1614,7 @@ impl HookEngine {
         // Step 2: Build Rhai scope from state variables
         let mut resolver = Self::create_resolver(state);
         let variables = resolver.collect_variables();
-        let var_map: std::collections::BTreeMap<String, String> =
-            variables.into_iter().collect();
+        let var_map: std::collections::BTreeMap<String, String> = variables.into_iter().collect();
         let mut scope = crate::expressions::build_scope_from_flat(&var_map);
 
         // Step 3: Evaluate with Rhai
@@ -2042,9 +2056,7 @@ impl HookEngine {
             format!("aiki/{}.{}", module, function_name)
         } else {
             // Bare names are rejected — must use self. or full namespace (aiki/...)
-            return Err(AikiError::InvalidFunctionPath(
-                function_path.to_string(),
-            ));
+            return Err(AikiError::InvalidFunctionPath(function_path.to_string()));
         };
 
         // Parse function path: namespace/module.function
@@ -4419,7 +4431,10 @@ mod tests {
 
         // Rhai: type mismatch returns false (lenient mode)
         let result = HookEngine::evaluate_condition("$text > 5", &mut state).unwrap();
-        assert!(!result, "Comparing non-numeric value should return false (lenient)");
+        assert!(
+            !result,
+            "Comparing non-numeric value should return false (lenient)"
+        );
     }
 
     #[test]

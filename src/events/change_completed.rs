@@ -273,7 +273,6 @@ impl ChangeOperation {
             _ => "",
         }
     }
-
 }
 
 // ============================================================================
@@ -388,7 +387,6 @@ fn detect_repo_transition(payload: &AikiChangeCompletedPayload) {
         _ => return,
     };
 
-
     let session_file = AikiSessionFile::new(&payload.session);
     let previous_repo_id = session_file.read_repo_id();
 
@@ -446,21 +444,22 @@ pub fn handle_change_completed(mut payload: AikiChangeCompletedPayload) -> Resul
     // Uses global JJ repo at ~/.aiki/.jj/ for cross-repo conversation history
     // Defensive fallback: if history lookup fails, use defaults (turn=0, source=User)
     if !payload.turn.is_known() {
-        let (turn_number, source) =
-            match history::get_current_turn_info(&global::global_aiki_dir(), payload.session.uuid())
-            {
-                Ok(result) => result,
-                Err(e) => {
-                    debug_log(|| {
-                        format!(
-                            "History lookup failed for session {}, using defaults (turn=0): {}",
-                            payload.session.uuid(),
-                            e
-                        )
-                    });
-                    (0, TurnSource::User)
-                }
-            };
+        let (turn_number, source) = match history::get_current_turn_info(
+            &global::global_aiki_dir(),
+            payload.session.uuid(),
+        ) {
+            Ok(result) => result,
+            Err(e) => {
+                debug_log(|| {
+                    format!(
+                        "History lookup failed for session {}, using defaults (turn=0): {}",
+                        payload.session.uuid(),
+                        e
+                    )
+                });
+                (0, TurnSource::User)
+            }
+        };
         if turn_number > 0 {
             payload.turn = Turn::new(
                 turn_number,

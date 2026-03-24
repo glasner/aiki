@@ -67,10 +67,7 @@ pub enum LaneStatus {
 pub fn derive_lanes(graph: &TaskGraph, parent_id: &str) -> LaneDecomposition {
     // 1. Collect subtask IDs
     let subtasks = get_subtasks(graph, parent_id);
-    let subtask_ids: HashSet<String> = subtasks
-        .iter()
-        .map(|t| t.id.clone())
-        .collect();
+    let subtask_ids: HashSet<String> = subtasks.iter().map(|t| t.id.clone()).collect();
 
     if subtask_ids.is_empty() {
         return LaneDecomposition { lanes: Vec::new() };
@@ -257,10 +254,7 @@ pub fn derive_lanes(graph: &TaskGraph, parent_id: &str) -> LaneDecomposition {
             // Fan-in (multiple deps): start a new lane that depends on all pred lanes
             lane_of.insert(session_head.clone(), session_head.clone());
             lane_sessions.insert(session_head.clone(), vec![session_head.clone()]);
-            let pred_lanes: HashSet<String> = deps
-                .iter()
-                .map(|d| lane_of[d].clone())
-                .collect();
+            let pred_lanes: HashSet<String> = deps.iter().map(|d| lane_of[d].clone()).collect();
             lane_deps.insert(session_head.clone(), pred_lanes);
         }
     }
@@ -322,12 +316,9 @@ pub fn lane_status(lane: &Lane, graph: &TaskGraph) -> LaneStatus {
 /// A lane is complete when all its tasks are `Closed(Done)`.
 pub fn is_lane_complete(lane: &Lane, graph: &TaskGraph) -> bool {
     all_lane_tasks(lane).all(|tid| {
-        graph
-            .tasks
-            .get(tid)
-            .map_or(false, |t| {
-                t.status == TaskStatus::Closed && t.closed_outcome == Some(TaskOutcome::Done)
-            })
+        graph.tasks.get(tid).map_or(false, |t| {
+            t.status == TaskStatus::Closed && t.closed_outcome == Some(TaskOutcome::Done)
+        })
     })
 }
 
@@ -336,8 +327,7 @@ pub fn is_lane_failed(lane: &Lane, graph: &TaskGraph) -> bool {
     all_lane_tasks(lane).any(|tid| {
         graph.tasks.get(tid).map_or(false, |t| {
             t.status == TaskStatus::Stopped
-                || (t.status == TaskStatus::Closed
-                    && t.closed_outcome == Some(TaskOutcome::WontDo))
+                || (t.status == TaskStatus::Closed && t.closed_outcome == Some(TaskOutcome::WontDo))
         })
     })
 }
@@ -380,12 +370,9 @@ pub fn is_lane_ready_with_decomposition(
     // Find the next uncompleted session
     let next_session = lane.sessions.iter().find(|s| {
         !s.task_ids.iter().all(|tid| {
-            graph
-                .tasks
-                .get(tid)
-                .map_or(false, |t| {
-                    t.status == TaskStatus::Closed && t.closed_outcome == Some(TaskOutcome::Done)
-                })
+            graph.tasks.get(tid).map_or(false, |t| {
+                t.status == TaskStatus::Closed && t.closed_outcome == Some(TaskOutcome::Done)
+            })
         })
     });
 
@@ -404,7 +391,10 @@ pub fn is_lane_ready_with_decomposition(
 /// Get the tasks in a lane that belong to the specified lane (by head_task_id).
 ///
 /// Returns `None` if the lane is not found in the decomposition.
-pub fn get_lane_task_ids(decomposition: &LaneDecomposition, lane_head: &str) -> Option<HashSet<String>> {
+pub fn get_lane_task_ids(
+    decomposition: &LaneDecomposition,
+    lane_head: &str,
+) -> Option<HashSet<String>> {
     decomposition
         .lanes
         .iter()
@@ -779,7 +769,11 @@ mod tests {
         let decomp = derive_lanes(&graph, "P");
 
         let lane_b = decomp.lanes.iter().find(|l| l.head_task_id == "B").unwrap();
-        assert!(!is_lane_ready_with_decomposition(lane_b, &graph, &decomp.lanes));
+        assert!(!is_lane_ready_with_decomposition(
+            lane_b,
+            &graph,
+            &decomp.lanes
+        ));
     }
 
     #[test]
@@ -800,7 +794,11 @@ mod tests {
         let decomp = derive_lanes(&graph, "P");
 
         let lane_b = decomp.lanes.iter().find(|l| l.head_task_id == "B").unwrap();
-        assert!(is_lane_ready_with_decomposition(lane_b, &graph, &decomp.lanes));
+        assert!(is_lane_ready_with_decomposition(
+            lane_b,
+            &graph,
+            &decomp.lanes
+        ));
     }
 
     #[test]
@@ -852,15 +850,27 @@ mod tests {
         assert_eq!(lane_e.sessions[0].task_ids, vec!["E", "PL"]);
         assert!(lane_e.depends_on_lanes.is_empty());
 
-        let lane_fe = decomp.lanes.iter().find(|l| l.head_task_id == "FE").unwrap();
+        let lane_fe = decomp
+            .lanes
+            .iter()
+            .find(|l| l.head_task_id == "FE")
+            .unwrap();
         assert_eq!(lane_fe.sessions.len(), 1);
         assert_eq!(lane_fe.depends_on_lanes, vec!["E"]);
 
-        let lane_be = decomp.lanes.iter().find(|l| l.head_task_id == "BE").unwrap();
+        let lane_be = decomp
+            .lanes
+            .iter()
+            .find(|l| l.head_task_id == "BE")
+            .unwrap();
         assert_eq!(lane_be.sessions.len(), 1);
         assert_eq!(lane_be.depends_on_lanes, vec!["E"]);
 
-        let lane_ts = decomp.lanes.iter().find(|l| l.head_task_id == "TS").unwrap();
+        let lane_ts = decomp
+            .lanes
+            .iter()
+            .find(|l| l.head_task_id == "TS")
+            .unwrap();
         assert_eq!(lane_ts.sessions.len(), 1);
         let mut ts_deps = lane_ts.depends_on_lanes.clone();
         ts_deps.sort();
@@ -913,10 +923,16 @@ mod tests {
         let decomp = derive_lanes(&graph, "P");
 
         // Exact match
-        assert_eq!(resolve_lane_prefix(&decomp, "xyz789", "P"), Ok("xyz789".to_string()));
+        assert_eq!(
+            resolve_lane_prefix(&decomp, "xyz789", "P"),
+            Ok("xyz789".to_string())
+        );
 
         // Unique prefix
-        assert_eq!(resolve_lane_prefix(&decomp, "xyz", "P"), Ok("xyz789".to_string()));
+        assert_eq!(
+            resolve_lane_prefix(&decomp, "xyz", "P"),
+            Ok("xyz789".to_string())
+        );
 
         // Ambiguous prefix
         assert!(resolve_lane_prefix(&decomp, "ab", "P").is_err());
@@ -965,7 +981,9 @@ mod tests {
         let decomp = derive_lanes(&graph, "P");
         assert_eq!(decomp.lanes.len(), 4);
 
-        let ready_lanes: Vec<&Lane> = decomp.lanes.iter()
+        let ready_lanes: Vec<&Lane> = decomp
+            .lanes
+            .iter()
             .filter(|l| is_lane_ready_with_decomposition(l, &graph, &decomp.lanes))
             .collect();
         assert_eq!(ready_lanes.len(), 1);
@@ -978,7 +996,9 @@ mod tests {
         let graph = materialize_graph(&events);
         let decomp = derive_lanes(&graph, "P");
 
-        let mut ready_heads: Vec<_> = decomp.lanes.iter()
+        let mut ready_heads: Vec<_> = decomp
+            .lanes
+            .iter()
             .filter(|l| is_lane_ready_with_decomposition(l, &graph, &decomp.lanes))
             .map(|l| l.head_task_id.as_str())
             .collect();
@@ -986,7 +1006,11 @@ mod tests {
         assert_eq!(ready_heads, vec!["BE", "FE"]);
 
         // TS lane should be blocked
-        let ts_lane = decomp.lanes.iter().find(|l| l.head_task_id == "TS").unwrap();
+        let ts_lane = decomp
+            .lanes
+            .iter()
+            .find(|l| l.head_task_id == "TS")
+            .unwrap();
         assert_eq!(lane_status(ts_lane, &graph), LaneStatus::Blocked);
 
         // Orchestrator runs both FE and BE — complete them
@@ -997,7 +1021,9 @@ mod tests {
         let graph = materialize_graph(&events);
         let decomp = derive_lanes(&graph, "P");
 
-        let ready_lanes: Vec<&Lane> = decomp.lanes.iter()
+        let ready_lanes: Vec<&Lane> = decomp
+            .lanes
+            .iter()
             .filter(|l| is_lane_ready_with_decomposition(l, &graph, &decomp.lanes))
             .collect();
         assert_eq!(ready_lanes.len(), 1);
@@ -1010,7 +1036,9 @@ mod tests {
         let graph = materialize_graph(&events);
         let decomp = derive_lanes(&graph, "P");
 
-        let ready_lanes: Vec<&Lane> = decomp.lanes.iter()
+        let ready_lanes: Vec<&Lane> = decomp
+            .lanes
+            .iter()
             .filter(|l| is_lane_ready_with_decomposition(l, &graph, &decomp.lanes))
             .collect();
         assert_eq!(ready_lanes.len(), 0);
@@ -1044,7 +1072,9 @@ mod tests {
         let graph = materialize_graph(&events);
         let decomp = derive_lanes(&graph, "P");
 
-        let ready: Vec<_> = decomp.lanes.iter()
+        let ready: Vec<_> = decomp
+            .lanes
+            .iter()
             .filter(|l| is_lane_ready_with_decomposition(l, &graph, &decomp.lanes))
             .map(|l| l.head_task_id.as_str())
             .collect();
@@ -1056,7 +1086,9 @@ mod tests {
         let graph = materialize_graph(&events);
         let decomp = derive_lanes(&graph, "P");
 
-        let mut ready: Vec<_> = decomp.lanes.iter()
+        let mut ready: Vec<_> = decomp
+            .lanes
+            .iter()
             .filter(|l| is_lane_ready_with_decomposition(l, &graph, &decomp.lanes))
             .map(|l| l.head_task_id.as_str())
             .collect();
@@ -1064,7 +1096,11 @@ mod tests {
         assert_eq!(ready, vec!["B1", "B2"]);
 
         let m_lane = decomp.lanes.iter().find(|l| l.head_task_id == "M").unwrap();
-        assert!(!is_lane_ready_with_decomposition(m_lane, &graph, &decomp.lanes));
+        assert!(!is_lane_ready_with_decomposition(
+            m_lane,
+            &graph,
+            &decomp.lanes
+        ));
 
         // Complete B1 only — merge still blocked
         events.push(make_closed("B1"));
@@ -1072,7 +1108,11 @@ mod tests {
         let decomp = derive_lanes(&graph, "P");
 
         let m_lane = decomp.lanes.iter().find(|l| l.head_task_id == "M").unwrap();
-        assert!(!is_lane_ready_with_decomposition(m_lane, &graph, &decomp.lanes));
+        assert!(!is_lane_ready_with_decomposition(
+            m_lane,
+            &graph,
+            &decomp.lanes
+        ));
 
         // Complete B2 — merge now ready
         events.push(make_closed("B2"));
@@ -1080,7 +1120,11 @@ mod tests {
         let decomp = derive_lanes(&graph, "P");
 
         let m_lane = decomp.lanes.iter().find(|l| l.head_task_id == "M").unwrap();
-        assert!(is_lane_ready_with_decomposition(m_lane, &graph, &decomp.lanes));
+        assert!(is_lane_ready_with_decomposition(
+            m_lane,
+            &graph,
+            &decomp.lanes
+        ));
     }
 
     #[test]
@@ -1109,7 +1153,9 @@ mod tests {
         let decomp = derive_lanes(&graph, "P");
         assert_eq!(decomp.lanes.len(), 4); // R, A, B, C
 
-        let ready: Vec<_> = decomp.lanes.iter()
+        let ready: Vec<_> = decomp
+            .lanes
+            .iter()
             .filter(|l| is_lane_ready_with_decomposition(l, &graph, &decomp.lanes))
             .map(|l| l.head_task_id.as_str())
             .collect();
@@ -1120,7 +1166,9 @@ mod tests {
         let graph = materialize_graph(&events);
         let decomp = derive_lanes(&graph, "P");
 
-        let mut ready: Vec<_> = decomp.lanes.iter()
+        let mut ready: Vec<_> = decomp
+            .lanes
+            .iter()
             .filter(|l| is_lane_ready_with_decomposition(l, &graph, &decomp.lanes))
             .map(|l| l.head_task_id.as_str())
             .collect();
@@ -1139,11 +1187,19 @@ mod tests {
 
         // Lane B should still be Ready (independent)
         let b_lane = decomp.lanes.iter().find(|l| l.head_task_id == "B").unwrap();
-        assert!(is_lane_ready_with_decomposition(b_lane, &graph, &decomp.lanes));
+        assert!(is_lane_ready_with_decomposition(
+            b_lane,
+            &graph,
+            &decomp.lanes
+        ));
 
         // Lane C should be blocked (depends on A which is failed, not complete)
         let c_lane = decomp.lanes.iter().find(|l| l.head_task_id == "C").unwrap();
-        assert!(!is_lane_ready_with_decomposition(c_lane, &graph, &decomp.lanes));
+        assert!(!is_lane_ready_with_decomposition(
+            c_lane,
+            &graph,
+            &decomp.lanes
+        ));
 
         // B can still complete independently
         events.push(make_closed("B"));
@@ -1155,7 +1211,11 @@ mod tests {
 
         // C remains blocked (A is failed)
         let c_lane = decomp.lanes.iter().find(|l| l.head_task_id == "C").unwrap();
-        assert!(!is_lane_ready_with_decomposition(c_lane, &graph, &decomp.lanes));
+        assert!(!is_lane_ready_with_decomposition(
+            c_lane,
+            &graph,
+            &decomp.lanes
+        ));
     }
 
     #[test]
@@ -1180,7 +1240,9 @@ mod tests {
         assert_eq!(decomp.lanes[0].sessions.len(), 3);
 
         // Only 1 ready lane
-        let ready: Vec<_> = decomp.lanes.iter()
+        let ready: Vec<_> = decomp
+            .lanes
+            .iter()
             .filter(|l| is_lane_ready_with_decomposition(l, &graph, &decomp.lanes))
             .collect();
         assert_eq!(ready.len(), 1);
@@ -1192,7 +1254,11 @@ mod tests {
         let decomp = derive_lanes(&graph, "P");
         let lane = &decomp.lanes[0];
         assert!(!is_lane_complete(lane, &graph));
-        assert!(is_lane_ready_with_decomposition(lane, &graph, &decomp.lanes));
+        assert!(is_lane_ready_with_decomposition(
+            lane,
+            &graph,
+            &decomp.lanes
+        ));
 
         // Then B
         events.push(make_closed("B"));
@@ -1201,7 +1267,11 @@ mod tests {
         let decomp = derive_lanes(&graph, "P");
         let lane = &decomp.lanes[0];
         assert!(!is_lane_complete(lane, &graph));
-        assert!(is_lane_ready_with_decomposition(lane, &graph, &decomp.lanes));
+        assert!(is_lane_ready_with_decomposition(
+            lane,
+            &graph,
+            &decomp.lanes
+        ));
 
         // Then C — lane complete
         events.push(make_closed("C"));
@@ -1213,7 +1283,9 @@ mod tests {
         assert_eq!(lane_status(lane, &graph), LaneStatus::Complete);
 
         // No more ready lanes
-        let ready: Vec<_> = decomp.lanes.iter()
+        let ready: Vec<_> = decomp
+            .lanes
+            .iter()
             .filter(|l| is_lane_ready_with_decomposition(l, &graph, &decomp.lanes))
             .collect();
         assert_eq!(ready.len(), 0);

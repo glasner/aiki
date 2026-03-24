@@ -314,7 +314,7 @@ fn build_change_completed_event(payload: AfterFileEditPayload) -> AikiEvent {
         cwd,
         timestamp: chrono::Utc::now(),
         tool_name: "edit".to_string(), // Cursor doesn't distinguish Edit/Write
-        success: true, // afterFileEdit implies success
+        success: true,                 // afterFileEdit implies success
         turn: crate::events::Turn::unknown(), // Cursor events don't have turn context
         operation: ChangeOperation::Write(WriteOperation {
             file_paths: vec![file_path],
@@ -330,9 +330,9 @@ fn build_turn_completed_event(payload: StopPayload) -> AikiEvent {
         cwd: get_cwd(&payload.workspace_roots),
         timestamp: chrono::Utc::now(),
         turn: crate::events::Turn::unknown(), // Set by handle_turn_completed
-        response: String::new(), // Cursor doesn't provide response text in stop hook
-        modified_files: Vec::new(), // Cursor doesn't track modified files in stop hook
-        tasks: Default::default(), // Populated by handle_turn_completed
+        response: String::new(),              // Cursor doesn't provide response text in stop hook
+        modified_files: Vec::new(),           // Cursor doesn't track modified files in stop hook
+        tasks: Default::default(),            // Populated by handle_turn_completed
     })
 }
 

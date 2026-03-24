@@ -120,7 +120,11 @@ fn test_scan_filters_self_ref() {
     let tpl_dir = aiki_dir.join("templates");
     fs::create_dir_all(&tpl_dir).unwrap();
 
-    fs::write(tpl_dir.join("a.md"), "{{> myself/plugin/tpl}}\n{{> other/plugin/tpl}}\n").unwrap();
+    fs::write(
+        tpl_dir.join("a.md"),
+        "{{> myself/plugin/tpl}}\n{{> other/plugin/tpl}}\n",
+    )
+    .unwrap();
 
     let self_ref: PluginRef = "myself/plugin".parse().unwrap();
     let refs = derive_plugin_refs(&aiki_dir, Some(&self_ref));
@@ -210,16 +214,25 @@ fn test_install_status_lifecycle() {
     let plugin: PluginRef = "test/myplugin".parse().unwrap();
 
     // Not installed
-    assert_eq!(check_install_status(&plugin, base), InstallStatus::NotInstalled);
+    assert_eq!(
+        check_install_status(&plugin, base),
+        InstallStatus::NotInstalled
+    );
 
     // Create directory without .git/ → partial
     let dir = plugin.install_dir(base);
     fs::create_dir_all(&dir).unwrap();
-    assert_eq!(check_install_status(&plugin, base), InstallStatus::PartialInstall);
+    assert_eq!(
+        check_install_status(&plugin, base),
+        InstallStatus::PartialInstall
+    );
 
     // Add .git/ → installed
     fs::create_dir_all(dir.join(".git")).unwrap();
-    assert_eq!(check_install_status(&plugin, base), InstallStatus::Installed);
+    assert_eq!(
+        check_install_status(&plugin, base),
+        InstallStatus::Installed
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -264,7 +277,10 @@ fn test_template_resolution_three_part_ref_falls_back_to_plugin() {
 
     // Create a fake plugin with a template under the temp AIKI_HOME
     let plugins_base = aiki_home.path().join("plugins");
-    let plugin_tpl_dir = plugins_base.join("testns").join("testplug").join("templates");
+    let plugin_tpl_dir = plugins_base
+        .join("testns")
+        .join("testplug")
+        .join("templates");
     fs::create_dir_all(&plugin_tpl_dir).unwrap();
     fs::create_dir_all(plugins_base.join("testns").join("testplug").join(".git")).unwrap();
     fs::write(
@@ -297,7 +313,10 @@ fn test_template_resolution_project_override_wins() {
     let plugins_base = aiki_home.path().join("plugins");
 
     // Create plugin template
-    let plugin_tpl_dir = plugins_base.join("testns2").join("overplug").join("templates");
+    let plugin_tpl_dir = plugins_base
+        .join("testns2")
+        .join("overplug")
+        .join("templates");
     fs::create_dir_all(&plugin_tpl_dir).unwrap();
     fs::create_dir_all(plugins_base.join("testns2").join("overplug").join(".git")).unwrap();
     fs::write(
@@ -443,7 +462,11 @@ fn test_plugin_list_outside_repo_hides_deps_of_roots() {
     let stdout = String::from_utf8_lossy(&output.stdout);
 
     // root is top-level (preceded by two spaces)
-    assert!(stdout.contains("  ns/root"), "root should be top-level: {}", stdout);
+    assert!(
+        stdout.contains("  ns/root"),
+        "root should be top-level: {}",
+        stdout
+    );
     // dep should appear indented as a dependency, not as top-level
     assert!(
         stdout.contains("(dependency)"),
@@ -451,9 +474,9 @@ fn test_plugin_list_outside_repo_hides_deps_of_roots() {
         stdout
     );
     // dep should NOT appear as a top-level entry (only as a dependency)
-    let top_level_dep = stdout.lines().any(|line| {
-        line.starts_with("  ns/dep") && !line.contains("(dependency)")
-    });
+    let top_level_dep = stdout
+        .lines()
+        .any(|line| line.starts_with("  ns/dep") && !line.contains("(dependency)"));
     assert!(
         !top_level_dep,
         "dep should not appear as top-level entry: {}",

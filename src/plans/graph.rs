@@ -41,9 +41,7 @@ impl PlanGraph {
             }
         }
 
-        PlanGraph {
-            plan_to_tasks,
-        }
+        PlanGraph { plan_to_tasks }
     }
 
     /// Find the most recent epic for a plan.
@@ -65,7 +63,6 @@ impl PlanGraph {
             .filter_map(|id| task_graph.tasks.get(id))
             .max_by_key(|t| t.created_at)
     }
-
 }
 
 /// Normalize a plan path to the canonical "file:..." URI format.
@@ -73,9 +70,7 @@ impl PlanGraph {
 /// Handles variations like `./ops/now/foo.md`, `file:./ops/now/foo.md`,
 /// and `ops/now/foo.md` — all normalize to `file:ops/now/foo.md`.
 pub fn normalize_plan_path(plan_path: &str) -> String {
-    let path = plan_path
-        .strip_prefix("file:")
-        .unwrap_or(plan_path);
+    let path = plan_path.strip_prefix("file:").unwrap_or(plan_path);
 
     // Strip leading "./" to normalize relative paths
     let path = path.strip_prefix("./").unwrap_or(path);
@@ -120,7 +115,7 @@ mod tests {
             closed_outcome: None,
             summary: None,
             turn_started: None,
-                closed_at: None,
+            closed_at: None,
             turn_closed: None,
             turn_stopped: None,
             comments: Vec::new(),
@@ -200,7 +195,10 @@ mod tests {
     #[test]
     fn test_find_epic_basic() {
         let mut tasks = FastHashMap::default();
-        tasks.insert("epic1".to_string(), make_task("epic1", "Epic", TaskStatus::Open));
+        tasks.insert(
+            "epic1".to_string(),
+            make_task("epic1", "Epic", TaskStatus::Open),
+        );
 
         let mut edges = EdgeStore::new();
         edges.add("epic1", "file:ops/now/feature.md", "implements-plan");
@@ -280,5 +278,4 @@ mod tests {
         assert!(result.is_some());
         assert_eq!(result.unwrap().id, "epic1");
     }
-
 }

@@ -111,10 +111,7 @@ fn extract_id_from_list_by_name(output: &str, name: &str) -> String {
             }
         }
     }
-    panic!(
-        "Could not find task '{}' in list output: {}",
-        name, output
-    );
+    panic!("Could not find task '{}' in list output: {}", name, output);
 }
 
 // ============================================================================
@@ -2040,12 +2037,7 @@ fn test_task_start_existing_with_new_link_flags() {
     // Start with link flags (scoped-to removed - not yet in CLI)
     aiki_task(
         temp_dir.path(),
-        &[
-            "start",
-            &task_id,
-            "--depends-on",
-            &dep_id,
-        ],
+        &["start", &task_id, "--depends-on", &dep_id],
     )
     .success()
     .stdout(predicate::str::contains("Started"));
@@ -2104,12 +2096,22 @@ fn test_add_output_id_returns_bare_task_id() {
     let temp_dir = tempfile::tempdir().unwrap();
     init_aiki_repo(temp_dir.path());
 
-    let output = aiki_task(temp_dir.path(), &["add", "Test output id", "--output", "id"]).success();
+    let output = aiki_task(
+        temp_dir.path(),
+        &["add", "Test output id", "--output", "id"],
+    )
+    .success();
     let stdout = String::from_utf8_lossy(&output.get_output().stdout);
     let id = stdout.trim();
 
     // Should be exactly a 32-char lowercase alpha string
-    assert_eq!(id.len(), 32, "Expected 32-char ID, got '{}' (len={})", id, id.len());
+    assert_eq!(
+        id.len(),
+        32,
+        "Expected 32-char ID, got '{}' (len={})",
+        id,
+        id.len()
+    );
     assert!(
         id.chars().all(|c| c.is_ascii_lowercase()),
         "Expected all lowercase letters, got '{}'",
@@ -2130,26 +2132,50 @@ fn test_dedup_guard_prevents_duplicate_subtask() {
 
     // Create parent task
     let output = aiki_task(temp_dir.path(), &["add", "Dedup parent", "--output", "id"]).success();
-    let parent_id = String::from_utf8_lossy(&output.get_output().stdout).trim().to_string();
+    let parent_id = String::from_utf8_lossy(&output.get_output().stdout)
+        .trim()
+        .to_string();
 
     // Add subtask with name "Same name"
     let output1 = aiki_task(
         temp_dir.path(),
-        &["add", "Same name", "--subtask-of", &parent_id, "--output", "id"],
+        &[
+            "add",
+            "Same name",
+            "--subtask-of",
+            &parent_id,
+            "--output",
+            "id",
+        ],
     )
     .success();
-    let id1 = String::from_utf8_lossy(&output1.get_output().stdout).trim().to_string();
+    let id1 = String::from_utf8_lossy(&output1.get_output().stdout)
+        .trim()
+        .to_string();
 
     // Add subtask with same name again — should return existing ID
     let output2 = aiki_task(
         temp_dir.path(),
-        &["add", "Same name", "--subtask-of", &parent_id, "--output", "id"],
+        &[
+            "add",
+            "Same name",
+            "--subtask-of",
+            &parent_id,
+            "--output",
+            "id",
+        ],
     )
     .success();
-    let id2 = String::from_utf8_lossy(&output2.get_output().stdout).trim().to_string();
+    let id2 = String::from_utf8_lossy(&output2.get_output().stdout)
+        .trim()
+        .to_string();
 
     // Same ID both times
-    assert_eq!(id1, id2, "Dedup should return same ID, got '{}' vs '{}'", id1, id2);
+    assert_eq!(
+        id1, id2,
+        "Dedup should return same ID, got '{}' vs '{}'",
+        id1, id2
+    );
 }
 
 #[test]
@@ -2159,15 +2185,26 @@ fn test_dedup_guard_allows_recreation_after_close() {
 
     // Create parent task
     let output = aiki_task(temp_dir.path(), &["add", "Reopen parent", "--output", "id"]).success();
-    let parent_id = String::from_utf8_lossy(&output.get_output().stdout).trim().to_string();
+    let parent_id = String::from_utf8_lossy(&output.get_output().stdout)
+        .trim()
+        .to_string();
 
     // Add subtask
     let output1 = aiki_task(
         temp_dir.path(),
-        &["add", "Closeable", "--subtask-of", &parent_id, "--output", "id"],
+        &[
+            "add",
+            "Closeable",
+            "--subtask-of",
+            &parent_id,
+            "--output",
+            "id",
+        ],
     )
     .success();
-    let id1 = String::from_utf8_lossy(&output1.get_output().stdout).trim().to_string();
+    let id1 = String::from_utf8_lossy(&output1.get_output().stdout)
+        .trim()
+        .to_string();
 
     // Start and close the subtask
     aiki_task(temp_dir.path(), &["start", &id1]).success();
@@ -2176,12 +2213,25 @@ fn test_dedup_guard_allows_recreation_after_close() {
     // Add subtask with same name again — should create a NEW one (closed doesn't dedup)
     let output2 = aiki_task(
         temp_dir.path(),
-        &["add", "Closeable", "--subtask-of", &parent_id, "--output", "id"],
+        &[
+            "add",
+            "Closeable",
+            "--subtask-of",
+            &parent_id,
+            "--output",
+            "id",
+        ],
     )
     .success();
-    let id2 = String::from_utf8_lossy(&output2.get_output().stdout).trim().to_string();
+    let id2 = String::from_utf8_lossy(&output2.get_output().stdout)
+        .trim()
+        .to_string();
 
-    assert_ne!(id1, id2, "Should create new subtask after closing original, got same ID '{}'", id1);
+    assert_ne!(
+        id1, id2,
+        "Should create new subtask after closing original, got same ID '{}'",
+        id1
+    );
 }
 
 /// Regression test: non-task-scoped reviews (plan/code) should succeed even
@@ -2214,8 +2264,11 @@ fn test_review_non_task_scope_succeeds() {
         .expect("git commit failed");
 
     // Create an .md file so the review target resolves as Plan scope
-    std::fs::write(temp_dir.path().join("design.md"), "# Design\nSome plan content\n")
-        .expect("Failed to write design.md");
+    std::fs::write(
+        temp_dir.path().join("design.md"),
+        "# Design\nSome plan content\n",
+    )
+    .expect("Failed to write design.md");
 
     // Commit the file so the repo has history
     Command::new("git")
@@ -2273,8 +2326,7 @@ fn test_show_output_summary_rejects_open_task() {
     let task_id = extract_short_id(&stdout);
 
     // --output summary on an open task should fail
-    aiki_task(temp_dir.path(), &["show", &task_id, "--output", "summary"])
-        .failure();
+    aiki_task(temp_dir.path(), &["show", &task_id, "--output", "summary"]).failure();
 }
 
 #[test]
@@ -2290,14 +2342,19 @@ fn test_show_output_summary_emits_summary_for_closed_task() {
     aiki_task(temp_dir.path(), &["start", &task_id]).success();
 
     // Close with a summary
-    aiki_task(temp_dir.path(), &["close", &task_id, "--summary", "My test summary"]).success();
+    aiki_task(
+        temp_dir.path(),
+        &["close", &task_id, "--summary", "My test summary"],
+    )
+    .success();
 
     // --output summary on a closed task should succeed and print only the summary
     let output = aiki_task(temp_dir.path(), &["show", &task_id, "--output", "summary"]).success();
     let stdout = String::from_utf8_lossy(&output.get_output().stdout);
     assert!(
         stdout.contains("My test summary"),
-        "Expected summary text in stdout, got: {}", stdout
+        "Expected summary text in stdout, got: {}",
+        stdout
     );
 }
 
@@ -2337,8 +2394,7 @@ fn test_run_id_conflicts_with_template() {
     let temp_dir = tempfile::tempdir().unwrap();
     init_aiki_repo(temp_dir.path());
 
-    aiki_task(temp_dir.path(), &["run", "someid", "--template", "foo"])
-        .failure();
+    aiki_task(temp_dir.path(), &["run", "someid", "--template", "foo"]).failure();
     // Clap produces "cannot be used with" error
 }
 
@@ -2347,8 +2403,7 @@ fn test_run_data_requires_template() {
     let temp_dir = tempfile::tempdir().unwrap();
     init_aiki_repo(temp_dir.path());
 
-    aiki_task(temp_dir.path(), &["run", "someid", "--data", "key=value"])
-        .failure();
+    aiki_task(temp_dir.path(), &["run", "someid", "--data", "key=value"]).failure();
     // Clap produces "required by" or "requires" error
 }
 
@@ -2368,7 +2423,13 @@ fn test_run_invalid_data_format() {
 
     aiki_task(
         temp_dir.path(),
-        &["run", "--template", "test/foo", "--data", "invalid-no-equals"],
+        &[
+            "run",
+            "--template",
+            "test/foo",
+            "--data",
+            "invalid-no-equals",
+        ],
     )
     .failure()
     .stderr(predicate::str::contains("Invalid --data format"));
@@ -2391,7 +2452,14 @@ fn test_run_template_creates_task() {
     // The run may fail at agent spawning, but we should see the task was created.
     let output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
         .current_dir(temp_dir.path())
-        .args(["task", "run", "--template", "test/run-me", "--data", "key=hello"])
+        .args([
+            "task",
+            "run",
+            "--template",
+            "test/run-me",
+            "--data",
+            "key=hello",
+        ])
         .output()
         .expect("Failed to run command");
 

@@ -15,7 +15,9 @@ const TASKS_BRANCH: &str = "aiki/tasks";
 const METADATA_START: &str = "[aiki-task]";
 const METADATA_END: &str = "[/aiki-task]";
 
-fn acquire_task_write_lock(cwd: &Path) -> Result<fd_lock::RwLockWriteGuard<'static, std::fs::File>> {
+fn acquire_task_write_lock(
+    cwd: &Path,
+) -> Result<fd_lock::RwLockWriteGuard<'static, std::fs::File>> {
     let repo_root = crate::jj::get_repo_root(cwd)?;
     acquire_named_lock(&repo_root, "task-event-write")
 }
@@ -23,14 +25,23 @@ fn acquire_task_write_lock(cwd: &Path) -> Result<fd_lock::RwLockWriteGuard<'stat
 fn set_tasks_bookmark(cwd: &Path, change_id: &str) -> Result<()> {
     let bm = jj_cmd()
         .current_dir(cwd)
-        .args(["bookmark", "set", TASKS_BRANCH, "-r", change_id, "--ignore-working-copy"])
+        .args([
+            "bookmark",
+            "set",
+            TASKS_BRANCH,
+            "-r",
+            change_id,
+            "--ignore-working-copy",
+        ])
         .output()
         .map_err(|e| AikiError::JjCommandFailed(format!("Failed to set bookmark: {}", e)))?;
 
     if !bm.status.success() {
         let stderr = String::from_utf8_lossy(&bm.stderr);
         return Err(AikiError::JjCommandFailed(format!(
-            "Failed to advance '{}': {}", TASKS_BRANCH, stderr.trim()
+            "Failed to advance '{}': {}",
+            TASKS_BRANCH,
+            stderr.trim()
         )));
     }
     Ok(())
@@ -784,6 +795,32 @@ fn event_to_metadata_block(event: &TaskEvent) -> String {
             }
             add_metadata_timestamp(timestamp, &mut lines);
         }
+        TaskEvent::Reserved {
+            task_ids,
+            agent_type,
+            timestamp,
+        } => {
+            add_metadata("event", "reserved", &mut lines);
+            for task_id in task_ids {
+                add_metadata("task_id", task_id, &mut lines);
+            }
+            add_metadata("agent_type", agent_type, &mut lines);
+            add_metadata_timestamp(timestamp, &mut lines);
+        }
+        TaskEvent::Released {
+            task_ids,
+            reason,
+            timestamp,
+        } => {
+            add_metadata("event", "released", &mut lines);
+            for task_id in task_ids {
+                add_metadata("task_id", task_id, &mut lines);
+            }
+            if let Some(reason) = reason {
+                add_metadata_escaped("reason", reason, &mut lines);
+            }
+            add_metadata_timestamp(timestamp, &mut lines);
+        }
         TaskEvent::Absorbed {
             task_ids,
             session_id,
@@ -797,6 +834,32 @@ fn event_to_metadata_block(event: &TaskEvent) -> String {
             add_metadata("session_id", session_id, &mut lines);
             if let Some(tid) = turn_id {
                 add_metadata("turn_id", tid, &mut lines);
+            }
+            add_metadata_timestamp(timestamp, &mut lines);
+        }
+        TaskEvent::Reserved {
+            task_ids,
+            agent_type,
+            timestamp,
+        } => {
+            add_metadata("event", "reserved", &mut lines);
+            for task_id in task_ids {
+                add_metadata("task_id", task_id, &mut lines);
+            }
+            add_metadata("agent_type", agent_type, &mut lines);
+            add_metadata_timestamp(timestamp, &mut lines);
+        }
+        TaskEvent::Released {
+            task_ids,
+            reason,
+            timestamp,
+        } => {
+            add_metadata("event", "released", &mut lines);
+            for task_id in task_ids {
+                add_metadata("task_id", task_id, &mut lines);
+            }
+            if let Some(reason) = reason {
+                add_metadata_escaped("reason", reason, &mut lines);
             }
             add_metadata_timestamp(timestamp, &mut lines);
         }
@@ -1064,9 +1127,7 @@ fn parse_metadata_block(block: &str) -> Option<TaskEvent> {
                 Some(v) => {
                     let value = v.first().map(|s| *s).unwrap_or("");
                     if value.is_empty() {
-                        // stderr-ok: suppressed — can fire inside LiveScreen via read_events().
-                        // Was a warning print; replaced with debug_assert guard.
-                        crate::debug_assert_no_live_screen!();
+                        // Empty assignee value — skip silently.
                         return None;
                     }
                     Some(value.to_string())
@@ -1156,6 +1217,41 @@ fn parse_metadata_block(block: &str) -> Option<TaskEvent> {
                 timestamp,
             })
         }
+        "reserved" => {
+            let task_ids = fields
+                .get("task_id")?
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
+            let agent_type = fields
+                .get("agent_type")
+                .and_then(|v| v.first())
+                .unwrap_or(&"unknown")
+                .to_string();
+
+            Some(TaskEvent::Reserved {
+                task_ids,
+                agent_type,
+                timestamp,
+            })
+        }
+        "released" => {
+            let task_ids = fields
+                .get("task_id")?
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
+            let reason = fields
+                .get("reason")
+                .and_then(|v| v.first())
+                .map(|s| unescape_metadata_value(s));
+
+            Some(TaskEvent::Released {
+                task_ids,
+                reason,
+                timestamp,
+            })
+        }
         "absorbed" => {
             let task_ids = fields
                 .get("task_id")?
@@ -1172,6 +1268,41 @@ fn parse_metadata_block(block: &str) -> Option<TaskEvent> {
                 task_ids,
                 session_id,
                 turn_id,
+                timestamp,
+            })
+        }
+        "reserved" => {
+            let task_ids = fields
+                .get("task_id")?
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
+            let agent_type = fields
+                .get("agent_type")
+                .and_then(|v| v.first())
+                .unwrap_or(&"unknown")
+                .to_string();
+
+            Some(TaskEvent::Reserved {
+                task_ids,
+                agent_type,
+                timestamp,
+            })
+        }
+        "released" => {
+            let task_ids = fields
+                .get("task_id")?
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
+            let reason = fields
+                .get("reason")
+                .and_then(|v| v.first())
+                .map(|s| unescape_metadata_value(s));
+
+            Some(TaskEvent::Released {
+                task_ids,
+                reason,
                 timestamp,
             })
         }
@@ -3015,6 +3146,111 @@ timestamp=2026-02-10T14:30:00Z
                 assert_eq!(timestamp, original.timestamp());
             }
             _ => panic!("Expected Absorbed event"),
+        }
+    }
+
+    #[test]
+    fn test_roundtrip_reserved() {
+        let original = TaskEvent::Reserved {
+            task_ids: vec!["task1".to_string(), "task2".to_string()],
+            agent_type: "claude-code".to_string(),
+            timestamp: DateTime::parse_from_rfc3339("2026-03-04T10:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+        };
+
+        let block = event_to_metadata_block(&original);
+        assert!(block.contains("event=reserved"));
+        assert!(block.contains("task_id=task1"));
+        assert!(block.contains("task_id=task2"));
+        assert!(block.contains("agent_type=claude-code"));
+
+        let start = block.find("[aiki-task]").unwrap() + "[aiki-task]".len();
+        let end = block.find("[/aiki-task]").unwrap();
+        let content = &block[start..end];
+        let parsed = parse_metadata_block(content).expect("Should parse");
+
+        match parsed {
+            TaskEvent::Reserved {
+                task_ids,
+                agent_type,
+                timestamp,
+            } => {
+                assert_eq!(task_ids, vec!["task1", "task2"]);
+                assert_eq!(agent_type, "claude-code");
+                assert_eq!(timestamp, original.timestamp());
+            }
+            _ => panic!("Expected Reserved event"),
+        }
+    }
+
+    #[test]
+    fn test_roundtrip_released() {
+        let original = TaskEvent::Released {
+            task_ids: vec!["task1".to_string()],
+            reason: Some("Spawn failed: timeout".to_string()),
+            timestamp: DateTime::parse_from_rfc3339("2026-03-04T10:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+        };
+
+        let block = event_to_metadata_block(&original);
+        assert!(block.contains("event=released"));
+        assert!(block.contains("task_id=task1"));
+        assert!(block.contains("reason=Spawn failed: timeout"));
+
+        let start = block.find("[aiki-task]").unwrap() + "[aiki-task]".len();
+        let end = block.find("[/aiki-task]").unwrap();
+        let content = &block[start..end];
+        let parsed = parse_metadata_block(content).expect("Should parse");
+
+        match parsed {
+            TaskEvent::Released {
+                task_ids,
+                reason,
+                timestamp,
+            } => {
+                assert_eq!(task_ids, vec!["task1"]);
+                assert_eq!(reason, Some("Spawn failed: timeout".to_string()));
+                assert_eq!(timestamp, original.timestamp());
+            }
+            _ => panic!("Expected Released event"),
+        }
+    }
+
+    #[test]
+    fn test_roundtrip_released_no_reason() {
+        let original = TaskEvent::Released {
+            task_ids: vec!["task1".to_string(), "task2".to_string()],
+            reason: None,
+            timestamp: DateTime::parse_from_rfc3339("2026-03-04T11:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+        };
+
+        let block = event_to_metadata_block(&original);
+        assert!(block.contains("event=released"));
+        assert!(
+            !block.contains("reason="),
+            "Should not contain reason when None"
+        );
+
+        let start = block.find("[aiki-task]").unwrap() + "[aiki-task]".len();
+        let end = block.find("[/aiki-task]").unwrap();
+        let content = &block[start..end];
+        let parsed = parse_metadata_block(content).expect("Should parse");
+
+        match parsed {
+            TaskEvent::Released {
+                task_ids,
+                reason,
+                timestamp,
+            } => {
+                assert_eq!(task_ids, vec!["task1", "task2"]);
+                assert_eq!(reason, None);
+                assert_eq!(timestamp, original.timestamp());
+            }
+            _ => panic!("Expected Released event"),
         }
     }
 }

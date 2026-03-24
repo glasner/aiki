@@ -87,7 +87,10 @@ fn extract_task_id(output: &str) -> Option<String> {
         if let Some(rest) = trimmed.strip_prefix("[p") {
             // Skip priority digit and "] "
             if let Some(after_bracket) = rest.get(1..).and_then(|s| s.strip_prefix("] ")) {
-                let id: String = after_bracket.chars().take_while(|c| c.is_ascii_lowercase()).collect();
+                let id: String = after_bracket
+                    .chars()
+                    .take_while(|c| c.is_ascii_lowercase())
+                    .collect();
                 if id.len() >= 7 {
                     return Some(id);
                 }
@@ -95,7 +98,10 @@ fn extract_task_id(output: &str) -> Option<String> {
         }
         // Try "Added <id>" format
         if let Some(rest) = trimmed.strip_prefix("Added ") {
-            let id: String = rest.chars().take_while(|c| c.is_ascii_lowercase()).collect();
+            let id: String = rest
+                .chars()
+                .take_while(|c| c.is_ascii_lowercase())
+                .collect();
             if id.len() >= 7 {
                 return Some(id);
             }
@@ -243,7 +249,10 @@ fn test_task_run_invalid_agent() {
         &["run", &task_id, "--agent", "invalid-agent"],
     )
     .failure()
-    .stderr(predicate::str::contains("Unknown agent type").or(predicate::str::contains("unknown agent")));
+    .stderr(
+        predicate::str::contains("Unknown agent type")
+            .or(predicate::str::contains("unknown agent")),
+    );
 }
 
 // ============================================================================
@@ -282,8 +291,8 @@ fn test_pid_file_naming_convention() {
     // Various task ID formats
     let task_ids = [
         "xqrmnpst",
-        "xqrmnpst.1",        // Subtask
-        "xqrmnpst.1.2",      // Nested subtask
+        "xqrmnpst.1",                       // Subtask
+        "xqrmnpst.1.2",                     // Nested subtask
         "abcdefghijklmnopqrstuvwxyzabcdef", // 32-char ID
     ];
 
@@ -320,7 +329,10 @@ fn test_pid_file_cleanup_removes_file() {
     // Simulate cleanup
     fs::remove_file(&pid_file).unwrap();
 
-    assert!(!pid_file.exists(), "PID file should be removed after cleanup");
+    assert!(
+        !pid_file.exists(),
+        "PID file should be removed after cleanup"
+    );
 }
 
 #[test]
@@ -339,11 +351,7 @@ fn test_pid_file_content_is_valid_pid() {
 
         let content = fs::read_to_string(&pid_file).unwrap();
         let parsed: Result<u32, _> = content.trim().parse();
-        assert!(
-            parsed.is_ok(),
-            "PID '{}' should parse as u32",
-            pid_str
-        );
+        assert!(parsed.is_ok(), "PID '{}' should parse as u32", pid_str);
     }
 }
 
@@ -366,10 +374,7 @@ fn test_wait_command_requires_task_id_or_stdin() {
         .expect("Failed to run aiki task wait");
 
     // Should fail because no task ID provided
-    assert!(
-        !output.status.success(),
-        "wait without task ID should fail"
-    );
+    assert!(!output.status.success(), "wait without task ID should fail");
 }
 
 #[test]
@@ -567,10 +572,7 @@ fn test_extract_task_id_from_added_format() {
 fn test_extract_task_id_from_multiline() {
     // Extract first ID from multi-line output
     let md = "Tasks (2):\n[p2] abcdefg  First task\n[p1] hijklmn  Second task\n";
-    assert_eq!(
-        extract_task_id(md),
-        Some("abcdefg".to_string())
-    );
+    assert_eq!(extract_task_id(md), Some("abcdefg".to_string()));
 }
 
 #[test]
@@ -738,13 +740,18 @@ fn test_async_wait_conceptual_flow() {
             || stdout.contains("agent")
             || stdout.contains("Run Started"),
         "Should either succeed or fail about assignee/agent. Got stdout='{}', stderr='{}'",
-        stdout, stderr
+        stdout,
+        stderr
     );
 
     // 3. Verify wait command works (though task not running)
     // Start and close the task so wait can succeed
     aiki_task(temp_dir.path(), &["start", &task_id]).success();
-    aiki_task(temp_dir.path(), &["close", &task_id, "--summary", "Test done"]).success();
+    aiki_task(
+        temp_dir.path(),
+        &["close", &task_id, "--summary", "Test done"],
+    )
+    .success();
 
     // Get the task ID from closed list
     let output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
@@ -796,9 +803,14 @@ fn test_review_fix_and_start_conflict() {
     let task_id = extract_task_id(&stdout).expect("Should find task ID");
 
     // Running review with both --fix-template and --start should produce an error
-    aiki_review(temp_dir.path(), &[&task_id, "--fix-template", "fix", "--start"])
-        .failure()
-        .stderr(predicate::str::contains("--fix and --start cannot be used together"));
+    aiki_review(
+        temp_dir.path(),
+        &[&task_id, "--fix-template", "fix", "--start"],
+    )
+    .failure()
+    .stderr(predicate::str::contains(
+        "--fix and --start cannot be used together",
+    ));
 }
 
 #[test]
@@ -1042,7 +1054,8 @@ fn test_review_fix_output_id_no_extra_output() {
             "-r",
             "children(ancestors(aiki/tasks)) & description(substring:'options.fix')",
             "--no-graph",
-            "-T", "description",
+            "-T",
+            "description",
             "--ignore-working-copy",
         ])
         .output()
@@ -1094,7 +1107,15 @@ fn test_async_review_fix_template_stores_fix_data() {
     // Run review with --fix-template fix --async -o id
     let output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
         .current_dir(temp_dir.path())
-        .args(["review", &task_id, "--fix-template", "fix", "--async", "-o", "id"])
+        .args([
+            "review",
+            &task_id,
+            "--fix-template",
+            "fix",
+            "--async",
+            "-o",
+            "id",
+        ])
         .output()
         .unwrap();
 
@@ -1126,7 +1147,8 @@ fn test_async_review_fix_template_stores_fix_data() {
             "-r",
             "children(ancestors(aiki/tasks)) & description(substring:'options.fix')",
             "--no-graph",
-            "-T", "description",
+            "-T",
+            "description",
             "--ignore-working-copy",
         ])
         .output()
@@ -1147,7 +1169,8 @@ fn test_async_review_fix_template_stores_fix_data() {
             "-r",
             "children(ancestors(aiki/tasks)) & description(substring:'options.fix_template')",
             "--no-graph",
-            "-T", "description",
+            "-T",
+            "description",
             "--ignore-working-copy",
         ])
         .output()
@@ -1227,7 +1250,8 @@ fn test_async_review_without_fix_template_no_fix_data() {
             "-r",
             "children(ancestors(aiki/tasks)) & description(substring:'options.fix')",
             "--no-graph",
-            "-T", "description",
+            "-T",
+            "description",
             "--ignore-working-copy",
         ])
         .output()
@@ -1253,7 +1277,13 @@ fn test_continue_async_with_fix_template_flag_accepted() {
     // should be recognized by the parser (no "unexpected argument" error).
     let output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
         .current_dir(temp_dir.path())
-        .args(["review", "--_continue-async", "nonexistentreviewtaskidpadding00", "--fix-template", "fix"])
+        .args([
+            "review",
+            "--_continue-async",
+            "nonexistentreviewtaskidpadding00",
+            "--fix-template",
+            "fix",
+        ])
         .output()
         .unwrap();
 
@@ -1279,7 +1309,11 @@ fn test_continue_async_without_fix_template_flag_accepted() {
     // should be recognized by the parser.
     let output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
         .current_dir(temp_dir.path())
-        .args(["review", "--_continue-async", "nonexistentreviewtaskidpadding00"])
+        .args([
+            "review",
+            "--_continue-async",
+            "nonexistentreviewtaskidpadding00",
+        ])
         .output()
         .unwrap();
 
@@ -1327,7 +1361,15 @@ fn test_async_review_fix_template_custom_value_stored() {
     // Run review with a CUSTOM --fix-template value via --async
     let output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
         .current_dir(temp_dir.path())
-        .args(["review", &task_id, "--fix-template", "my-org/custom-fix", "--async", "-o", "id"])
+        .args([
+            "review",
+            &task_id,
+            "--fix-template",
+            "my-org/custom-fix",
+            "--async",
+            "-o",
+            "id",
+        ])
         .output()
         .unwrap();
 
@@ -1356,7 +1398,8 @@ fn test_async_review_fix_template_custom_value_stored() {
             "-r",
             "children(ancestors(aiki/tasks)) & description(substring:'options.fix_template')",
             "--no-graph",
-            "-T", "description",
+            "-T",
+            "description",
             "--ignore-working-copy",
         ])
         .output()
@@ -1424,7 +1467,8 @@ fn test_blocking_review_fix_template_creates_review_with_fix_options() {
             "-r",
             "children(ancestors(aiki/tasks)) & description(substring:'options.fix')",
             "--no-graph",
-            "-T", "description",
+            "-T",
+            "description",
             "--ignore-working-copy",
         ])
         .output()
@@ -1444,7 +1488,8 @@ fn test_blocking_review_fix_template_creates_review_with_fix_options() {
             "-r",
             "children(ancestors(aiki/tasks)) & description(substring:'options.fix_template')",
             "--no-graph",
-            "-T", "description",
+            "-T",
+            "description",
             "--ignore-working-copy",
         ])
         .output()
@@ -1511,13 +1556,24 @@ fn test_blocking_review_issue_count_set_when_issues_exist() {
     // Add issues to the review task
     aiki_review(
         temp_dir.path(),
-        &["issue", "add", &review_id, "Bug found in auth handler", "--high"],
+        &[
+            "issue",
+            "add",
+            &review_id,
+            "Bug found in auth handler",
+            "--high",
+        ],
     )
     .success();
 
     aiki_review(
         temp_dir.path(),
-        &["issue", "add", &review_id, "Missing error handling in API client"],
+        &[
+            "issue",
+            "add",
+            &review_id,
+            "Missing error handling in API client",
+        ],
     )
     .success();
 
@@ -1536,7 +1592,8 @@ fn test_blocking_review_issue_count_set_when_issues_exist() {
             "-r",
             "children(ancestors(aiki/tasks)) & description(substring:'issue_count')",
             "--no-graph",
-            "-T", "description",
+            "-T",
+            "description",
             "--ignore-working-copy",
         ])
         .output()
@@ -1623,7 +1680,8 @@ fn test_blocking_review_no_fix_template_no_fix_options() {
             "-r",
             "children(ancestors(aiki/tasks)) & description(substring:'options.fix')",
             "--no-graph",
-            "-T", "description",
+            "-T",
+            "description",
             "--ignore-working-copy",
         ])
         .output()
@@ -1643,7 +1701,8 @@ fn test_blocking_review_no_fix_template_no_fix_options() {
             "-r",
             "children(ancestors(aiki/tasks)) & description(substring:'issue_count')",
             "--no-graph",
-            "-T", "description",
+            "-T",
+            "description",
             "--ignore-working-copy",
         ])
         .output()

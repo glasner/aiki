@@ -135,7 +135,10 @@ mod tests {
 
     #[test]
     fn test_agent_type_from_str() {
-        assert_eq!(AgentType::from_str("claude-code"), Some(AgentType::ClaudeCode));
+        assert_eq!(
+            AgentType::from_str("claude-code"),
+            Some(AgentType::ClaudeCode)
+        );
         assert_eq!(AgentType::from_str("CURSOR"), Some(AgentType::Cursor));
         assert_eq!(AgentType::from_str("unknown"), Some(AgentType::Unknown));
         assert_eq!(AgentType::from_str("invalid"), None);

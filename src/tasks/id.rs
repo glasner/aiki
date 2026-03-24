@@ -192,8 +192,7 @@ pub fn is_task_id(input: &str) -> bool {
     let root_part = parts[0];
 
     // Root IDs are exactly 32 characters of lowercase k-z
-    let is_valid_root = root_part.len() == 32
-        && root_part.chars().all(|c| matches!(c, 'k'..='z'));
+    let is_valid_root = root_part.len() == 32 && root_part.chars().all(|c| matches!(c, 'k'..='z'));
 
     if !is_valid_root {
         return false;
@@ -262,10 +261,7 @@ fn get_child_number(task_id: &str) -> Option<usize> {
 }
 
 #[cfg(test)]
-fn get_next_subtask_number<'a>(
-    parent_id: &str,
-    task_ids: impl Iterator<Item = &'a str>,
-) -> usize {
+fn get_next_subtask_number<'a>(parent_id: &str, task_ids: impl Iterator<Item = &'a str>) -> usize {
     let max_subtask = task_ids
         .filter(|id| is_direct_child_of(id, parent_id))
         .filter_map(get_child_number)
@@ -427,7 +423,10 @@ mod tests {
 
         // Works with nested parents
         let task_ids = vec!["a1b2.1", "a1b2.1.1", "a1b2.1.2"];
-        assert_eq!(get_next_subtask_number("a1b2.1", task_ids.iter().copied()), 3);
+        assert_eq!(
+            get_next_subtask_number("a1b2.1", task_ids.iter().copied()),
+            3
+        );
     }
 
     // Edge case tests
@@ -503,19 +502,31 @@ mod tests {
     fn test_get_next_subtask_number_edge_cases() {
         // Empty task list
         let task_ids: Vec<&str> = vec![];
-        assert_eq!(get_next_subtask_number("parent", task_ids.iter().copied()), 1);
+        assert_eq!(
+            get_next_subtask_number("parent", task_ids.iter().copied()),
+            1
+        );
 
         // Non-existent parent (no subtasks found)
         let task_ids = vec!["other.1", "other.2"];
-        assert_eq!(get_next_subtask_number("parent", task_ids.iter().copied()), 1);
+        assert_eq!(
+            get_next_subtask_number("parent", task_ids.iter().copied()),
+            1
+        );
 
         // Subtask with number 0 (decompose task)
         let task_ids = vec!["parent", "parent.0", "parent.1"];
-        assert_eq!(get_next_subtask_number("parent", task_ids.iter().copied()), 2);
+        assert_eq!(
+            get_next_subtask_number("parent", task_ids.iter().copied()),
+            2
+        );
 
         // Only decompose task exists
         let task_ids = vec!["parent", "parent.0"];
-        assert_eq!(get_next_subtask_number("parent", task_ids.iter().copied()), 1);
+        assert_eq!(
+            get_next_subtask_number("parent", task_ids.iter().copied()),
+            1
+        );
     }
 
     #[test]
@@ -538,11 +549,7 @@ mod tests {
         let mut ids = HashSet::new();
         for i in 0..1000 {
             let id = generate_task_id(&format!("Task {}", i));
-            assert!(
-                ids.insert(id.clone()),
-                "Collision detected for task {}",
-                i
-            );
+            assert!(ids.insert(id.clone()), "Collision detected for task {}", i);
         }
         assert_eq!(ids.len(), 1000);
     }
@@ -691,14 +698,14 @@ mod tests {
 
     #[test]
     fn test_invalid_slugs() {
-        assert!(!is_valid_slug("-build"));      // starts with hyphen
-        assert!(!is_valid_slug("build-"));      // ends with hyphen
-        assert!(!is_valid_slug("Build"));       // uppercase
-        assert!(!is_valid_slug("run_tests"));   // underscore
+        assert!(!is_valid_slug("-build")); // starts with hyphen
+        assert!(!is_valid_slug("build-")); // ends with hyphen
+        assert!(!is_valid_slug("Build")); // uppercase
+        assert!(!is_valid_slug("run_tests")); // underscore
         assert!(!is_valid_slug("deploy.staging")); // dot
-        assert!(!is_valid_slug("my slug"));     // space
-        assert!(!is_valid_slug(""));            // empty
-        assert!(!is_valid_slug("-"));           // just a hyphen
+        assert!(!is_valid_slug("my slug")); // space
+        assert!(!is_valid_slug("")); // empty
+        assert!(!is_valid_slug("-")); // just a hyphen
     }
 
     #[test]

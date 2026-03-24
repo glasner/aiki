@@ -8,10 +8,11 @@ pub mod recorder;
 pub mod storage;
 pub mod types;
 
-pub use recorder::{record_autoreply, record_prompt, record_response, record_session_end, record_session_start};
+pub use recorder::{
+    record_autoreply, record_prompt, record_response, record_session_end, record_session_start,
+};
 pub use storage::{
-    get_current_turn_info, get_current_turn_number,
-    get_latest_prompt_change_id, get_prompt_by_change_id,
-    has_pending_autoreply,
+    get_current_turn_info, get_current_turn_number, get_latest_prompt_change_id,
+    get_prompt_by_change_id, has_pending_autoreply,
 };
 pub use types::TurnSource;

@@ -167,12 +167,7 @@ mod tests {
     fn test_resolve_deps_diamond() {
         let tmp = TempDir::new().unwrap();
         // A→B, A→C, B→D, C→D (diamond at D)
-        create_fake_plugin(
-            tmp.path(),
-            "aiki",
-            "a",
-            &["aiki/b/tmpl", "aiki/c/tmpl"],
-        );
+        create_fake_plugin(tmp.path(), "aiki", "a", &["aiki/b/tmpl", "aiki/c/tmpl"]);
         create_fake_plugin(tmp.path(), "aiki", "b", &["aiki/d/tmpl"]);
         create_fake_plugin(tmp.path(), "aiki", "c", &["aiki/d/tmpl"]);
         create_fake_plugin(tmp.path(), "aiki", "d", &[]);
@@ -185,10 +180,7 @@ mod tests {
         assert!(dep_names.contains(&"aiki/c".to_string()));
         assert!(dep_names.contains(&"aiki/d".to_string()));
         // D should appear exactly once
-        assert_eq!(
-            dep_names.iter().filter(|n| *n == "aiki/d").count(),
-            1
-        );
+        assert_eq!(dep_names.iter().filter(|n| *n == "aiki/d").count(), 1);
     }
 
     #[test]

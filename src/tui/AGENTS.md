@@ -1,35 +1,58 @@
 # TUI System
 
-Ratatui-based terminal UI for aiki. Renders styled output using character-cell buffers with 24-bit color, then converts to ANSI escape sequences for terminal display.
+Ratatui-based terminal UI for aiki. Uses an Elm architecture (Model → update → view → render) with character-cell buffers and 24-bit color ANSI output.
 
 ## Architecture
 
 ```
-types.rs          Data models (WorkflowView, EpicView, StageView, etc.)
-theme.rs          Color palette (dark/light) + symbols (✓ ▸ ○ ✗) + auto-detection
-buffer_ansi.rs    Buffer → ANSI string converter (production output path)
-render_png.rs     Buffer → PNG renderer (test-only, behind #[cfg(test)])
-builder.rs        Converts Task objects → TUI data models
+app.rs            Elm core: Model, Msg, update(), run() event loop
+components.rs     Reusable view components returning Vec<Line>
+render.rs         Line renderer + buffer_to_ansi converter
+theme.rs          Color palette (dark/light) + symbols + auto-detection
+panic_hook.rs     Terminal cleanup on panic
 
-views/            Composers — assemble widgets into full screens, return Buffer
-  workflow.rs     PathLine + EpicTree + StageList + LaneDag
-  epic_show.rs    PathLine + EpicTree + StageTrack
-
-widgets/          Leaf renderers — implement ratatui Widget trait
-  path_line.rs    File path with dim directory, normal filename
-  epic_tree.rs    Epic header + subtask tree with ⎿ connectors
-  stage_list.rs   Vertical stage list with sub-stages and children
-  stage_track.rs  Horizontal build/review/fix phase bar
-  lane_dag.rs     Parallel session DAG (●━┬━◉)
+screens/          Screen-specific view functions (each returns Vec<Line>)
+  build.rs        Build pipeline: plan → decompose → loop → review → fix
+  epic_show.rs    Epic detail with subtask table
+  review.rs       Review progress
+  review_show.rs  Review detail with issues
+  fix.rs          Fix pipeline progress
+  task_run.rs     Single task execution
+  helpers.rs      Shared query helpers for screen functions
 ```
 
 ## How it works
 
-1. **Build data model** — `builder.rs` converts `Task` objects into typed view structs (`WorkflowView`, etc.)
-2. **Render to Buffer** — A view function composes widgets into a `ratatui::Buffer` (fixed 80-column width)
-3. **Emit to terminal** — `buffer_to_ansi()` walks the buffer and emits 24-bit ANSI escapes
+1. **Model** — `app.rs` defines `Model` (graph + screen + window state) and `Msg` (events)
+2. **Update** — `update()` handles messages: graph refresh, key input, resize, tick
+3. **View** — Screen functions in `screens/` convert `Model` into `Vec<Line>`
+4. **Render** — `render.rs` renders `Vec<Line>` into a ratatui `Buffer`, then `buffer_to_ansi()` emits ANSI escapes
 
-The Buffer is the single source of truth — both terminal output and test PNGs render from the same Buffer.
+The Elm loop runs in `app::run()` using a crossterm alternate-screen backend with inline viewport.
+
+## Key types
+
+- `Line` — one terminal row with text, style, indent, group, meta (right-aligned), dimmed flag
+- `LineStyle` — rendering variant (PhaseHeader, Child, Subtask, SectionHeader, Issue, etc.)
+- `Screen` — which view to render (Build, Review, Fix, TaskRun, EpicShow, ReviewShow)
+- `Model` — graph + screen + window state
+- `Msg` — graph update, key event, resize, tick
+
+## Adding a new screen
+
+1. Create `screens/my_screen.rs` with `pub fn view(graph: &TaskGraph, ..., window: &WindowState) -> Vec<Line>`
+2. Add `pub mod my_screen;` to `screens/mod.rs`
+3. Add a `Screen::MyScreen { ... }` variant to `app.rs`
+4. Wire the variant in `app.rs`'s view dispatch and exit-condition logic
+5. Build `Vec<Line>` using `components::phase()`, `components::subtask_table()`, etc.
+
+## Components
+
+`components.rs` provides reusable builders:
+- `phase()` — phase header with child lines (maps to PhaseHeader + Child* styles)
+- `subtask_table()` — subtask list with status icons
+- `section_header()` — bold section divider
+- `separator()` — dim horizontal rule
 
 ## Theme
 
@@ -37,70 +60,27 @@ Two modes: dark and light. Auto-detected via `terminal-colorsaurus` (OSC 11), ov
 
 **Semantic colors:** green (done), cyan (info), yellow (active), red (failed), magenta (cursor agent), dim (borders), fg (supporting text), text (primary), hi (headers, bold).
 
-**Symbols (mode-independent):** `✓` check, `▸` running, `○` pending, `✗` failed.
+**Symbols:** `✓` check, `▸` running, `○` pending, `✗` failed.
 
 Widgets accept `&Theme` and use `theme.dim_style()`, `theme.text_style()`, etc. Never hard-code colors.
 
-## Testing views
+## Testing
 
-Every view and widget has unit tests using buffer text assertions. The pattern:
+Views are tested with insta text snapshots and buffer assertions:
 
 ```rust
-// 1. Create theme and data
 let theme = Theme::dark();
-
-// 2. Render to buffer
-let buf = render_my_view(&data, &theme);
-
-// 3. Extract text for assertions
-let text = buf_text(&buf);  // all rows joined
-let line = buf_line(&buf, 0);  // single row, trimmed
-
-// 4. Assert content
-assert!(text.contains("expected text"));
-assert!(line.contains("✓ build"));
-
-// 5. Assert styling (check specific cell colors)
-let cell = buf.cell((x, y)).unwrap();
-assert_eq!(cell.style().fg, Some(theme.green));
+let window = WindowState::new(80);
+let mut lines = screens::build::view(&graph, &epic_id, &plan_path, &window);
+let output = render::render_to_string(&mut lines, &theme);
+insta::assert_snapshot!(output);
 ```
 
-### PNG snapshots
-
-Integration tests in `cli/tests/tui_snapshot_tests.rs` render both dark and light PNGs for visual inspection:
-
+Buffer-level tests for render.rs:
 ```rust
-save_png(&buf, "my_view_dark", &theme);  // → cli/tests/snapshots/my_view_dark.png
+let area = Rect::new(0, 0, 80, 10);
+let mut buf = Buffer::empty(area);
+render_lines(&lines, &mut buf, area, &theme, 0);
+let cell = &buf[(0, 0)];
+assert_eq!(cell.symbol(), "✓");
 ```
-
-PNGs are gitignored — they're generated artifacts, not source of truth. The font is JetBrains Mono, bundled at `cli/assets/JetBrainsMono-Regular.ttf` (test-only via `include_bytes!`).
-
-Run snapshots: `cargo test --test tui_snapshot_tests`
-
-Then read the PNG to visually verify: the mockup IS the implementation — what the PNG shows is exactly what the terminal renders.
-
-## Mockup format
-
-When designing new views, use annotated ASCII art. Left side is literal terminal output (character-accurate). Right side after `←` is a style annotation referencing Theme field names.
-
-```
-[80 cols]
- [luppzupt] Implement webhooks              ← dim brackets, hi+bold name
-                                             ← blank row
- ⎿ ✓ Explore webhook requirements  claude  8s  ← dim ⎿, green ✓, text name, cyan claude, dim 8s
- ⎿ ▸ Implement route handler      cursor       ← yellow ▸, magenta cursor
- ⎿ ○ Write integration tests                ← dim ○, dim name
-
- ▸ build  3/6  0:34                          ← yellow ▸, yellow text
-    ✓ decompose  0:12                        ← green ✓, 4-char indent
-    ▸ loop  3/6  0:34                        ← yellow ▸, 4-char indent
- ○ review                                    ← dim ○, dim text
-```
-
-Rules:
-- Monospace, character-accurate positioning
-- 1 char left padding on all content lines
-- `⎿` for tree connectors (dim)
-- Right-aligned metadata (agent badge, elapsed) flush to column 80
-- Annotations are for the implementer, never rendered
-- Include `[width]` when layout depends on terminal size

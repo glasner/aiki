@@ -251,7 +251,6 @@ impl AikiState {
             self.pending_session_ends.clear();
         }
     }
-
 }
 
 #[cfg(test)]
@@ -295,7 +294,8 @@ mod tests {
             AgentType::ClaudeCode,
             "test-session".to_string(),
             None::<&str>,
-            crate::provenance::DetectionMethod::Hook, SessionMode::Interactive,
+            crate::provenance::DetectionMethod::Hook,
+            SessionMode::Interactive,
         );
         let event = AikiEvent::ChangeCompleted(AikiChangeCompletedPayload {
             session,

@@ -108,71 +108,163 @@ where
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct EventHandlers {
     // Session Lifecycle Events
-    #[serde(rename = "session.started", default, deserialize_with = "deserialize_null_as_empty_vec")]
+    #[serde(
+        rename = "session.started",
+        default,
+        deserialize_with = "deserialize_null_as_empty_vec"
+    )]
     pub session_started: Vec<HookStatement>,
-    #[serde(rename = "session.resumed", default, deserialize_with = "deserialize_null_as_empty_vec")]
+    #[serde(
+        rename = "session.resumed",
+        default,
+        deserialize_with = "deserialize_null_as_empty_vec"
+    )]
     pub session_resumed: Vec<HookStatement>,
-    #[serde(rename = "session.will_compact", default, deserialize_with = "deserialize_null_as_empty_vec")]
+    #[serde(
+        rename = "session.will_compact",
+        default,
+        deserialize_with = "deserialize_null_as_empty_vec"
+    )]
     pub session_will_compact: Vec<HookStatement>,
-    #[serde(rename = "session.compacted", default, deserialize_with = "deserialize_null_as_empty_vec")]
+    #[serde(
+        rename = "session.compacted",
+        default,
+        deserialize_with = "deserialize_null_as_empty_vec"
+    )]
     pub session_compacted: Vec<HookStatement>,
-    #[serde(rename = "session.cleared", default, deserialize_with = "deserialize_null_as_empty_vec")]
+    #[serde(
+        rename = "session.cleared",
+        default,
+        deserialize_with = "deserialize_null_as_empty_vec"
+    )]
     pub session_cleared: Vec<HookStatement>,
-    #[serde(rename = "session.ended", default, deserialize_with = "deserialize_null_as_empty_vec")]
+    #[serde(
+        rename = "session.ended",
+        default,
+        deserialize_with = "deserialize_null_as_empty_vec"
+    )]
     pub session_ended: Vec<HookStatement>,
 
     // Turn Lifecycle Events
-    #[serde(rename = "turn.started", default, deserialize_with = "deserialize_null_as_empty_vec")]
+    #[serde(
+        rename = "turn.started",
+        default,
+        deserialize_with = "deserialize_null_as_empty_vec"
+    )]
     pub turn_started: Vec<HookStatement>,
-    #[serde(rename = "turn.completed", default, deserialize_with = "deserialize_null_as_empty_vec")]
+    #[serde(
+        rename = "turn.completed",
+        default,
+        deserialize_with = "deserialize_null_as_empty_vec"
+    )]
     pub turn_completed: Vec<HookStatement>,
 
     // Read Operation Events
-    #[serde(rename = "read.permission_asked", default, deserialize_with = "deserialize_null_as_empty_vec")]
+    #[serde(
+        rename = "read.permission_asked",
+        default,
+        deserialize_with = "deserialize_null_as_empty_vec"
+    )]
     pub read_permission_asked: Vec<HookStatement>,
-    #[serde(rename = "read.completed", default, deserialize_with = "deserialize_null_as_empty_vec")]
+    #[serde(
+        rename = "read.completed",
+        default,
+        deserialize_with = "deserialize_null_as_empty_vec"
+    )]
     pub read_completed: Vec<HookStatement>,
 
     // Change Operation Events
-    #[serde(rename = "change.permission_asked", default, deserialize_with = "deserialize_null_as_empty_vec")]
+    #[serde(
+        rename = "change.permission_asked",
+        default,
+        deserialize_with = "deserialize_null_as_empty_vec"
+    )]
     pub change_permission_asked: Vec<HookStatement>,
-    #[serde(rename = "change.completed", default, deserialize_with = "deserialize_null_as_empty_vec")]
+    #[serde(
+        rename = "change.completed",
+        default,
+        deserialize_with = "deserialize_null_as_empty_vec"
+    )]
     pub change_completed: Vec<HookStatement>,
 
     // Shell Command Events
-    #[serde(rename = "shell.permission_asked", default, deserialize_with = "deserialize_null_as_empty_vec")]
+    #[serde(
+        rename = "shell.permission_asked",
+        default,
+        deserialize_with = "deserialize_null_as_empty_vec"
+    )]
     pub shell_permission_asked: Vec<HookStatement>,
-    #[serde(rename = "shell.completed", default, deserialize_with = "deserialize_null_as_empty_vec")]
+    #[serde(
+        rename = "shell.completed",
+        default,
+        deserialize_with = "deserialize_null_as_empty_vec"
+    )]
     pub shell_completed: Vec<HookStatement>,
 
     // Web Access Events
-    #[serde(rename = "web.permission_asked", default, deserialize_with = "deserialize_null_as_empty_vec")]
+    #[serde(
+        rename = "web.permission_asked",
+        default,
+        deserialize_with = "deserialize_null_as_empty_vec"
+    )]
     pub web_permission_asked: Vec<HookStatement>,
-    #[serde(rename = "web.completed", default, deserialize_with = "deserialize_null_as_empty_vec")]
+    #[serde(
+        rename = "web.completed",
+        default,
+        deserialize_with = "deserialize_null_as_empty_vec"
+    )]
     pub web_completed: Vec<HookStatement>,
 
     // MCP Tool Events
-    #[serde(rename = "mcp.permission_asked", default, deserialize_with = "deserialize_null_as_empty_vec")]
+    #[serde(
+        rename = "mcp.permission_asked",
+        default,
+        deserialize_with = "deserialize_null_as_empty_vec"
+    )]
     pub mcp_permission_asked: Vec<HookStatement>,
-    #[serde(rename = "mcp.completed", default, deserialize_with = "deserialize_null_as_empty_vec")]
+    #[serde(
+        rename = "mcp.completed",
+        default,
+        deserialize_with = "deserialize_null_as_empty_vec"
+    )]
     pub mcp_completed: Vec<HookStatement>,
 
     // Commit Integration Events
-    #[serde(rename = "commit.message_started", default, deserialize_with = "deserialize_null_as_empty_vec")]
+    #[serde(
+        rename = "commit.message_started",
+        default,
+        deserialize_with = "deserialize_null_as_empty_vec"
+    )]
     pub commit_message_started: Vec<HookStatement>,
 
     // Repo Transition Events
-    #[serde(rename = "repo.changed", default, deserialize_with = "deserialize_null_as_empty_vec")]
+    #[serde(
+        rename = "repo.changed",
+        default,
+        deserialize_with = "deserialize_null_as_empty_vec"
+    )]
     pub repo_changed: Vec<HookStatement>,
 
     // Task Lifecycle Events
-    #[serde(rename = "task.started", default, deserialize_with = "deserialize_null_as_empty_vec")]
+    #[serde(
+        rename = "task.started",
+        default,
+        deserialize_with = "deserialize_null_as_empty_vec"
+    )]
     pub task_started: Vec<HookStatement>,
-    #[serde(rename = "task.closed", default, deserialize_with = "deserialize_null_as_empty_vec")]
+    #[serde(
+        rename = "task.closed",
+        default,
+        deserialize_with = "deserialize_null_as_empty_vec"
+    )]
     pub task_closed: Vec<HookStatement>,
 
     // Legacy
-    #[serde(rename = "Stop", default, deserialize_with = "deserialize_null_as_empty_vec")]
+    #[serde(
+        rename = "Stop",
+        default,
+        deserialize_with = "deserialize_null_as_empty_vec"
+    )]
     pub stop: Vec<HookStatement>,
 }
 

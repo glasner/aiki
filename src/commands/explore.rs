@@ -12,11 +12,11 @@ use crate::agents::AgentType;
 use crate::commands::review::{detect_target, ReviewScope, ReviewScopeKind};
 use crate::commands::OutputFormat;
 use crate::error::{AikiError, Result};
+use crate::output_utils;
 use crate::session::find_active_session;
 use crate::tasks::md::MdBuilder;
 use crate::tasks::runner::{task_run, task_run_async, TaskRunOptions};
 use crate::tasks::templates::create_review_task_from_template;
-use crate::output_utils;
 use crate::tasks::{
     get_current_scope_set, get_in_progress, get_ready_queue_for_scope_set, materialize_graph,
     read_events, reassign_task, start_task_core, Task, TaskStatus,
@@ -86,8 +86,7 @@ fn detect_explore_target(
                 "--code flag only applies to file targets".to_string(),
             ));
         }
-        let session_agent = find_active_session(cwd)
-            .map(|s| s.agent_type.as_str().to_string());
+        let session_agent = find_active_session(cwd).map(|s| s.agent_type.as_str().to_string());
 
         // Collect closed task IDs for this session
         let session_id = target.to_string();
@@ -136,9 +135,7 @@ pub fn run(args: ExploreArgs) -> Result<()> {
 
     // Determine assignee
     let assignee = agent_override
-        .or_else(|| {
-            find_active_session(&cwd).map(|s| s.agent_type.as_str().to_string())
-        });
+        .or_else(|| find_active_session(&cwd).map(|s| s.agent_type.as_str().to_string()));
 
     // Create explore task from template
     // Route to scope-specific template: explore/{kind}
@@ -155,13 +152,8 @@ pub fn run(args: ExploreArgs) -> Result<()> {
         _ => vec![],
     };
 
-    let explore_id = create_review_task_from_template(
-        &cwd,
-        &scope_data,
-        &sources,
-        &assignee,
-        template,
-    )?;
+    let explore_id =
+        create_review_task_from_template(&cwd, &scope_data, &sources, &assignee, template)?;
 
     // Re-read tasks to include newly created explore task
     let events = read_events(&cwd)?;
@@ -289,12 +281,9 @@ mod tests {
     #[test]
     fn test_detect_explore_target_uuid_session() {
         let dir = tempfile::tempdir().unwrap();
-        let (scope, _worker) = detect_explore_target(
-            dir.path(),
-            "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
-            false,
-        )
-        .unwrap();
+        let (scope, _worker) =
+            detect_explore_target(dir.path(), "6ba7b810-9dad-11d1-80b4-00c04fd430c8", false)
+                .unwrap();
         assert_eq!(scope.kind, ReviewScopeKind::Session);
         assert_eq!(scope.id, "6ba7b810-9dad-11d1-80b4-00c04fd430c8");
     }
@@ -302,11 +291,8 @@ mod tests {
     #[test]
     fn test_detect_explore_target_uuid_with_code_flag_errors() {
         let dir = tempfile::tempdir().unwrap();
-        let result = detect_explore_target(
-            dir.path(),
-            "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
-            true,
-        );
+        let result =
+            detect_explore_target(dir.path(), "6ba7b810-9dad-11d1-80b4-00c04fd430c8", true);
         assert!(result.is_err());
         assert!(result
             .unwrap_err()
@@ -321,8 +307,7 @@ mod tests {
         std::fs::write(&md_path, "# Feature\n").unwrap();
         let path_str = md_path.to_str().unwrap();
 
-        let (scope, _worker) =
-            detect_explore_target(dir.path(), path_str, false).unwrap();
+        let (scope, _worker) = detect_explore_target(dir.path(), path_str, false).unwrap();
         assert_eq!(scope.kind, ReviewScopeKind::Plan);
     }
 
@@ -333,8 +318,7 @@ mod tests {
         std::fs::write(&md_path, "# Feature\n").unwrap();
         let path_str = md_path.to_str().unwrap();
 
-        let (scope, _worker) =
-            detect_explore_target(dir.path(), path_str, true).unwrap();
+        let (scope, _worker) = detect_explore_target(dir.path(), path_str, true).unwrap();
         assert_eq!(scope.kind, ReviewScopeKind::Code);
     }
 }

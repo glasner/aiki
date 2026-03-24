@@ -261,10 +261,7 @@ fn collect_templates(
             // Try to extract description from frontmatter (quick parse)
             let description = extract_description(&path);
 
-            templates.push(TemplateInfo {
-                name,
-                description,
-            });
+            templates.push(TemplateInfo { name, description });
         }
     }
 
@@ -487,7 +484,12 @@ pub fn expand_loops(
         };
 
         // Replace the loop marker with expanded content
-        result = format!("{}{}{}", &result[..loop_start_match.start()], expanded, &result[full_end..]);
+        result = format!(
+            "{}{}{}",
+            &result[..loop_start_match.start()],
+            expanded,
+            &result[full_end..]
+        );
     }
 
     Ok(result)
@@ -915,14 +917,13 @@ fn parse_expanded_subtasks(
             let raw_body = body_lines.join("\n");
 
             // Parse optional frontmatter from the subtask body (slug, priority, assignee, etc.)
-            let (frontmatter, body) =
-                super::parser::extract_yaml_frontmatter::<super::types::SubtaskFrontmatter>(
-                    &raw_body,
-                )
-                .map_err(|e| AikiError::TemplateFrontmatterInvalid {
-                    file: template_name.unwrap_or("(inline subtask)").to_string(),
-                    details: e.to_string(),
-                })?;
+            let (frontmatter, body) = super::parser::extract_yaml_frontmatter::<
+                super::types::SubtaskFrontmatter,
+            >(&raw_body)
+            .map_err(|e| AikiError::TemplateFrontmatterInvalid {
+                file: template_name.unwrap_or("(inline subtask)").to_string(),
+                details: e.to_string(),
+            })?;
             let fm = frontmatter.unwrap_or_default();
             let instructions = body.trim().to_string();
 
@@ -1834,18 +1835,25 @@ Instructions.
     #[test]
     fn test_has_subtask_refs() {
         assert!(has_subtask_refs("{% subtask decompose %}"));
-        assert!(has_subtask_refs("some text\n{% subtask review/plan if data.type == \"plan\" %}\nmore"));
+        assert!(has_subtask_refs(
+            "some text\n{% subtask review/plan if data.type == \"plan\" %}\nmore"
+        ));
         assert!(!has_subtask_refs("no subtask refs here"));
         assert!(!has_subtask_refs("{% if data.plan %}...{% endif %}"));
         // HTML-commented subtask refs should NOT be detected
-        assert!(!has_subtask_refs("<!--{% subtask fix/loop if data.options.fix %}-->"));
+        assert!(!has_subtask_refs(
+            "<!--{% subtask fix/loop if data.options.fix %}-->"
+        ));
         // Mixed: real ref + commented ref — should detect the real one
-        assert!(has_subtask_refs("{% subtask decompose %}\n<!--{% subtask fix/loop %}-->"));
+        assert!(has_subtask_refs(
+            "{% subtask decompose %}\n<!--{% subtask fix/loop %}-->"
+        ));
     }
 
     #[test]
     fn test_validate_subtask_ref_placement_ok() {
-        let content = "# Task\n\nInstructions.\n\n# Subtasks\n\n<!-- AIKI_SUBTASK_REF:decompose:5 -->";
+        let content =
+            "# Task\n\nInstructions.\n\n# Subtasks\n\n<!-- AIKI_SUBTASK_REF:decompose:5 -->";
         assert!(validate_subtask_ref_placement(content).is_ok());
     }
 
@@ -1854,7 +1862,10 @@ Instructions.
         let content = "# Task\n\n<!-- AIKI_SUBTASK_REF:decompose:3 -->\n\n# Subtasks\n\n## Work";
         let result = validate_subtask_ref_placement(content);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("outside # Subtasks section"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("outside # Subtasks section"));
     }
 
     #[test]
@@ -1862,12 +1873,16 @@ Instructions.
         let content = "# Task\n\n<!-- AIKI_SUBTASK_REF:decompose:3 -->";
         let result = validate_subtask_ref_placement(content);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("outside # Subtasks section"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("outside # Subtasks section"));
     }
 
     #[test]
     fn test_parse_expanded_subtasks_with_refs() {
-        let content = "## Setup\nInstall deps.\n\n<!-- AIKI_SUBTASK_REF:decompose:10 -->\n\n## Run\nExecute.";
+        let content =
+            "## Setup\nInstall deps.\n\n<!-- AIKI_SUBTASK_REF:decompose:10 -->\n\n## Run\nExecute.";
         let variables = VariableContext::new();
         let entries = parse_expanded_subtasks(content, &variables, None).unwrap();
 
@@ -1877,7 +1892,11 @@ Instructions.
             _ => panic!("Expected Static"),
         }
         match &entries[1] {
-            SubtaskEntry::Composed { template_name, line, attributes } => {
+            SubtaskEntry::Composed {
+                template_name,
+                line,
+                attributes,
+            } => {
                 assert_eq!(template_name, "decompose");
                 assert_eq!(*line, 10);
                 assert!(attributes.is_empty());
@@ -1960,7 +1979,8 @@ Review the changes."#;
     fn test_find_variables_detects_parent_subtasks() {
         use super::super::variables::find_variables;
 
-        let vars = find_variables("Use {{parent.subtasks.criteria}} and {{parent.subtasks.explore}}");
+        let vars =
+            find_variables("Use {{parent.subtasks.criteria}} and {{parent.subtasks.explore}}");
         assert!(vars.contains(&"parent.subtasks.criteria".to_string()));
         assert!(vars.contains(&"parent.subtasks.explore".to_string()));
     }
@@ -1979,7 +1999,10 @@ Review the changes."#;
         let template = load_template("loop", temp_dir.path()).unwrap();
         assert_eq!(template.name, "loop");
         assert_eq!(template.version, Some("2.0.0".to_string()));
-        assert_eq!(template.defaults.task_type, Some("orchestrator".to_string()));
+        assert_eq!(
+            template.defaults.task_type,
+            Some("orchestrator".to_string())
+        );
     }
 
     #[test]
@@ -2069,14 +2092,8 @@ Review the changes."#;
                 assert_eq!(template_name, "review");
                 assert_eq!(*line, 5);
                 assert_eq!(attributes.len(), 2);
-                assert_eq!(
-                    attributes.get("key1").map(|s| s.as_str()),
-                    Some("val1")
-                );
-                assert_eq!(
-                    attributes.get("key2").map(|s| s.as_str()),
-                    Some("val2")
-                );
+                assert_eq!(attributes.get("key1").map(|s| s.as_str()), Some("val1"));
+                assert_eq!(attributes.get("key2").map(|s| s.as_str()), Some("val2"));
             }
             _ => panic!("Expected Composed"),
         }
@@ -2117,10 +2134,7 @@ Review the changes."#;
                     attributes.get("needs-context").map(|s| s.as_str()),
                     Some("subtasks.explore")
                 );
-                assert_eq!(
-                    attributes.get("priority").map(|s| s.as_str()),
-                    Some("p0")
-                );
+                assert_eq!(attributes.get("priority").map(|s| s.as_str()), Some("p0"));
             }
             _ => panic!("Expected Composed"),
         }
@@ -2129,8 +2143,7 @@ Review the changes."#;
     #[test]
     fn test_parse_expanded_subtasks_percent_encoded_values() {
         // Values with spaces should be percent-encoded in markers
-        let content =
-            "<!-- AIKI_SUBTASK_REF:review:5:title:my%20task%20name;priority:p0 -->";
+        let content = "<!-- AIKI_SUBTASK_REF:review:5:title:my%20task%20name;priority:p0 -->";
         let variables = VariableContext::new();
         let entries = parse_expanded_subtasks(content, &variables, None).unwrap();
 
@@ -2141,10 +2154,7 @@ Review the changes."#;
                     attributes.get("title").map(|s| s.as_str()),
                     Some("my task name")
                 );
-                assert_eq!(
-                    attributes.get("priority").map(|s| s.as_str()),
-                    Some("p0")
-                );
+                assert_eq!(attributes.get("priority").map(|s| s.as_str()), Some("p0"));
             }
             _ => panic!("Expected Composed"),
         }
@@ -2153,8 +2163,7 @@ Review the changes."#;
     #[test]
     fn test_parse_expanded_subtasks_percent_encoded_special_chars() {
         // Values with colons, semicolons, and percent signs
-        let content =
-            "<!-- AIKI_SUBTASK_REF:review:5:scope:task%3Aauth%3Blogin;note:100%25 -->";
+        let content = "<!-- AIKI_SUBTASK_REF:review:5:scope:task%3Aauth%3Blogin;note:100%25 -->";
         let variables = VariableContext::new();
         let entries = parse_expanded_subtasks(content, &variables, None).unwrap();
 
@@ -2165,10 +2174,7 @@ Review the changes."#;
                     attributes.get("scope").map(|s| s.as_str()),
                     Some("task:auth;login")
                 );
-                assert_eq!(
-                    attributes.get("note").map(|s| s.as_str()),
-                    Some("100%")
-                );
+                assert_eq!(attributes.get("note").map(|s| s.as_str()), Some("100%"));
             }
             _ => panic!("Expected Composed"),
         }

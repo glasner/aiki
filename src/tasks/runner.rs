@@ -5,7 +5,6 @@
 
 use std::io::IsTerminal;
 use std::path::Path;
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use crate::agents::{
@@ -18,12 +17,13 @@ use crate::tasks::{
     find_task, materialize_graph,
     md::MdBuilder,
     read_events,
-    status_monitor::{MonitorExitReason, StatusMonitor},
     types::{Task, TaskEvent, TaskStatus},
     write_event, TaskGraph,
 };
-use crate::tui::live_screen::LiveScreen;
-use crate::tui::loading_screen::LoadingScreen;
+use crate::tui::app::{Effect, Model, Screen, WindowState};
+use crate::tui::components::ChildLine;
+use crate::tui::render::render_to_string_ex;
+use crate::tui::theme;
 
 /// Options for running a task
 #[derive(Debug, Clone)]
@@ -122,64 +122,6 @@ fn resolve_agent_type(
 }
 
 // ---------------------------------------------------------------------------
-// ScreenSession — owns a shared LiveScreen + SIGINT handler
-// ---------------------------------------------------------------------------
-
-/// Owns a shared `LiveScreen` and scoped SIGINT handler for multi-task screen sessions.
-pub struct ScreenSession {
-    screen: LiveScreen,
-    stop_flag: Arc<AtomicBool>,
-    #[cfg(unix)]
-    sig_id: signal_hook::SigId,
-}
-
-impl ScreenSession {
-    /// Create a session from an existing `LiveScreen`, preserving the alternate screen.
-    ///
-    /// Used when a `LoadingScreen` has already entered the alternate screen and
-    /// hands off ownership via `into_live_screen()`.
-    pub fn from_live_screen(screen: LiveScreen) -> Result<Self> {
-        let stop_flag = Arc::new(AtomicBool::new(false));
-
-        #[cfg(unix)]
-        let sig_id = {
-            let flag = Arc::clone(&stop_flag);
-            signal_hook::flag::register(signal_hook::consts::SIGINT, flag)
-                .map_err(|e| AikiError::Io(std::io::Error::other(e)))?
-        };
-
-        Ok(Self {
-            screen,
-            stop_flag,
-            #[cfg(unix)]
-            sig_id,
-        })
-    }
-
-    /// Access the shared screen.
-    pub fn screen(&mut self) -> &mut LiveScreen {
-        &mut self.screen
-    }
-
-    /// Shared stop flag for monitors.
-    pub fn stop_flag(&self) -> Arc<AtomicBool> {
-        Arc::clone(&self.stop_flag)
-    }
-}
-
-impl Drop for ScreenSession {
-    fn drop(&mut self) {
-        // Unregister the SIGINT handler to restore default behavior
-        #[cfg(unix)]
-        signal_hook::low_level::unregister(self.sig_id);
-
-        // Defense-in-depth: LiveScreen's Drop handles normal cleanup,
-        // but call restore_terminal() as a safety net.
-        crate::tui::live_screen::restore_terminal();
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Extracted helpers for task_run / task_run_on_session
 // ---------------------------------------------------------------------------
 
@@ -191,17 +133,63 @@ struct PreparedTaskRun {
     spawn_options: AgentSpawnOptions,
 }
 
+/// Loading phases shown during task run preparation.
+///
+/// Maps to spec states 1.0a–1.0d in screen-states.md.
+pub enum LoadingPhase {
+    /// 1.0a: Reading JJ event log.
+    ReadingGraph,
+    /// 1.0b: Resolving which agent to use.
+    ResolvingAgent,
+    /// 1.0c: Emitting Started event and building spawn options.
+    CreatingWorkspace { agent: String },
+    /// 1.0d: About to spawn the agent process.
+    StartingSession { agent: String },
+}
+
+impl LoadingPhase {
+    /// Status text shown as the child line beneath the spinner.
+    pub fn status_text(&self) -> &str {
+        match self {
+            Self::ReadingGraph => "Reading task graph...",
+            Self::ResolvingAgent => "Resolving agent...",
+            Self::CreatingWorkspace { .. } => "creating isolated workspace...",
+            Self::StartingSession { .. } => "starting session...",
+        }
+    }
+
+    /// Agent label (shown after phase name once known).
+    pub fn agent_label(&self) -> Option<&str> {
+        match self {
+            Self::ReadingGraph | Self::ResolvingAgent => None,
+            Self::CreatingWorkspace { agent } | Self::StartingSession { agent } => Some(agent),
+        }
+    }
+
+    /// Tick index for spinner frame progression (one frame per phase).
+    pub fn tick(&self) -> u64 {
+        match self {
+            Self::ReadingGraph => 0,
+            Self::ResolvingAgent => 1,
+            Self::CreatingWorkspace { .. } => 2,
+            Self::StartingSession { .. } => 3,
+        }
+    }
+}
+
 /// Validate a task, resolve the agent, emit a Started event, and build spawn options.
 ///
-/// Extracts the shared setup logic from `task_run()`.
+/// Calls `on_phase` at each preparation step so callers can show loading progress.
 fn prepare_task_run(
     cwd: &Path,
     task_id: &str,
     options: &TaskRunOptions,
+    mut on_phase: impl FnMut(&LoadingPhase),
 ) -> Result<PreparedTaskRun> {
     let chain_task_ids = options.chain_task_ids.clone();
 
-    // Load task from events
+    // Phase 1.0a: Reading task graph
+    on_phase(&LoadingPhase::ReadingGraph);
     let events = read_events(cwd)?;
     let tasks = materialize_graph(&events).tasks;
 
@@ -214,7 +202,8 @@ fn prepare_task_run(
         return Err(AikiError::TaskAlreadyClosed(task_id.to_string()));
     }
 
-    // Determine which agent to use
+    // Phase 1.0b: Resolving agent
+    on_phase(&LoadingPhase::ResolvingAgent);
     let agent_type = resolve_agent_type(cwd, task_id, &task, options)?;
 
     // Verify the agent CLI is actually installed
@@ -231,16 +220,22 @@ fn prepare_task_run(
         hint: agent_type.install_hint().to_string(),
     })?;
 
-    // Emit Started event before spawning to transition task to InProgress immediately.
+    // Phase 1.0c: Creating workspace
+    let agent_name = agent_type.display_name().to_string();
+    on_phase(&LoadingPhase::CreatingWorkspace {
+        agent: agent_name.clone(),
+    });
+
+    // Emit Reserved event before spawning to lock the task (Open → Reserved).
+    // The agent's hook (via `aiki task start`) emits Started with session_id,
+    // transitioning Reserved → InProgress.
     if task.status == TaskStatus::Open {
-        let pre_start = TaskEvent::Started {
+        let reserve = TaskEvent::Reserved {
             task_ids: vec![task_id.to_string()],
             agent_type: agent_type.as_str().to_string(),
-            session_id: None,
-            turn_id: None,
             timestamp: chrono::Utc::now(),
         };
-        write_event(cwd, &pre_start)?;
+        write_event(cwd, &reserve)?;
     }
 
     // Build spawn options with parent session UUID for workspace isolation chaining
@@ -253,6 +248,11 @@ fn prepare_task_run(
         spawn_options = spawn_options.with_chain(chain);
     }
 
+    // Phase 1.0d: Starting session
+    on_phase(&LoadingPhase::StartingSession {
+        agent: agent_name,
+    });
+
     Ok(PreparedTaskRun {
         task_id: task_id.to_string(),
         agent_type,
@@ -261,20 +261,15 @@ fn prepare_task_run(
     })
 }
 
-/// Convert a `MonitorExitReason` into an `AgentSessionResult`.
+/// Convert a TUI `Effect` into an `AgentSessionResult`.
 ///
-/// Reads the final task state to determine the appropriate result.
-fn map_exit_reason(
-    cwd: &Path,
-    task_id: &str,
-    exit_reason: MonitorExitReason,
-) -> Result<AgentSessionResult> {
-    match exit_reason {
-        MonitorExitReason::UserDetached => Ok(AgentSessionResult::detached()),
-        MonitorExitReason::AgentExited { stdout, stderr } => {
+/// Reads the final task state from JJ to determine the appropriate result.
+fn map_tui_effect(cwd: &Path, task_id: &str, effect: Effect) -> Result<AgentSessionResult> {
+    match effect {
+        Effect::Detached => Ok(AgentSessionResult::detached()),
+        Effect::Done => {
             let events = read_events(cwd)?;
             let tasks = materialize_graph(&events).tasks;
-            let agent_output = format_agent_exit_output(&stdout, &stderr);
 
             if let Some(task) = tasks.get(task_id) {
                 match task.status {
@@ -288,76 +283,9 @@ fn map_exit_reason(
                             .clone()
                             .unwrap_or_else(|| "Task stopped".to_string());
                         Ok(AgentSessionResult::Stopped { reason })
-                    }
-                    _ => {
-                        let error = if agent_output.is_empty() {
-                            "Agent process exited without completing task".to_string()
-                        } else {
-                            format!(
-                                "Agent process exited without completing task:\n{}",
-                                agent_output
-                            )
-                        };
-                        Ok(AgentSessionResult::Failed { error })
-                    }
-                }
-            } else {
-                let error = if agent_output.is_empty() {
-                    "Task not found after agent exit".to_string()
-                } else {
-                    format!("Task not found after agent exit:\n{}", agent_output)
-                };
-                Ok(AgentSessionResult::Failed { error })
-            }
-        }
-        MonitorExitReason::MonitorFailed { reason } => {
-            let events = read_events(cwd)?;
-            let tasks = materialize_graph(&events).tasks;
-
-            if let Some(task) = tasks.get(task_id) {
-                match task.status {
-                    TaskStatus::Closed => {
-                        let summary = task.effective_summary().unwrap_or_default().to_string();
-                        Ok(AgentSessionResult::Completed { summary })
-                    }
-                    TaskStatus::Stopped => {
-                        let stop_reason = task
-                            .stopped_reason
-                            .clone()
-                            .unwrap_or_else(|| "Task stopped".to_string());
-                        Ok(AgentSessionResult::Stopped {
-                            reason: stop_reason,
-                        })
                     }
                     _ => Ok(AgentSessionResult::Failed {
-                        error: format!("Monitor failed: {}", reason),
-                    }),
-                }
-            } else {
-                Ok(AgentSessionResult::Failed {
-                    error: format!("Monitor failed and task not found: {}", reason),
-                })
-            }
-        }
-        MonitorExitReason::TaskCompleted => {
-            let events = read_events(cwd)?;
-            let tasks = materialize_graph(&events).tasks;
-
-            if let Some(task) = tasks.get(task_id) {
-                match task.status {
-                    TaskStatus::Closed => {
-                        let summary = task.effective_summary().unwrap_or_default().to_string();
-                        Ok(AgentSessionResult::Completed { summary })
-                    }
-                    TaskStatus::Stopped => {
-                        let reason = task
-                            .stopped_reason
-                            .clone()
-                            .unwrap_or_else(|| "Task stopped".to_string());
-                        Ok(AgentSessionResult::Stopped { reason })
-                    }
-                    _ => Ok(AgentSessionResult::Completed {
-                        summary: String::new(),
+                        error: "Agent process exited without completing task".to_string(),
                     }),
                 }
             } else {
@@ -366,18 +294,7 @@ fn map_exit_reason(
                 })
             }
         }
-    }
-}
-
-fn format_agent_exit_output(stdout: &str, stderr: &str) -> String {
-    let stdout = stdout.trim();
-    let stderr = stderr.trim();
-
-    match (stdout.is_empty(), stderr.is_empty()) {
-        (true, true) => String::new(),
-        (false, true) => stdout.to_string(),
-        (true, false) => stderr.to_string(),
-        (false, false) => format!("stdout:\n{}\n\nstderr:\n{}", stdout, stderr),
+        Effect::Continue => unreachable!("tui::app::run() should not return Continue"),
     }
 }
 
@@ -388,51 +305,84 @@ fn format_agent_exit_output(stdout: &str, stderr: &str) -> String {
 /// 2. Validates the task can be run (not closed)
 /// 3. Determines which agent to use (from options or task assignee)
 /// 4. Spawns the agent session with task context
-/// 5. Shows real-time status updates while waiting (if TTY)
+/// 5. Shows real-time TUI status updates while waiting (if TTY)
 /// 6. Handles the result and updates task state
 pub fn task_run(cwd: &Path, task_id: &str, options: TaskRunOptions) -> Result<()> {
     let quiet = options.quiet;
-    let show_status = std::io::stderr().is_terminal() && !quiet;
+    let show_tui = std::io::stdout().is_terminal() && !quiet;
 
-    // Create LoadingScreen for TTY mode
-    let mut loading = if show_status {
-        Some(LoadingScreen::new("Loading task...")?)
+    // Show loading spinner during prepare (TTY only)
+    let (width, _) = if show_tui {
+        crossterm::terminal::size().unwrap_or((80, 24))
+    } else {
+        (80, 24)
+    };
+    let tui_theme = if show_tui {
+        Some(theme::Theme::from_mode(theme::detect_mode()))
     } else {
         None
     };
+    let mut loading_lines_printed = 0u16;
 
-    let prepared = prepare_task_run(cwd, task_id, &options)?;
-    let task_id = &prepared.task_id;
-
-    // Show task context on loading screen
-    if let Some(ref mut l) = loading {
-        let events = read_events(cwd)?;
-        let tasks = materialize_graph(&events).tasks;
-        if let Some(task) = tasks.get(task_id.as_str()) {
-            l.set_task_context(&task_id[..8], &task.name);
+    let prepared = prepare_task_run(cwd, task_id, &options, |phase| {
+        if let Some(ref theme) = tui_theme {
+            let mut lines = crate::tui::components::phase(
+                0,
+                "task",
+                phase.agent_label(),
+                true,
+                vec![ChildLine::active(phase.status_text())],
+            );
+            let ansi = render_to_string_ex(&mut lines, theme, width, phase.tick());
+            // Overwrite previous loading output
+            if loading_lines_printed > 0 {
+                for _ in 0..loading_lines_printed {
+                    eprint!("\x1b[A\x1b[2K"); // stderr-ok: loading spinner
+                }
+            }
+            let line_count = ansi.matches('\n').count() as u16 + 1;
+            eprint!("{}", ansi); // stderr-ok: loading spinner
+            eprintln!(); // stderr-ok: trailing newline
+            loading_lines_printed = line_count;
         }
-        l.set_step("Spawning agent session...");
+    });
+
+    // Clear loading output before TUI takes over (or on error)
+    if loading_lines_printed > 0 {
+        for _ in 0..loading_lines_printed {
+            eprint!("\x1b[A\x1b[2K"); // stderr-ok: clear loading
+        }
     }
 
+    let prepared = prepared?;
+    let task_id = &prepared.task_id;
+
     // Print status for non-TTY path
-    if !show_status && !quiet {
-        eprintln!(
-            // stderr-ok: non-TTY path
+    if !show_tui && !quiet {
+        eprintln!( // stderr-ok: non-TTY path
             "Spawning {} agent session for task {}...",
             prepared.agent_type.display_name(),
             task_id
         );
     }
 
-    // Spawn agent session and optionally monitor status
-    let result = if show_status {
-        run_with_status_monitor_loading(
-            cwd,
-            task_id,
-            prepared.runtime.as_ref(),
-            &prepared.spawn_options,
-            loading,
-        )?
+    // Spawn agent session and optionally monitor with TUI
+    let result = if show_tui {
+        // Spawn agent in background, then run TUI to monitor via JJ events
+        let _handle = prepared.runtime.spawn_background(&prepared.spawn_options)?;
+
+        let events = read_events(cwd)?;
+        let graph = materialize_graph(&events);
+        let model = Model {
+            graph: Arc::new(graph),
+            screen: Screen::TaskRun {
+                task_id: task_id.to_string(),
+            },
+            window: WindowState::new(width),
+        };
+
+        let effect = crate::tui::app::run(model, cwd)?;
+        map_tui_effect(cwd, task_id, effect)?
     } else {
         prepared.runtime.spawn_blocking(&prepared.spawn_options)?
     };
@@ -442,101 +392,44 @@ pub fn task_run(cwd: &Path, task_id: &str, options: TaskRunOptions) -> Result<()
     Ok(())
 }
 
-/// Run agent with real-time status monitoring, optionally transitioning from a LoadingScreen.
-///
-/// Spawns the agent in background and monitors status in the foreground.
-/// If a `LoadingScreen` is provided, it is converted into a `LiveScreen` without
-/// leaving the alternate screen. Otherwise, a fresh `LiveScreen` is created.
-///
-/// Ctrl+C is handled by the crossterm event loop during raw mode, and by a
-/// scoped SIGINT handler outside it.
-fn run_with_status_monitor_loading(
-    cwd: &Path,
-    task_id: &str,
-    runtime: &dyn AgentRuntime,
-    spawn_options: &AgentSpawnOptions,
-    loading: Option<LoadingScreen>,
-) -> Result<AgentSessionResult> {
-    // Spawn agent with child handle for proper exit detection
-    let mut monitored_child = runtime.spawn_monitored(spawn_options)?;
-
-    // Create status monitor
-    let mut monitor = StatusMonitor::new(task_id);
-
-    // Register scoped SIGINT handler — only active during monitoring.
-    // During raw mode, Ctrl+C is delivered as a crossterm key event, not SIGINT.
-    // This handler covers the windows outside raw mode (startup/teardown).
-    #[cfg(unix)]
-    let sig_id = {
-        let stop_flag = monitor.stop_flag();
-        signal_hook::flag::register(signal_hook::consts::SIGINT, stop_flag)
-            .map_err(|e| AikiError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?
-    };
-
-    // Wrap LiveScreen lifecycle in catch_unwind as defense-in-depth.
-    // Drop handles normal cleanup; this is a safety net for panics.
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if let Some(l) = loading {
-            // Transition loading screen to live screen (stays in alternate screen)
-            let mut screen = l.into_live_screen()?;
-            monitor.monitor_until_complete_with_child_on_screen(
-                cwd,
-                &mut monitored_child,
-                &mut screen,
-            )
-        } else {
-            monitor.monitor_until_complete_with_child(cwd, &mut monitored_child)
-        }
-    }));
-
-    // Defensive cleanup — idempotent, safe even after Drop already ran
-    crate::tui::live_screen::restore_terminal();
-
-    // Unregister the SIGINT handler to restore default behavior
-    #[cfg(unix)]
-    signal_hook::low_level::unregister(sig_id);
-
-    let exit_reason = match result {
-        Ok(inner) => inner?,
-        Err(panic) => std::panic::resume_unwind(panic),
-    };
-
-    map_exit_reason(cwd, task_id, exit_reason)
-}
-
-/// Run a task on an existing `ScreenSession` (shared screen).
+/// Run a task with optional TUI monitoring.
 ///
 /// Like `task_run` but:
-/// - Uses the caller's `ScreenSession` instead of creating its own `LiveScreen`
 /// - Does NOT print "Spawning..." or "Task run complete" messages
-/// - Does NOT call `restore_terminal()` — the caller's `ScreenSession` owns cleanup
 /// - Returns `AgentSessionResult` instead of `()`
+/// - When `show_tui` is true, runs the Elm TUI event loop for monitoring
+/// - When `show_tui` is false, blocks until the agent exits
 pub fn task_run_on_session(
     cwd: &Path,
     task_id: &str,
     options: TaskRunOptions,
-    session: &mut ScreenSession,
+    show_tui: bool,
 ) -> Result<AgentSessionResult> {
-    let prepared = prepare_task_run(cwd, task_id, &options)?;
+    let prepared = prepare_task_run(cwd, task_id, &options, |_| {})?;
     let task_id = &prepared.task_id;
 
-    // Spawn agent with child handle for proper exit detection
-    let mut monitored_child = prepared.runtime.spawn_monitored(&prepared.spawn_options)?;
+    if show_tui {
+        // Spawn agent in background, then run TUI to monitor via JJ events
+        let _handle = prepared.runtime.spawn_background(&prepared.spawn_options)?;
 
-    // Create status monitor with the session's shared stop flag
-    let mut monitor = StatusMonitor::new_with_stop_flag(task_id, session.stop_flag());
+        let events = read_events(cwd)?;
+        let graph = materialize_graph(&events);
+        let (width, _) = crossterm::terminal::size().unwrap_or((80, 24));
+        let model = Model {
+            graph: Arc::new(graph),
+            screen: Screen::TaskRun {
+                task_id: task_id.to_string(),
+            },
+            window: WindowState::new(width),
+        };
 
-    // Wrap in catch_unwind as defense-in-depth (session owns cleanup)
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        monitor.monitor_on_screen(cwd, &mut monitored_child, session.screen())
-    }));
-
-    let exit_reason = match result {
-        Ok(inner) => inner?,
-        Err(panic) => std::panic::resume_unwind(panic),
-    };
-
-    map_exit_reason(cwd, task_id, exit_reason)
+        let effect = crate::tui::app::run(model, cwd)?;
+        map_tui_effect(cwd, task_id, effect)
+    } else {
+        // Non-TUI: block until the agent exits
+        let result = prepared.runtime.spawn_blocking(&prepared.spawn_options)?;
+        Ok(result)
+    }
 }
 
 /// Handle an `AgentSessionResult` with the same semantics as `task_run()`:
@@ -554,9 +447,9 @@ pub fn handle_session_result(
         AgentSessionResult::Completed { summary } => {
             // Agent completed successfully - it should have closed the task itself
             if !quiet {
-                eprintln!("Task run complete"); // stderr-ok: post-LiveScreen
+                eprintln!("Task run complete"); // stderr-ok: post-TUI
                 if !summary.is_empty() {
-                    eprintln!("Summary: {}", summary); // stderr-ok: post-LiveScreen
+                    eprintln!("Summary: {}", summary); // stderr-ok: post-TUI
                 }
             }
         }
@@ -595,13 +488,12 @@ pub fn handle_session_result(
                     }
                 }
             }
-            eprintln!("Task {} stopped: {}", task_id, reason); // stderr-ok: post-LiveScreen
+            eprintln!("Task {} stopped: {}", task_id, reason); // stderr-ok: post-TUI
         }
         AgentSessionResult::Detached => {
             // User detached via Ctrl+C - agent continues running in background
             // Do NOT emit TaskEvent::Stopped since the agent is still working
-            eprintln!(
-                // stderr-ok: post-LiveScreen
+            eprintln!( // stderr-ok: post-TUI
                 "Detached. Task {} still running. Use `aiki task show {}` to check status.",
                 &task_id[..8.min(task_id.len())],
                 task_id
@@ -714,16 +606,16 @@ pub fn task_run_async(
         hint: agent_type.install_hint().to_string(),
     })?;
 
-    // Emit Started event before spawning to transition task to InProgress immediately.
+    // Emit Reserved event before spawning to lock the task (Open → Reserved).
+    // The agent's hook (via `aiki task start`) emits Started with session_id,
+    // transitioning Reserved → InProgress.
     if task.status == TaskStatus::Open {
-        let pre_start = TaskEvent::Started {
+        let reserve = TaskEvent::Reserved {
             task_ids: vec![task_id.to_string()],
             agent_type: agent_type.as_str().to_string(),
-            session_id: None,
-            turn_id: None,
             timestamp: chrono::Utc::now(),
         };
-        write_event(cwd, &pre_start)?;
+        write_event(cwd, &reserve)?;
     }
 
     // Build spawn options with parent session UUID for workspace isolation chaining
@@ -736,13 +628,11 @@ pub fn task_run_async(
     let handle = match runtime.spawn_background(&spawn_options) {
         Ok(h) => h,
         Err(e) => {
-            // Compensate: emit Stopped so the task doesn't get stuck in InProgress
-            if task.status == TaskStatus::Open {
-                let rollback = TaskEvent::Stopped {
+            // Compensate: emit Released so the task doesn't get stuck in Reserved
+            if task.status == TaskStatus::Reserved {
+                let rollback = TaskEvent::Released {
                     task_ids: vec![task_id.to_string()],
                     reason: Some(format!("Spawn failed: {}", e)),
-                    session_id: None,
-                    turn_id: None,
                     timestamp: chrono::Utc::now(),
                 };
                 let _ = write_event(cwd, &rollback); // best-effort
@@ -1115,6 +1005,120 @@ mod tests {
         match resolve_next_session(&graph, "P") {
             SessionResolution::Standalone(task) => {
                 assert_eq!(task.id, "B");
+            }
+            other => panic!(
+                "Expected Standalone(B), got {:?}",
+                std::mem::discriminant(&other)
+            ),
+        }
+    }
+
+    // --- Reserved status tests for resolve_next_session ---
+
+    fn make_reserved(ids: &[&str]) -> TaskEvent {
+        TaskEvent::Reserved {
+            task_ids: ids.iter().map(|s| s.to_string()).collect(),
+            agent_type: "claude-code".to_string(),
+            timestamp: Utc::now(),
+        }
+    }
+
+    fn make_released(ids: &[&str]) -> TaskEvent {
+        TaskEvent::Released {
+            task_ids: ids.iter().map(|s| s.to_string()).collect(),
+            reason: None,
+            timestamp: Utc::now(),
+        }
+    }
+
+    fn make_started(id: &str) -> TaskEvent {
+        TaskEvent::Started {
+            task_ids: vec![id.to_string()],
+            agent_type: "claude-code".to_string(),
+            session_id: None,
+            turn_id: None,
+            timestamp: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn test_resolve_next_session_skips_reserved_tasks() {
+        // Parent P with subtasks A (Reserved) and B (Open).
+        // resolve_next_session should skip A and return B.
+        let events = vec![
+            make_created("P", "Parent"),
+            make_created("A", "Task A"),
+            make_created("B", "Task B"),
+            make_link("A", "P", "subtask-of"),
+            make_link("B", "P", "subtask-of"),
+            make_reserved(&["A"]),
+        ];
+        let graph = materialize_graph(&events);
+        match resolve_next_session(&graph, "P") {
+            SessionResolution::Standalone(task) => {
+                assert_eq!(task.id, "B", "Should pick Open task B, not Reserved task A");
+            }
+            other => panic!(
+                "Expected Standalone(B), got {:?}",
+                std::mem::discriminant(&other)
+            ),
+        }
+    }
+
+    #[test]
+    fn test_resolve_next_session_all_reserved_returns_blocked() {
+        // Parent P with only Reserved subtasks → Blocked (none are Open)
+        let events = vec![
+            make_created("P", "Parent"),
+            make_created("A", "Task A"),
+            make_link("A", "P", "subtask-of"),
+            make_reserved(&["A"]),
+        ];
+        let graph = materialize_graph(&events);
+        assert!(matches!(
+            resolve_next_session(&graph, "P"),
+            SessionResolution::Blocked(_)
+        ));
+    }
+
+    #[test]
+    fn test_resolve_next_session_released_task_becomes_ready() {
+        // Parent P with subtask A that was Reserved then Released → back to Open → ready
+        let events = vec![
+            make_created("P", "Parent"),
+            make_created("A", "Task A"),
+            make_link("A", "P", "subtask-of"),
+            make_reserved(&["A"]),
+            make_released(&["A"]),
+        ];
+        let graph = materialize_graph(&events);
+        match resolve_next_session(&graph, "P") {
+            SessionResolution::Standalone(task) => {
+                assert_eq!(task.id, "A", "Released task should be ready again");
+            }
+            other => panic!(
+                "Expected Standalone(A), got {:?}",
+                std::mem::discriminant(&other)
+            ),
+        }
+    }
+
+    #[test]
+    fn test_resolve_next_session_started_reserved_task_is_in_progress() {
+        // Parent P with subtask A: Reserved → Started (InProgress) → not in ready pool
+        let events = vec![
+            make_created("P", "Parent"),
+            make_created("A", "Task A"),
+            make_created("B", "Task B"),
+            make_link("A", "P", "subtask-of"),
+            make_link("B", "P", "subtask-of"),
+            make_reserved(&["A"]),
+            make_started("A"),
+        ];
+        let graph = materialize_graph(&events);
+        match resolve_next_session(&graph, "P") {
+            SessionResolution::Standalone(task) => {
+                assert_eq!(task.id, "B", "A is InProgress, should pick B");
             }
             other => panic!(
                 "Expected Standalone(B), got {:?}",

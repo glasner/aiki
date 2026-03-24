@@ -2,7 +2,6 @@
 ///
 /// Handles detecting which instruction file (AGENTS.md or CLAUDE.md) is canonical,
 /// ensuring the <aiki> block is present, and managing symlinks between them.
-
 use crate::commands::agents_template::{aiki_block_template, AIKI_BLOCK_VERSION};
 use crate::error::{AikiError, Result};
 use anyhow::Context;
@@ -28,10 +27,12 @@ pub fn detect_canonical(repo_root: &Path, preferred: Option<&str>) -> Result<&'s
 
     match (agents_exists, claude_exists) {
         (true, true) => {
-            let agents_is_symlink = agents_path.symlink_metadata()
+            let agents_is_symlink = agents_path
+                .symlink_metadata()
                 .map(|m| m.file_type().is_symlink())
                 .unwrap_or(false);
-            let claude_is_symlink = claude_path.symlink_metadata()
+            let claude_is_symlink = claude_path
+                .symlink_metadata()
                 .map(|m| m.file_type().is_symlink())
                 .unwrap_or(false);
 
@@ -106,12 +107,19 @@ pub fn ensure_aiki_block(repo_root: &Path, filename: &str, quiet: bool) -> Resul
             }
         } else if !content.contains(&format!("<aiki version=\"{}\">", AIKI_BLOCK_VERSION)) {
             // Version is outdated — replace the old block
-            let start = content.find("<aiki version=")
+            let start = content
+                .find("<aiki version=")
                 .expect("already checked content contains <aiki version=");
             let end_tag = "</aiki>";
-            let end = content[start..].find(end_tag)
+            let end = content[start..]
+                .find(end_tag)
                 .map(|pos| start + pos + end_tag.len())
-                .ok_or_else(|| anyhow::anyhow!("Malformed <aiki> block in {}: missing </aiki> closing tag", filename))?;
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "Malformed <aiki> block in {}: missing </aiki> closing tag",
+                        filename
+                    )
+                })?;
             // Skip a trailing newline if present
             let end = if content[end..].starts_with("\r\n") {
                 end + 2
@@ -120,7 +128,12 @@ pub fn ensure_aiki_block(repo_root: &Path, filename: &str, quiet: bool) -> Resul
             } else {
                 end
             };
-            let updated = format!("{}{}{}", &content[..start], aiki_block_template(), &content[end..]);
+            let updated = format!(
+                "{}{}{}",
+                &content[..start],
+                aiki_block_template(),
+                &content[end..]
+            );
             fs::write(&file_path, updated)
                 .with_context(|| format!("Failed to update {}", filename))?;
             if !quiet {
@@ -146,11 +159,17 @@ pub fn ensure_aiki_block(repo_root: &Path, filename: &str, quiet: bool) -> Resul
 /// - If symlink already exists pointing to correct target -> no-op, print checkmark
 /// - If symlink exists with wrong target -> remove and recreate
 /// - If path exists as real file -> warn and skip
-pub fn ensure_symlink(repo_root: &Path, target_name: &str, link_name: &str, quiet: bool) -> Result<()> {
+pub fn ensure_symlink(
+    repo_root: &Path,
+    target_name: &str,
+    link_name: &str,
+    quiet: bool,
+) -> Result<()> {
     let link_path = repo_root.join(link_name);
 
     if link_path.exists() || link_path.symlink_metadata().is_ok() {
-        let metadata = link_path.symlink_metadata()
+        let metadata = link_path
+            .symlink_metadata()
             .with_context(|| format!("Failed to read metadata for {}", link_name))?;
 
         if metadata.file_type().is_symlink() {
@@ -181,15 +200,17 @@ pub fn ensure_symlink(repo_root: &Path, target_name: &str, link_name: &str, quie
     #[cfg(unix)]
     {
         use std::os::unix::fs::symlink;
-        symlink(target_name, &link_path)
-            .with_context(|| format!("Failed to create symlink {} -> {}", link_name, target_name))?;
+        symlink(target_name, &link_path).with_context(|| {
+            format!("Failed to create symlink {} -> {}", link_name, target_name)
+        })?;
     }
 
     #[cfg(windows)]
     {
         use std::os::windows::fs::symlink_file;
-        symlink_file(target_name, &link_path)
-            .with_context(|| format!("Failed to create symlink {} -> {}", link_name, target_name))?;
+        symlink_file(target_name, &link_path).with_context(|| {
+            format!("Failed to create symlink {} -> {}", link_name, target_name)
+        })?;
     }
 
     if !quiet {

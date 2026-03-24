@@ -5,11 +5,12 @@ use std::process::{Command, Stdio};
 /// Spawn `aiki <args>` as a detached background process.
 ///
 /// The child process inherits cwd but detaches stdin/stdout/stderr
-/// so the parent can exit immediately.
-pub fn spawn_aiki_background(cwd: &Path, args: &[&str]) -> Result<()> {
+/// so the parent can exit immediately. Returns the child's PID so
+/// the caller can kill it if needed (e.g. on Ctrl+C in the TUI).
+pub fn spawn_aiki_background(cwd: &Path, args: &[&str]) -> Result<u32> {
     let binary = crate::config::get_aiki_binary_path();
 
-    Command::new(&binary)
+    let child = Command::new(&binary)
         .current_dir(cwd)
         .args(args)
         .stdin(Stdio::null())
@@ -18,7 +19,7 @@ pub fn spawn_aiki_background(cwd: &Path, args: &[&str]) -> Result<()> {
         .spawn()
         .with_context(|| format!("failed to spawn background aiki process: {binary}"))?;
 
-    Ok(())
+    Ok(child.id())
 }
 
 /// Spawn `aiki <args>` as a detached background process, piping `stdin_payload` to its stdin.
@@ -26,7 +27,11 @@ pub fn spawn_aiki_background(cwd: &Path, args: &[&str]) -> Result<()> {
 /// Like `spawn_aiki_background`, but uses `Stdio::piped()` for stdin so the
 /// caller can pass a payload (e.g. JSON) to the child process. The stdin handle
 /// is dropped after writing to send EOF. The child is not waited on.
-pub fn spawn_aiki_background_with_stdin(cwd: &Path, args: &[&str], stdin_payload: &[u8]) -> Result<()> {
+pub fn spawn_aiki_background_with_stdin(
+    cwd: &Path,
+    args: &[&str],
+    stdin_payload: &[u8],
+) -> Result<()> {
     let binary = crate::config::get_aiki_binary_path();
 
     let mut child = Command::new(&binary)

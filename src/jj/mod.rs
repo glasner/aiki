@@ -101,7 +101,9 @@ pub fn resolve_bookmark_conflict(cwd: &Path, branch: &str) -> Result<()> {
         .args(["log", "-r", &revset, "-T", r#"commit_id ++ "\n""#])
         .args(JJ_READONLY_ARGS)
         .output()
-        .map_err(|e| AikiError::JjCommandFailed(format!("Failed to list bookmark targets: {}", e)))?;
+        .map_err(|e| {
+            AikiError::JjCommandFailed(format!("Failed to list bookmark targets: {}", e))
+        })?;
 
     if !output.status.success() {
         return Ok(()); // Can't list targets, let the caller handle it
@@ -122,14 +124,23 @@ pub fn resolve_bookmark_conflict(cwd: &Path, branch: &str) -> Result<()> {
     let result = jj_cmd()
         .current_dir(cwd)
         .args([
-            "bookmark", "set", branch, "-r", &targets[0],
-            "--allow-backwards", "--ignore-working-copy",
+            "bookmark",
+            "set",
+            branch,
+            "-r",
+            &targets[0],
+            "--allow-backwards",
+            "--ignore-working-copy",
         ])
         .output();
 
     if let Ok(out) = &result {
         if out.status.success() {
-            eprintln!("Resolved conflicted bookmark '{}' → {}", branch, &targets[0][..12.min(targets[0].len())]);
+            eprintln!(
+                "Resolved conflicted bookmark '{}' → {}",
+                branch,
+                &targets[0][..12.min(targets[0].len())]
+            );
         }
     }
 
@@ -291,9 +302,9 @@ pub fn branch_exists(cwd: &Path, branch: &str) -> Result<bool> {
 ///
 /// JJ shows conflicted bookmarks as `name (conflicted):` in the listing.
 fn is_bookmark_conflicted(bookmark_list_output: &str, branch: &str) -> bool {
-    bookmark_list_output.lines().any(|line| {
-        line.starts_with(branch) && line.contains("(conflicted)")
-    })
+    bookmark_list_output
+        .lines()
+        .any(|line| line.starts_with(branch) && line.contains("(conflicted)"))
 }
 
 /// Resolve the main JJ repo root from any path (workspace or repo).

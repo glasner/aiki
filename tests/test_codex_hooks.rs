@@ -168,8 +168,6 @@ fn test_otel_deferred_events_not_mapped() {
     }
 }
 
-
-
 #[test]
 fn test_notify_payload_parsing() {
     use aiki::editors::codex::NotifyPayload;
@@ -254,7 +252,10 @@ fn test_codex_config_toml_generation() {
     let parsed: toml::Value = toml::from_str(&content).unwrap();
 
     let otel = parsed.get("otel").unwrap().as_table().unwrap();
-    assert_eq!(otel.get("log_user_prompt").unwrap().as_bool().unwrap(), true);
+    assert_eq!(
+        otel.get("log_user_prompt").unwrap().as_bool().unwrap(),
+        true
+    );
 
     // Verify exporter is a struct variant (table with otlp-http key)
     let exporter = otel.get("exporter").unwrap().as_table().unwrap();
@@ -313,10 +314,6 @@ fn test_gzip_decompression_roundtrip() {
     ));
 }
 
-
-
-
-
 #[test]
 fn test_content_type_detection_logs_endpoint() {
     // Verify that /v1/traces is detected as unsupported
@@ -327,5 +324,3 @@ fn test_content_type_detection_logs_endpoint() {
     let path = "/v1/logs";
     assert!(!path.contains("/v1/traces"));
 }
-
-

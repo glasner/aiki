@@ -118,7 +118,8 @@ pub fn install_claude_code_hooks_global() -> Result<()> {
     }
 
     // Tool matcher for Pre/PostToolUse hooks (covers all file, shell, web, and MCP tools)
-    let tool_matcher = "Edit|Write|MultiEdit|NotebookEdit|Read|Glob|Grep|LS|Bash|WebFetch|WebSearch|mcp__.*";
+    let tool_matcher =
+        "Edit|Write|MultiEdit|NotebookEdit|Read|Glob|Grep|LS|Bash|WebFetch|WebSearch|mcp__.*";
 
     // SessionStart hook for auto-initialization and context re-injection
     // Empty matcher matches all sources: startup, resume, compact, clear
@@ -377,10 +378,7 @@ pub fn install_codex_hooks_global() -> Result<()> {
                         "trace_exporter".to_string(),
                         toml::Value::String("none".to_string()),
                     );
-                    otel.insert(
-                        "log_user_prompt".to_string(),
-                        toml::Value::Boolean(true),
-                    );
+                    otel.insert("log_user_prompt".to_string(), toml::Value::Boolean(true));
                 }
             } else {
                 // Same endpoint: ensure trace_exporter is disabled and log_user_prompt is set
@@ -389,24 +387,21 @@ pub fn install_codex_hooks_global() -> Result<()> {
                         "trace_exporter".to_string(),
                         toml::Value::String("none".to_string()),
                     );
-                    otel.insert(
-                        "log_user_prompt".to_string(),
-                        toml::Value::Boolean(true),
-                    );
+                    otel.insert("log_user_prompt".to_string(), toml::Value::Boolean(true));
                 }
             }
         } else if otel.get("exporter").and_then(|v| v.as_str()).is_some() {
             // Has exporter as a unit variant (e.g., "none" or "statsig") - replace with our struct
             if let Some(otel) = config_table.get_mut("otel").and_then(|v| v.as_table_mut()) {
-                otel.insert("exporter".to_string(), build_otlp_http_exporter(aiki_endpoint));
+                otel.insert(
+                    "exporter".to_string(),
+                    build_otlp_http_exporter(aiki_endpoint),
+                );
                 otel.insert(
                     "trace_exporter".to_string(),
                     toml::Value::String("none".to_string()),
                 );
-                otel.insert(
-                    "log_user_prompt".to_string(),
-                    toml::Value::Boolean(true),
-                );
+                otel.insert("log_user_prompt".to_string(), toml::Value::Boolean(true));
                 // Remove legacy flat fields if present from old aiki versions
                 otel.remove("endpoint");
                 otel.remove("protocol");
@@ -414,15 +409,15 @@ pub fn install_codex_hooks_global() -> Result<()> {
         } else {
             // No exporter configured: add our struct variant
             if let Some(otel) = config_table.get_mut("otel").and_then(|v| v.as_table_mut()) {
-                otel.insert("exporter".to_string(), build_otlp_http_exporter(aiki_endpoint));
+                otel.insert(
+                    "exporter".to_string(),
+                    build_otlp_http_exporter(aiki_endpoint),
+                );
                 otel.insert(
                     "trace_exporter".to_string(),
                     toml::Value::String("none".to_string()),
                 );
-                otel.insert(
-                    "log_user_prompt".to_string(),
-                    toml::Value::Boolean(true),
-                );
+                otel.insert("log_user_prompt".to_string(), toml::Value::Boolean(true));
                 // Remove legacy flat fields if present from old aiki versions
                 otel.remove("endpoint");
                 otel.remove("protocol");
@@ -433,16 +428,16 @@ pub fn install_codex_hooks_global() -> Result<()> {
         let mut otel_table = toml::map::Map::new();
         // Enable log exporter (semantic events like codex.user_prompt, codex.tool_result)
         // exporter is a tagged enum: { otlp-http = { endpoint, protocol } }
-        otel_table.insert("exporter".to_string(), build_otlp_http_exporter(aiki_endpoint));
+        otel_table.insert(
+            "exporter".to_string(),
+            build_otlp_http_exporter(aiki_endpoint),
+        );
         // Disable trace exporter (we only want logs, not distributed tracing spans)
         otel_table.insert(
             "trace_exporter".to_string(),
             toml::Value::String("none".to_string()),
         );
-        otel_table.insert(
-            "log_user_prompt".to_string(),
-            toml::Value::Boolean(true),
-        );
+        otel_table.insert("log_user_prompt".to_string(), toml::Value::Boolean(true));
         config_table.insert("otel".to_string(), toml::Value::Table(otel_table));
     }
 
@@ -459,8 +454,7 @@ pub fn install_codex_hooks_global() -> Result<()> {
     config_table.insert("notify".to_string(), toml::Value::Array(notify_cmd));
 
     // Write updated config
-    let content =
-        toml::to_string_pretty(&config).context("Failed to serialize config.toml")?;
+    let content = toml::to_string_pretty(&config).context("Failed to serialize config.toml")?;
     fs::write(&config_path, content).context("Failed to write ~/.codex/config.toml")?;
 
     println!("✓ Installed Codex hooks at {}", config_path.display());
@@ -558,10 +552,7 @@ pub fn restart_otel_receiver() -> Result<()> {
         "macos" => restart_otel_receiver_macos(),
         "linux" => restart_otel_receiver_linux(),
         other => {
-            eprintln!(
-                "⚠ OTel receiver restart not supported on {} yet",
-                other
-            );
+            eprintln!("⚠ OTel receiver restart not supported on {} yet", other);
             Ok(())
         }
     }

@@ -91,9 +91,8 @@ pub fn run(args: ResolveArgs) -> Result<()> {
     };
 
     // Determine assignee
-    let assignee = agent_override.or_else(|| {
-        find_active_session(&cwd).map(|s| s.agent_type.as_str().to_string())
-    });
+    let assignee = agent_override
+        .or_else(|| find_active_session(&cwd).map(|s| s.agent_type.as_str().to_string()));
 
     // Create resolve task from resolve template
     let mut data = HashMap::new();
@@ -183,7 +182,10 @@ fn output_resolve_async(resolve_id: &str, change_id: &str) -> Result<()> {
             heading: "Resolve Started",
             task_id: resolve_id,
             scope: None,
-            status: &format!("Resolve started in background for conflict in {}.", change_id),
+            status: &format!(
+                "Resolve started in background for conflict in {}.",
+                change_id
+            ),
             issues: None,
             hint: None,
         };

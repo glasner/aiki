@@ -6,11 +6,11 @@
 use std::env;
 use std::path::Path;
 
-use super::OutputFormat;
 use super::task::{create_from_template, TemplateTaskParams};
+use super::OutputFormat;
 use crate::agents::AgentType;
 use crate::error::{AikiError, Result};
-use crate::tasks::runner::{handle_session_result, task_run, task_run_on_session, ScreenSession, TaskRunOptions};
+use crate::tasks::runner::{handle_session_result, task_run, task_run_on_session, TaskRunOptions};
 use crate::tasks::{find_task, materialize_graph, read_events, write_link_event};
 
 /// Options for `run_decompose` that callers can customize.
@@ -44,9 +44,8 @@ pub struct DecomposeArgs {
 
 /// CLI entry point for `aiki decompose`.
 pub fn run(args: DecomposeArgs) -> Result<()> {
-    let cwd = env::current_dir().map_err(|_| {
-        AikiError::InvalidArgument("Failed to get current directory".to_string())
-    })?;
+    let cwd = env::current_dir()
+        .map_err(|_| AikiError::InvalidArgument("Failed to get current directory".to_string()))?;
 
     let agent_type = if let Some(ref agent_str) = args.agent {
         Some(
@@ -62,7 +61,7 @@ pub fn run(args: DecomposeArgs) -> Result<()> {
         agent: agent_type,
     };
 
-    let decompose_task_id = run_decompose(&cwd, &args.plan_path, &args.target, options, None)?;
+    let decompose_task_id = run_decompose(&cwd, &args.plan_path, &args.target, options, false)?;
 
     match args.output {
         Some(OutputFormat::Id) => println!("{}", decompose_task_id),
@@ -86,7 +85,7 @@ pub fn run_decompose(
     plan_path: &str,
     target_id: &str,
     options: DecomposeOptions,
-    session: Option<&mut ScreenSession>,
+    show_tui: bool,
 ) -> Result<String> {
     let spec_target = make_spec_target(plan_path);
 
@@ -106,7 +105,13 @@ pub fn run_decompose(
     // 3. Write decomposes-plan link: decompose task → file:<plan_path>
     let events = read_events(cwd)?;
     let graph = materialize_graph(&events);
-    write_link_event(cwd, &graph, "decomposes-plan", &decompose_task_id, &spec_target)?;
+    write_link_event(
+        cwd,
+        &graph,
+        "decomposes-plan",
+        &decompose_task_id,
+        &spec_target,
+    )?;
 
     // 4. Write populated-by link: target → decompose task
     write_link_event(cwd, &graph, "populated-by", target_id, &decompose_task_id)?;
@@ -117,8 +122,8 @@ pub fn run_decompose(
     } else {
         TaskRunOptions::new()
     };
-    if let Some(session) = session {
-        let result = task_run_on_session(cwd, &decompose_task_id, run_options, session)?;
+    if show_tui {
+        let result = task_run_on_session(cwd, &decompose_task_id, run_options, true)?;
         handle_session_result(cwd, &decompose_task_id, result, true)?;
     } else {
         task_run(cwd, &decompose_task_id, run_options)?;
@@ -144,10 +149,7 @@ fn build_decompose_params(
     spec_target: &str,
     options: &DecomposeOptions,
 ) -> TemplateTaskParams {
-    let template = options
-        .template
-        .as_deref()
-        .unwrap_or("decompose");
+    let template = options.template.as_deref().unwrap_or("decompose");
 
     let assignee = options
         .agent
@@ -198,8 +200,12 @@ mod tests {
             template: None,
             agent: None,
         };
-        let params =
-            build_decompose_params("ops/now/feat.md", "target123", "file:ops/now/feat.md", &options);
+        let params = build_decompose_params(
+            "ops/now/feat.md",
+            "target123",
+            "file:ops/now/feat.md",
+            &options,
+        );
 
         assert_eq!(params.template_name, "decompose");
         assert_eq!(params.assignee, Some("claude-code".to_string()));
@@ -214,8 +220,7 @@ mod tests {
             template: Some("my/custom-decompose".to_string()),
             agent: None,
         };
-        let params =
-            build_decompose_params("plan.md", "t1", "file:plan.md", &options);
+        let params = build_decompose_params("plan.md", "t1", "file:plan.md", &options);
 
         assert_eq!(params.template_name, "my/custom-decompose");
     }
@@ -226,8 +231,7 @@ mod tests {
             template: None,
             agent: Some(AgentType::Codex),
         };
-        let params =
-            build_decompose_params("plan.md", "t1", "file:plan.md", &options);
+        let params = build_decompose_params("plan.md", "t1", "file:plan.md", &options);
 
         assert_eq!(params.assignee, Some("codex".to_string()));
     }
@@ -238,8 +242,7 @@ mod tests {
             template: None,
             agent: None,
         };
-        let params =
-            build_decompose_params("plan.md", "target_id", "file:plan.md", &options);
+        let params = build_decompose_params("plan.md", "target_id", "file:plan.md", &options);
 
         // data.target should exist (not data.epic)
         assert!(params.data.contains_key("target"));
@@ -302,8 +305,7 @@ mod tests {
     #[test]
     fn test_decompose_template_uses_data_target_not_data_epic() {
         // Canonical path: BUILTIN_TEMPLATES_SOURCE (see templates/mod.rs). Macro requires literal.
-        let template_content =
-            include_str!("../tasks/templates/core/decompose.md");
+        let template_content = include_str!("../tasks/templates/core/decompose.md");
         assert!(
             template_content.contains("{{data.target}}"),
             "Decompose template must use {{{{data.target}}}}"

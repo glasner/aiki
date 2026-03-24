@@ -14,6 +14,8 @@ pub type FastHashMap<K, V> = hashbrown::HashMap<K, V, ahash::RandomState>;
 pub enum TaskStatus {
     /// Ready to work on
     Open,
+    /// Reserved by orchestrator (pre-spawn lock, no session yet)
+    Reserved,
     /// Currently being worked on
     InProgress,
     /// Was in progress, now stopped (has reason)
@@ -26,6 +28,7 @@ impl fmt::Display for TaskStatus {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             TaskStatus::Open => write!(f, "open"),
+            TaskStatus::Reserved => write!(f, "reserved"),
             TaskStatus::InProgress => write!(f, "in_progress"),
             TaskStatus::Stopped => write!(f, "stopped"),
             TaskStatus::Closed => write!(f, "closed"),
@@ -218,6 +221,19 @@ pub enum TaskEvent {
         reason: Option<String>,
         timestamp: DateTime<Utc>,
     },
+    /// Task(s) were reserved by orchestrator (pre-spawn lock, no session yet)
+    Reserved {
+        task_ids: Vec<String>,
+        /// Who is reserving (e.g., "claude-code")
+        agent_type: String,
+        timestamp: DateTime<Utc>,
+    },
+    /// Task(s) reservation was released (spawn failed or orchestrator gave up)
+    Released {
+        task_ids: Vec<String>,
+        reason: Option<String>,
+        timestamp: DateTime<Utc>,
+    },
     /// Changes from these tasks have been absorbed into the parent workspace
     Absorbed {
         task_ids: Vec<String>,
@@ -241,6 +257,8 @@ impl TaskEvent {
             | TaskEvent::FieldsCleared { timestamp, .. }
             | TaskEvent::LinkAdded { timestamp, .. }
             | TaskEvent::LinkRemoved { timestamp, .. }
+            | TaskEvent::Reserved { timestamp, .. }
+            | TaskEvent::Released { timestamp, .. }
             | TaskEvent::Absorbed { timestamp, .. } => *timestamp,
         }
     }
@@ -313,6 +331,61 @@ impl Task {
         self.summary
             .as_deref()
             .or_else(|| self.comments.last().map(|c| c.text.as_str()))
+    }
+
+    /// Agent name for phase header (reads data["agent_type"] or falls back to assignee)
+    pub fn agent_label(&self) -> Option<&str> {
+        self.data
+            .get("agent_type")
+            .map(|s| s.as_str())
+            .or(self.assignee.as_deref())
+    }
+
+    /// Most recent heartbeat text from comments. Falls back to empty string.
+    pub fn latest_heartbeat(&self) -> &str {
+        self.comments
+            .iter()
+            .rev()
+            .find(|c| {
+                c.data
+                    .get("type")
+                    .map(|t| t == "heartbeat")
+                    .unwrap_or(false)
+            })
+            .map(|c| c.text.as_str())
+            .unwrap_or("")
+    }
+
+    /// Formatted elapsed time since started_at, e.g. "1m 23s"
+    pub fn elapsed_str(&self) -> Option<String> {
+        let started = self.started_at?;
+        let elapsed = chrono::Utc::now() - started;
+        let secs = elapsed.num_seconds();
+        if secs < 60 {
+            Some(format!("{}s", secs))
+        } else {
+            Some(format!("{}m {}s", secs / 60, secs % 60))
+        }
+    }
+
+    /// Summary or fallback to task name for done state
+    pub fn display_summary(&self) -> &str {
+        self.effective_summary().unwrap_or(&self.name)
+    }
+
+    /// Reason task was stopped, or fallback
+    pub fn display_stopped_reason(&self) -> &str {
+        self.stopped_reason.as_deref().unwrap_or("stopped")
+    }
+
+    /// First 6 chars of task ID for display
+    pub fn short_id(&self) -> &str {
+        &self.id[..6.min(self.id.len())]
+    }
+
+    /// True for Closed or Stopped
+    pub fn is_terminal(&self) -> bool {
+        matches!(self.status, TaskStatus::Closed | TaskStatus::Stopped)
     }
 
     /// Returns true if this task is an orchestrator (coordinates subtask execution).

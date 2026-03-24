@@ -67,7 +67,7 @@ impl RepoManifest {
                 }
             }
             Err(_) => {
-                eprintln!( // stderr-ok: pre-LiveScreen
+                eprintln!( // stderr-ok: pre-TUI
                     "Warning: corrupt manifest at {}, creating fresh manifest",
                     path.display()
                 );
@@ -78,7 +78,7 @@ impl RepoManifest {
         match serde_json::from_str::<RepoManifest>(&content) {
             Ok(manifest) => Ok(Some(manifest)),
             Err(_) => {
-                eprintln!( // stderr-ok: pre-LiveScreen
+                eprintln!( // stderr-ok: pre-TUI
                     "Warning: corrupt manifest at {}, creating fresh manifest",
                     path.display()
                 );
@@ -92,8 +92,9 @@ impl RepoManifest {
         std::fs::create_dir_all(&dir)?;
 
         let path = dir.join(".manifest.json");
-        let content = serde_json::to_string_pretty(self)
-            .map_err(|e| AikiError::Other(anyhow::anyhow!("Failed to serialize manifest: {}", e)))?;
+        let content = serde_json::to_string_pretty(self).map_err(|e| {
+            AikiError::Other(anyhow::anyhow!("Failed to serialize manifest: {}", e))
+        })?;
 
         // Atomic write: write to temp file then rename
         let temp_path = dir.join(".manifest.json.tmp");
@@ -222,7 +223,10 @@ mod tests {
         manifest.save(repo_root).unwrap();
 
         let temp_path = repo_root.join(".aiki").join(".manifest.json.tmp");
-        assert!(!temp_path.exists(), "temp file should not linger after save");
+        assert!(
+            !temp_path.exists(),
+            "temp file should not linger after save"
+        );
 
         let manifest_path = repo_root.join(".aiki").join(".manifest.json");
         assert!(manifest_path.exists(), "manifest file should exist");

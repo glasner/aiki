@@ -103,20 +103,17 @@ pub const TASKS_DIR_NAME: &str = "tasks";
 pub const BUILTIN_TEMPLATES_SOURCE: &str = "cli/src/tasks/templates/core";
 
 #[allow(unused_imports)]
+pub use builtin::default_plugin_templates;
+#[allow(unused_imports)]
 pub use resolver::{
-    convert_data, create_review_task_from_template,
-    create_subtask_entries_from_template,
-    create_tasks_from_template, find_templates_dir, get_working_copy_change_id,
-    has_inline_loops, has_subtask_refs, list_templates, load_template,
-    load_template_quiet, normalize_template_ref,
+    convert_data, create_review_task_from_template, create_subtask_entries_from_template,
+    create_tasks_from_template, find_templates_dir, get_working_copy_change_id, has_inline_loops,
+    has_subtask_refs, list_templates, load_template, load_template_quiet, normalize_template_ref,
     parse_priority, substitute_parent_id, SubtaskEntry, PARENT_ID_PLACEHOLDER,
 };
-#[allow(unused_imports)]
-pub use builtin::default_plugin_templates;
 pub use types::TaskTemplate;
 pub use variables::{
-    coerce_to_string, find_variables, substitute_with_template_name,
-    VariableContext,
+    coerce_to_string, find_variables, substitute_with_template_name, VariableContext,
 };
 
 /// Helper: construct the user tasks directory path relative to a repo root.

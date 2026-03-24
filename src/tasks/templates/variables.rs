@@ -124,17 +124,22 @@ impl VariableContext {
             match prefix {
                 "task" | "comment" | "issue" | "prompt" => {
                     self.source_data.insert("id".to_string(), value.to_string());
-                    self.source_data.insert("type".to_string(), prefix.to_string());
+                    self.source_data
+                        .insert("type".to_string(), prefix.to_string());
                 }
                 "file" => {
                     self.source_data.insert("id".to_string(), value.to_string());
-                    self.source_data.insert("path".to_string(), value.to_string());
-                    self.source_data.insert("type".to_string(), "file".to_string());
+                    self.source_data
+                        .insert("path".to_string(), value.to_string());
+                    self.source_data
+                        .insert("type".to_string(), "file".to_string());
                 }
                 _ => {
                     // Unknown prefix, just store the raw value
-                    self.source_data.insert("value".to_string(), value.to_string());
-                    self.source_data.insert("type".to_string(), prefix.to_string());
+                    self.source_data
+                        .insert("value".to_string(), value.to_string());
+                    self.source_data
+                        .insert("type".to_string(), prefix.to_string());
                 }
             }
         }
@@ -245,7 +250,10 @@ pub fn substitute_with_template_name(
                 } else if var_ref.name.starts_with("parent.") {
                     format!(
                         "Variable 'parent.{}' is only available in subtask templates",
-                        var_ref.name.strip_prefix("parent.").unwrap_or(&var_ref.name)
+                        var_ref
+                            .name
+                            .strip_prefix("parent.")
+                            .unwrap_or(&var_ref.name)
                     )
                 } else if var_ref.name.starts_with("item.") {
                     format!(
@@ -260,7 +268,10 @@ pub fn substitute_with_template_name(
                 } else if var_ref.name == "source" {
                     "Use: --source <value>".to_string()
                 } else {
-                    format!("Variable '{}' is not a recognized built-in variable", var_ref.name)
+                    format!(
+                        "Variable '{}' is not a recognized built-in variable",
+                        var_ref.name
+                    )
                 };
 
                 let template_info = match template_name {
@@ -317,8 +328,12 @@ mod tests {
         ctx.set_data("scope.id", "abc123");
         ctx.set_data("files", "src/auth.rs, src/crypto.rs");
 
-        let result = substitute("Review {{data.scope.name}} (files: {{data.files}})", &ctx).unwrap();
-        assert_eq!(result, "Review Task (abc123) (files: src/auth.rs, src/crypto.rs)");
+        let result =
+            substitute("Review {{data.scope.name}} (files: {{data.files}})", &ctx).unwrap();
+        assert_eq!(
+            result,
+            "Review Task (abc123) (files: src/auth.rs, src/crypto.rs)"
+        );
     }
 
     #[test]
@@ -427,9 +442,18 @@ mod tests {
         let mut ctx = VariableContext::new();
         ctx.set_source("file:ops/now/plan.md");
 
-        assert_eq!(ctx.resolve("source"), Some("file:ops/now/plan.md".to_string()));
-        assert_eq!(ctx.resolve("source.id"), Some("ops/now/plan.md".to_string()));
-        assert_eq!(ctx.resolve("source.path"), Some("ops/now/plan.md".to_string()));
+        assert_eq!(
+            ctx.resolve("source"),
+            Some("file:ops/now/plan.md".to_string())
+        );
+        assert_eq!(
+            ctx.resolve("source.id"),
+            Some("ops/now/plan.md".to_string())
+        );
+        assert_eq!(
+            ctx.resolve("source.path"),
+            Some("ops/now/plan.md".to_string())
+        );
         assert_eq!(ctx.resolve("source.type"), Some("file".to_string()));
     }
 
@@ -474,7 +498,10 @@ mod tests {
         let mut ctx = VariableContext::new();
         ctx.set_source_data("custom_key", "custom_value");
 
-        assert_eq!(ctx.resolve("source.custom_key"), Some("custom_value".to_string()));
+        assert_eq!(
+            ctx.resolve("source.custom_key"),
+            Some("custom_value".to_string())
+        );
     }
 
     #[test]
@@ -543,18 +570,25 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.to_string().contains("parent.id"));
-        assert!(err.to_string().contains("only available in subtask templates"));
+        assert!(err
+            .to_string()
+            .contains("only available in subtask templates"));
     }
 
     #[test]
     fn test_item_data() {
         let mut ctx = VariableContext::new();
-        ctx.item.insert("text".to_string(), "Fix the null check".to_string());
-        ctx.item.insert("file".to_string(), "src/auth.rs".to_string());
+        ctx.item
+            .insert("text".to_string(), "Fix the null check".to_string());
+        ctx.item
+            .insert("file".to_string(), "src/auth.rs".to_string());
         ctx.item.insert("line".to_string(), "42".to_string());
         ctx.item.insert("severity".to_string(), "error".to_string());
 
-        assert_eq!(ctx.resolve("item.text"), Some("Fix the null check".to_string()));
+        assert_eq!(
+            ctx.resolve("item.text"),
+            Some("Fix the null check".to_string())
+        );
         assert_eq!(ctx.resolve("item.file"), Some("src/auth.rs".to_string()));
         assert_eq!(ctx.resolve("item.line"), Some("42".to_string()));
         assert_eq!(ctx.resolve("item.severity"), Some("error".to_string()));
@@ -564,8 +598,10 @@ mod tests {
     #[test]
     fn test_substitute_item_data() {
         let mut ctx = VariableContext::new();
-        ctx.item.insert("text".to_string(), "Missing null check".to_string());
-        ctx.item.insert("file".to_string(), "src/main.rs".to_string());
+        ctx.item
+            .insert("text".to_string(), "Missing null check".to_string());
+        ctx.item
+            .insert("file".to_string(), "src/main.rs".to_string());
         ctx.item.insert("line".to_string(), "123".to_string());
 
         let result = substitute("Fix: {{item.file}}:{{item.line}} - {{item.text}}", &ctx).unwrap();
@@ -638,7 +674,10 @@ mod tests {
         ctx.set_data("spawner.priority", "p1");
         ctx.set_data("spawner.approved", "false");
 
-        assert_eq!(ctx.resolve("spawner.id"), Some("abc123spawnerid".to_string()));
+        assert_eq!(
+            ctx.resolve("spawner.id"),
+            Some("abc123spawnerid".to_string())
+        );
         assert_eq!(ctx.resolve("spawner.priority"), Some("p1".to_string()));
         assert_eq!(ctx.resolve("spawner.approved"), Some("false".to_string()));
         assert_eq!(ctx.resolve("spawner.unknown"), None);
@@ -650,7 +689,8 @@ mod tests {
         ctx.set_data("spawner.id", "review123");
         ctx.set_data("spawner.priority", "p0");
 
-        let result = substitute("Fix {{spawner.id}} (priority: {{spawner.priority}})", &ctx).unwrap();
+        let result =
+            substitute("Fix {{spawner.id}} (priority: {{spawner.priority}})", &ctx).unwrap();
         assert_eq!(result, "Fix review123 (priority: p0)");
     }
 

@@ -3763,7 +3763,10 @@ fn summarize_logs(req: &ExportLogsServiceRequest) {
         event_names.len()
     );
     if !event_names.is_empty() {
-        println!("  Event names (sample): {:?}", event_names.iter().take(10).collect::<Vec<_>>());
+        println!(
+            "  Event names (sample): {:?}",
+            event_names.iter().take(10).collect::<Vec<_>>()
+        );
     }
     if !attribute_keys.is_empty() {
         println!(
@@ -3818,7 +3821,13 @@ fn scope_logs_to_json(scope_logs: &ScopeLogs) -> Value {
     );
     obj.insert(
         "log_records".to_string(),
-        Value::Array(scope_logs.log_records.iter().map(log_record_to_json).collect()),
+        Value::Array(
+            scope_logs
+                .log_records
+                .iter()
+                .map(log_record_to_json)
+                .collect(),
+        ),
     );
     Value::Object(obj)
 }
@@ -3905,7 +3914,10 @@ fn summarize_traces(req: &ExportTraceServiceRequest) {
         event_count
     );
     if !span_names.is_empty() {
-        println!("  Span names (sample): {:?}", span_names.iter().take(10).collect::<Vec<_>>());
+        println!(
+            "  Span names (sample): {:?}",
+            span_names.iter().take(10).collect::<Vec<_>>()
+        );
     }
     if !event_names.is_empty() {
         println!(
@@ -4052,7 +4064,10 @@ fn metrics_to_json(req: &ExportMetricsServiceRequest) -> Value {
         .collect();
 
     let mut root = Map::new();
-    root.insert("resource_metrics".to_string(), Value::Array(resource_metrics));
+    root.insert(
+        "resource_metrics".to_string(),
+        Value::Array(resource_metrics),
+    );
     Value::Object(root)
 }
 
@@ -4118,9 +4133,9 @@ fn any_value_to_json(value: &AnyValue) -> Value {
         Some(any_value::Value::StringValue(s)) => Value::String(s.clone()),
         Some(any_value::Value::BoolValue(b)) => Value::Bool(*b),
         Some(any_value::Value::IntValue(i)) => Value::Number(Number::from(*i)),
-        Some(any_value::Value::DoubleValue(f)) => {
-            Number::from_f64(*f).map(Value::Number).unwrap_or(Value::Null)
-        }
+        Some(any_value::Value::DoubleValue(f)) => Number::from_f64(*f)
+            .map(Value::Number)
+            .unwrap_or(Value::Null),
         Some(any_value::Value::ArrayValue(array)) => array_value_to_json(array),
         Some(any_value::Value::KvlistValue(list)) => kvlist_to_json(list),
         Some(any_value::Value::BytesValue(bytes)) => Value::Array(

@@ -20,7 +20,10 @@ use std::path::PathBuf;
 
 #[test]
 fn test_has_context_with_text() {
-    let resp = HookResult { context: Some("Some autoreply".into()), ..HookResult::success() };
+    let resp = HookResult {
+        context: Some("Some autoreply".into()),
+        ..HookResult::success()
+    };
     assert!(
         resp.has_context(),
         "Should have context with non-empty string"
@@ -29,7 +32,10 @@ fn test_has_context_with_text() {
 
 #[test]
 fn test_has_context_empty_string() {
-    let resp = HookResult { context: Some("".into()), ..HookResult::success() };
+    let resp = HookResult {
+        context: Some("".into()),
+        ..HookResult::success()
+    };
     assert!(
         !resp.has_context(),
         "Should not have context with empty string"
@@ -53,7 +59,8 @@ fn test_build_context_returns_none_when_empty() {
         AgentType::ClaudeCode,
         "test-session",
         None::<&str>,
-        DetectionMethod::Hook, SessionMode::Interactive,
+        DetectionMethod::Hook,
+        SessionMode::Interactive,
     );
 
     let event = AikiTurnCompletedPayload {
@@ -82,7 +89,8 @@ fn test_build_context_returns_some_with_chunks() {
         AgentType::ClaudeCode,
         "test-session",
         None::<&str>,
-        DetectionMethod::Hook, SessionMode::Interactive,
+        DetectionMethod::Hook,
+        SessionMode::Interactive,
     );
 
     let event = AikiTurnCompletedPayload {
@@ -166,7 +174,8 @@ fn test_turn_completed_does_not_trigger_session_ended() {
         AgentType::ClaudeCode,
         "test-no-autoreply",
         None::<&str>,
-        DetectionMethod::Hook, SessionMode::Interactive,
+        DetectionMethod::Hook,
+        SessionMode::Interactive,
     );
 
     // Create a turn.completed event
@@ -220,10 +229,16 @@ fn test_turn_completed_with_context_action() {
 #[test]
 fn test_documented_behavior() {
     // 1. has_context() checks for non-empty strings
-    let empty = HookResult { context: Some("".into()), ..HookResult::success() };
+    let empty = HookResult {
+        context: Some("".into()),
+        ..HookResult::success()
+    };
     assert!(!empty.has_context());
 
-    let non_empty = HookResult { context: Some("text".into()), ..HookResult::success() };
+    let non_empty = HookResult {
+        context: Some("text".into()),
+        ..HookResult::success()
+    };
     assert!(non_empty.has_context());
 
     // 2. build_context() returns None when assembler is empty
@@ -231,7 +246,8 @@ fn test_documented_behavior() {
         AgentType::ClaudeCode,
         "doc-test",
         None::<&str>,
-        DetectionMethod::Hook, SessionMode::Interactive,
+        DetectionMethod::Hook,
+        SessionMode::Interactive,
     );
 
     let event = AikiTurnCompletedPayload {
