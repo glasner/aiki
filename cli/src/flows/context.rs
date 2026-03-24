@@ -249,25 +249,33 @@ impl ContextChunk {
     where
         F: FnMut(&str) -> Result<String, crate::error::AikiError>,
     {
-        let resolved_prepend: Option<TextLines> = self.prepend.map(|text_lines| -> crate::error::Result<TextLines> {
-            match text_lines {
-                TextLines::Single(s) => Ok(TextLines::Single(resolver(&s)?)),
-                TextLines::Multiple(lines) => {
-                    let resolved: Result<Vec<_>, crate::error::AikiError> = lines.iter().map(|line| resolver(line)).collect();
-                    Ok(TextLines::Multiple(resolved?))
+        let resolved_prepend: Option<TextLines> = self
+            .prepend
+            .map(|text_lines| -> crate::error::Result<TextLines> {
+                match text_lines {
+                    TextLines::Single(s) => Ok(TextLines::Single(resolver(&s)?)),
+                    TextLines::Multiple(lines) => {
+                        let resolved: Result<Vec<_>, crate::error::AikiError> =
+                            lines.iter().map(|line| resolver(line)).collect();
+                        Ok(TextLines::Multiple(resolved?))
+                    }
                 }
-            }
-        }).transpose()?;
+            })
+            .transpose()?;
 
-        let resolved_append: Option<TextLines> = self.append.map(|text_lines| -> crate::error::Result<TextLines> {
-            match text_lines {
-                TextLines::Single(s) => Ok(TextLines::Single(resolver(&s)?)),
-                TextLines::Multiple(lines) => {
-                    let resolved: Result<Vec<_>, crate::error::AikiError> = lines.iter().map(|line| resolver(line)).collect();
-                    Ok(TextLines::Multiple(resolved?))
+        let resolved_append: Option<TextLines> = self
+            .append
+            .map(|text_lines| -> crate::error::Result<TextLines> {
+                match text_lines {
+                    TextLines::Single(s) => Ok(TextLines::Single(resolver(&s)?)),
+                    TextLines::Multiple(lines) => {
+                        let resolved: Result<Vec<_>, crate::error::AikiError> =
+                            lines.iter().map(|line| resolver(line)).collect();
+                        Ok(TextLines::Multiple(resolved?))
+                    }
                 }
-            }
-        }).transpose()?;
+            })
+            .transpose()?;
 
         Ok(Self {
             prepend: resolved_prepend,
@@ -393,7 +401,6 @@ impl ContextAssembler {
     pub fn is_empty(&self) -> bool {
         self.chunks.is_empty()
     }
-
 }
 
 #[cfg(test)]

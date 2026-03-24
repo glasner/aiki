@@ -36,15 +36,17 @@ pub fn detect_mode() -> ThemeMode {
 /// Symbol for pending/ready status.
 pub const SYM_PENDING: &str = "○";
 /// Symbol for failed status.
-pub const SYM_FAILED: &str = "✗";
+pub const SYM_FAILED: &str = "✘";
 /// Symbol for check/success.
-pub const SYM_CHECK: &str = "✓";
+pub const SYM_CHECK: &str = "✔";
 /// Symbol for running status.
 pub const SYM_RUNNING: &str = "▸";
 /// Symbol for starting/spawning status.
 pub const SYM_STARTING: &str = "⧗";
 /// Symbol for skipped status.
 pub const SYM_SKIPPED: &str = "─";
+/// Symbol for pending-unassigned status (not yet claimed by any lane).
+pub const SYM_PENDING_UNASSIGNED: &str = "◌";
 
 // ── Theme ────────────────────────────────────────────────────────────
 
@@ -71,7 +73,7 @@ pub struct Theme {
     pub text: Color,
     /// High-contrast headers.
     pub hi: Color,
-    /// Background (used by render_png in test builds).
+    /// Background.
     #[allow(dead_code)]
     pub bg: Color,
     /// Subtle background for agent blocks.
@@ -140,5 +142,4 @@ impl Theme {
     pub fn hi_style(&self) -> Style {
         Style::default().fg(self.hi).add_modifier(Modifier::BOLD)
     }
-
 }

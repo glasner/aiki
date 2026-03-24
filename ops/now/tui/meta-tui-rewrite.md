@@ -237,20 +237,21 @@ All new code lives in new files. Old code is untouched. Both coexist — no brea
 
 ### Phase 2: View functions (all parallel, each ships with tests)
 
+**Plan:** [step-2-new-screens.md](step-2-new-screens.md)
+
 All flow view functions are pure `fn(&TaskGraph, ...) → Vec<Line>`. They can be built, tested, and reviewed independently — they don't touch the event loop or terminal. Each ships with its own `insta` snapshots.
 
-Individual step plans ([2a](step-2a-task-run-flow.md), [2b](step-2b-build-flow.md), [2c](step-2c-review-flows.md), [2d](step-2d-fix-flow.md)) are useful as reference for the data mapping logic, but implementation can be done as a single step since the pattern is identical: read TaskGraph → call components → return lines. Note: step 2e (build-fix) has been absorbed into 2b — `build::view()` is graph-driven and renders fix/iteration sections when the graph contains them.
+#### View functions to implement (~760 lines total)
 
-#### View functions to implement (~690 lines total)
-
-| View function | Plan | Effort | Key components used |
-|---------------|------|--------|-------------------|
-| `task_run::view()` | [2a](step-2a-task-run-flow.md) | ~80 lines | `components::phase`, `components::subtask_table` |
-| `build::view()` | [2b](step-2b-build-flow.md) | ~300 lines | All components, lane derivation, graph-driven fix/iteration rendering |
-| `review::view()` | [2c](step-2c-review-flows.md) | ~100 lines | `components::phase`, `components::issues` |
-| `fix::view()` | [2d](step-2d-fix-flow.md) | ~120 lines | Composes build + review helpers |
-| `epic_show::view()` | 2e | ~30 lines | `components::phase`, `components::subtask_table` |
-| `review_show::view()` | 2e | ~30 lines | `components::phase`, `components::issues` |
+| View function | Section | Effort | Key components used |
+|---------------|---------|--------|-------------------|
+| `task_run::view()` | 2.1 | ~80 lines | `components::phase`, `components::subtask_table` |
+| `build::view()` | 2.2 | ~300 lines | All components, lane derivation, graph-driven fix/iteration rendering |
+| `review::view()` | 2.3 | ~100 lines | `components::phase`, `components::issues` |
+| `fix::view()` | 2.4 | ~120 lines | Composes build + review helpers |
+| `epic_show::view()` | 2.5 | ~30 lines | `components::phase`, `components::subtask_table` |
+| `review_show::view()` | 2.5 | ~30 lines | `components::phase`, `components::issues` |
+| `helpers.rs` | — | ~150 lines | Shared graph query + rendering helpers |
 
 **Tests per view function:** Each gets `insta` snapshots for its key states (loading, active, done, failed). Width-variant snapshots (40, 80, 120 cols) for `build::view()` which is the most layout-sensitive.
 

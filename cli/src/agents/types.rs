@@ -128,9 +128,14 @@ impl AgentType {
                 }
             }
             AgentType::Codex => "Install: npm install -g @openai/codex".to_string(),
-            AgentType::Cursor => "Install Cursor from https://cursor.com (task execution not yet supported)".to_string(),
+            AgentType::Cursor => {
+                "Install Cursor from https://cursor.com (task execution not yet supported)"
+                    .to_string()
+            }
             AgentType::Gemini => "Gemini task execution not yet supported".to_string(),
-            AgentType::Unknown => "No install instructions available for unknown agent type".to_string(),
+            AgentType::Unknown => {
+                "No install instructions available for unknown agent type".to_string()
+            }
         }
     }
 }
@@ -234,7 +239,10 @@ mod tests {
 
     #[test]
     fn test_agent_type_from_str() {
-        assert_eq!(AgentType::from_str("claude-code"), Some(AgentType::ClaudeCode));
+        assert_eq!(
+            AgentType::from_str("claude-code"),
+            Some(AgentType::ClaudeCode)
+        );
         assert_eq!(AgentType::from_str("claude"), Some(AgentType::ClaudeCode));
         assert_eq!(AgentType::from_str("CLAUDE"), Some(AgentType::ClaudeCode));
         assert_eq!(AgentType::from_str("codex"), Some(AgentType::Codex));
@@ -269,8 +277,14 @@ mod tests {
 
     #[test]
     fn test_assignee_from_str() {
-        assert_eq!(Assignee::from_str("claude-code"), Some(Assignee::Agent(AgentType::ClaudeCode)));
-        assert_eq!(Assignee::from_str("claude"), Some(Assignee::Agent(AgentType::ClaudeCode)));
+        assert_eq!(
+            Assignee::from_str("claude-code"),
+            Some(Assignee::Agent(AgentType::ClaudeCode))
+        );
+        assert_eq!(
+            Assignee::from_str("claude"),
+            Some(Assignee::Agent(AgentType::ClaudeCode))
+        );
         assert_eq!(Assignee::from_str("human"), Some(Assignee::Human));
         assert_eq!(Assignee::from_str("me"), Some(Assignee::Human));
         assert_eq!(Assignee::from_str(""), Some(Assignee::Unassigned));
@@ -304,7 +318,10 @@ mod tests {
 
     #[test]
     fn test_assignee_as_str() {
-        assert_eq!(Assignee::Agent(AgentType::ClaudeCode).as_str(), Some("claude-code"));
+        assert_eq!(
+            Assignee::Agent(AgentType::ClaudeCode).as_str(),
+            Some("claude-code")
+        );
         assert_eq!(Assignee::Human.as_str(), Some("human"));
         assert_eq!(Assignee::Unassigned.as_str(), None);
     }

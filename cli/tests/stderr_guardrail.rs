@@ -33,7 +33,8 @@ fn test_check_stderr_writes_regression() {
         .parent()
         .expect("cli/ should have a parent directory (project root)");
 
-    let script = std::path::Path::new(manifest_dir).join("tests/scripts/test-check-stderr-writes.sh");
+    let script =
+        std::path::Path::new(manifest_dir).join("tests/scripts/test-check-stderr-writes.sh");
 
     let output = Command::new(&script)
         .current_dir(project_root)

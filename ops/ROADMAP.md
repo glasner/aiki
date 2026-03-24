@@ -1,19 +1,23 @@
 Bugs:
-- rhai conditionals
-- task branch problem
-- session isolation
+- add reserved status
+- session run command
+- output on run
+- fix loop
+- fix token consumption
 
-- task heartbeat
+- hung fix
+- fix session isolation
 
 Now:
-- chatty -> polish
-- automatic agent failover
+- cleanup loop/fix commands
+- token usage
+- task heartbeat (could be replaced by acp)
 
 Next:
-
+- registry
+- automatic agent failover
 - move aiki context out into an aiki skill(s) (reduce AGENTS.md)
 - finish hooks rename -> rename actions to commands?
-- registry
 - clawmart fasttrack
 - context usage re: lance
 - workflow hooks commands -> review loop plug

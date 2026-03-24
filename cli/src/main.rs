@@ -1,33 +1,32 @@
 mod agents;
 
-
 mod cache;
 mod commands;
 mod config;
 mod editors;
 mod error;
 mod event_bus;
-mod expressions;
 mod events;
+mod expressions;
 mod flows;
-mod parsing;
 mod global;
 mod history;
 mod instructions;
 mod jj;
 mod output_utils;
+mod parsing;
 mod plugins;
 mod prerequisites;
 mod provenance;
 mod repos;
 
-mod session;
 mod plans;
+mod session;
 mod tasks;
 mod tools;
+mod tui;
 mod utils;
 mod validation;
-mod tui;
 
 use clap::{Parser, Subcommand};
 use error::Result;
@@ -279,7 +278,10 @@ fn run() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Init { quiet, instructions_file } => commands::init::run(quiet, instructions_file),
+        Commands::Init {
+            quiet,
+            instructions_file,
+        } => commands::init::run(quiet, instructions_file),
         Commands::Doctor { fix } => commands::doctor::run(fix),
         Commands::Plugin { command } => commands::plugin::run(command),
         Commands::Hooks { command } => match command {
@@ -302,10 +304,7 @@ fn run() -> Result<()> {
             } => commands::acp::run(agent, bin, agent_args),
             HooksCommands::Otel { agent } => commands::otel_receive::run(agent),
         },
-        Commands::Blame {
-            file,
-            agent,
-        } => commands::blame::run(file, agent),
+        Commands::Blame { file, agent } => commands::blame::run(file, agent),
         Commands::Authors { changes, format } => commands::authors::run(changes, format),
         Commands::Benchmark { edits } => commands::benchmark::run("aiki/core".to_string(), edits),
         Commands::Session { command } => commands::session::run(command),
@@ -330,7 +329,19 @@ fn run() -> Result<()> {
             // Pass through explicit --review-template only; create_review picks scope-specific default
             // --review flag is a no-op for fix (fix always runs reviews), kept for CLI symmetry with build
             let _ = review;
-            commands::fix::run(task_id, run_async, continue_async, template, decompose_template, loop_template, review_template, agent, autorun, once, output)
+            commands::fix::run(
+                task_id,
+                run_async,
+                continue_async,
+                template,
+                decompose_template,
+                loop_template,
+                review_template,
+                agent,
+                autorun,
+                once,
+                output,
+            )
         }
         Commands::Explore(args) => commands::explore::run(args),
         Commands::Review(args) => commands::review::run(args),

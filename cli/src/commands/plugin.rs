@@ -170,7 +170,11 @@ fn update_single(plugin: &PluginRef, plugins_base: &Path) -> Result<()> {
     if !failures.is_empty() {
         return Err(AikiError::PluginOperationFailed {
             plugin: plugin.to_string(),
-            details: format!("{} dependency failure(s): {}", failures.len(), failures.join("; ")),
+            details: format!(
+                "{} dependency failure(s): {}",
+                failures.len(),
+                failures.join("; ")
+            ),
         });
     }
 
@@ -269,10 +273,8 @@ fn run_list() -> Result<()> {
             // (e.g. cycles where every plugin is someone's dependency), then deps
             // contributed only by non-root plugins shouldn't suppress top-level
             // display. Recompute: only deps of root plugins count as "hidden".
-            let roots: HashSet<&PluginRef> = installed
-                .iter()
-                .filter(|p| !all_deps.contains(p))
-                .collect();
+            let roots: HashSet<&PluginRef> =
+                installed.iter().filter(|p| !all_deps.contains(p)).collect();
 
             let hidden: HashSet<PluginRef> = if roots.is_empty() {
                 // No roots means all plugins are in cycles — show all as top-level
@@ -396,10 +398,7 @@ fn list_installed_plugins(plugins_base: &Path) -> Vec<PluginRef> {
 }
 
 /// Find project-level template overrides of plugin templates.
-fn find_overrides(
-    templates_dir: &Path,
-    project_refs: &[PluginRef],
-) -> Vec<(String, String)> {
+fn find_overrides(templates_dir: &Path, project_refs: &[PluginRef]) -> Vec<(String, String)> {
     let mut overrides = Vec::new();
 
     // For each plugin ref, check if there's a local template override

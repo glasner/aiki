@@ -14,10 +14,12 @@ use crate::agents::AgentType;
 use crate::commands::OutputFormat;
 use crate::error::{AikiError, Result};
 use crate::output_utils;
-use crate::tasks::runner::{handle_session_result, task_run, task_run_async, task_run_on_session, ScreenSession, TaskRunOptions};
 use crate::tasks::md::MdBuilder;
+use crate::tasks::runner::{
+    handle_session_result, task_run, task_run_async, task_run_on_session, TaskRunOptions,
+};
 use crate::tasks::{
-    find_task, get_subtasks, materialize_graph, read_events,
+    find_task, get_subtasks, materialize_graph, read_events, start_task_core, TaskStatus,
 };
 
 /// Options for `run_loop()`
@@ -80,9 +82,8 @@ pub struct LoopArgs {
 
 /// Run the loop command (CLI entry point)
 pub fn run(args: LoopArgs) -> Result<()> {
-    let cwd = env::current_dir().map_err(|_| {
-        AikiError::InvalidArgument("Failed to get current directory".to_string())
-    })?;
+    let cwd = env::current_dir()
+        .map_err(|_| AikiError::InvalidArgument("Failed to get current directory".to_string()))?;
 
     let agent_type = if let Some(ref agent_str) = args.agent {
         Some(
@@ -101,7 +102,7 @@ pub fn run(args: LoopArgs) -> Result<()> {
         options = options.with_template(template);
     }
 
-    let loop_task_id = run_loop(&cwd, &args.parent_id, options, None)?;
+    let loop_task_id = run_loop(&cwd, &args.parent_id, options, false)?;
 
     // --output id: emit bare task ID and exit before orchestration
     if matches!(args.output, Some(OutputFormat::Id)) {
@@ -122,7 +123,7 @@ pub fn run_loop(
     cwd: &Path,
     parent_id: &str,
     options: LoopOptions,
-    session: Option<&mut ScreenSession>,
+    show_tui: bool,
 ) -> Result<String> {
     // Validate parent task exists and has subtasks
     let events = read_events(cwd)?;
@@ -136,6 +137,11 @@ pub fn run_loop(
             "Parent task {} has no subtasks. Nothing to loop over.",
             &parent_id[..parent_id.len().min(8)]
         )));
+    }
+
+    // Start the parent task if not already in progress
+    if parent.status != TaskStatus::InProgress {
+        start_task_core(cwd, &[parent_id.clone()])?;
     }
 
     // Create loop task from loop template
@@ -160,7 +166,13 @@ pub fn run_loop(
     // Write orchestrates link: loop task → parent
     let events = crate::tasks::storage::read_events(cwd)?;
     let graph = crate::tasks::graph::materialize_graph(&events);
-    crate::tasks::storage::write_link_event(cwd, &graph, "orchestrates", &loop_task_id, &parent_id)?;
+    crate::tasks::storage::write_link_event(
+        cwd,
+        &graph,
+        "orchestrates",
+        &loop_task_id,
+        &parent_id,
+    )?;
 
     // Run the loop task
     let task_run_options = if let Some(agent) = options.agent {
@@ -169,8 +181,8 @@ pub fn run_loop(
         TaskRunOptions::new()
     };
 
-    if let Some(session) = session {
-        let session_result = task_run_on_session(cwd, &loop_task_id, task_run_options, session)?;
+    if show_tui && !options.run_async {
+        let session_result = task_run_on_session(cwd, &loop_task_id, task_run_options, true)?;
         handle_session_result(cwd, &loop_task_id, session_result, true)?;
     } else if options.run_async {
         let _handle = task_run_async(cwd, &loop_task_id, task_run_options)?;

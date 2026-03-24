@@ -13,24 +13,25 @@ pub mod graph;
 pub mod id;
 pub mod lanes;
 pub mod manager;
+pub mod md;
 pub mod runner;
 pub mod spawner;
-pub mod status_monitor;
 pub mod storage;
 pub mod templates;
 pub mod types;
-pub mod md;
 
 pub use graph::{materialize_graph, materialize_graph_with_ids, TaskGraph};
 pub use id::{generate_task_id, is_task_id, is_task_id_prefix, is_valid_slug};
 pub use manager::{
-    find_task, get_subtasks, get_current_scope_set,
-    get_in_progress,
-    get_ready_queue_for_scope_set,
+    find_task, get_current_scope_set, get_in_progress, get_ready_queue_for_scope_set, get_subtasks,
 };
-pub use storage::{read_events, read_events_with_ids, write_event, write_link_event, write_link_event_with_autorun};
-pub use types::{Task, TaskActivity, TaskComment, TaskEvent, TaskOutcome, TaskPriority, TaskStatus};
 pub use md::MdBuilder;
+pub use storage::{
+    read_events, read_events_with_ids, write_event, write_link_event, write_link_event_with_autorun,
+};
+pub use types::{
+    Task, TaskActivity, TaskComment, TaskEvent, TaskOutcome, TaskPriority, TaskStatus,
+};
 
 use crate::error::{AikiError, Result};
 use crate::events::{AikiEvent, AikiTaskStartedPayload, TaskEventPayload};
@@ -44,7 +45,10 @@ pub fn current_turn_id(session_id: Option<&str>) -> Option<String> {
     let sid = session_id?;
     let (turn_number, _) =
         crate::history::get_current_turn_info(&crate::global::global_aiki_dir(), sid).ok()?;
-    Some(crate::session::turn_state::generate_turn_id(sid, turn_number))
+    Some(crate::session::turn_state::generate_turn_id(
+        sid,
+        turn_number,
+    ))
 }
 
 /// Result of starting tasks via `start_task_core`

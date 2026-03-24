@@ -244,15 +244,13 @@ impl AikiSessionFile {
     ///
     /// Returns the last `repo=<id>` entry if present.
     pub fn read_repo_id(&self) -> Option<String> {
-        fs::read_to_string(&self.path)
-            .ok()
-            .and_then(|content| {
-                content
-                    .lines()
-                    .filter_map(|line| line.strip_prefix("repo="))
-                    .last()
-                    .map(String::from)
-            })
+        fs::read_to_string(&self.path).ok().and_then(|content| {
+            content
+                .lines()
+                .filter_map(|line| line.strip_prefix("repo="))
+                .last()
+                .map(String::from)
+        })
     }
 
     /// Update the current repo ID stored in the session file.
@@ -601,12 +599,7 @@ impl AikiSession {
     #[must_use]
     pub fn with_task_from_env(self) -> Self {
         let task_id = std::env::var("AIKI_TASK").ok();
-        debug_log(|| {
-            format!(
-                "with_task_from_env: AIKI_TASK={:?}",
-                task_id
-            )
-        });
+        debug_log(|| format!("with_task_from_env: AIKI_TASK={:?}", task_id));
         self.with_task(task_id)
     }
 
@@ -1306,8 +1299,7 @@ fn find_session_by_repo(repo_path: impl AsRef<Path>) -> Option<SessionMatch> {
             continue;
         }
 
-        if let (Some(agent_type), Some(session_id)) = (info.agent_type, info.session_id.clone())
-        {
+        if let (Some(agent_type), Some(session_id)) = (info.agent_type, info.session_id.clone()) {
             let external_id = info.external_session_id.unwrap_or_default();
 
             matching_sessions.push(SessionMatch {
@@ -1554,10 +1546,7 @@ pub fn prune_dead_pid_sessions() {
                 match isolation::recover_orphaned_workspaces(session_uuid) {
                     Ok(0) => {}
                     Ok(n) => {
-                        eprintln!(
-                            "[aiki] Recovered {} workspace(s) from crashed session",
-                            n
-                        );
+                        eprintln!("[aiki] Recovered {} workspace(s) from crashed session", n);
                     }
                     Err(e) => {
                         debug_log(|| {
@@ -2432,7 +2421,10 @@ mod tests {
 
         // Should only appear once
         let content = fs::read_to_string(&session_file.path).unwrap();
-        let repo_count = content.lines().filter(|l| l.trim() == "repo=abc123").count();
+        let repo_count = content
+            .lines()
+            .filter(|l| l.trim() == "repo=abc123")
+            .count();
         assert_eq!(repo_count, 1);
     }
 

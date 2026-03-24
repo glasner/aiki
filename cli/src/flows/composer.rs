@@ -73,7 +73,10 @@ pub enum EventType {
 impl EventType {
     /// Get the statements for this event type from EventHandlers.
     #[must_use]
-    pub fn get_handlers<'a>(&self, handlers: &'a super::types::EventHandlers) -> &'a [HookStatement] {
+    pub fn get_handlers<'a>(
+        &self,
+        handlers: &'a super::types::EventHandlers,
+    ) -> &'a [HookStatement] {
         match self {
             EventType::SessionStarted => &handlers.session_started,
             EventType::SessionResumed => &handlers.session_resumed,
@@ -421,7 +424,8 @@ impl<'a> HookComposer<'a> {
 
         // 1. Walk before blocks in order
         for block in &hook.before {
-            let outcome = self.execute_composition_block(block, canonical_path, event_type, state)?;
+            let outcome =
+                self.execute_composition_block(block, canonical_path, event_type, state)?;
             match outcome {
                 HookOutcome::Success => {}
                 HookOutcome::FailedContinue => {
@@ -442,8 +446,7 @@ impl<'a> HookComposer<'a> {
 
             state.clear_variables();
             state.hook_name = Some(segment.source_hook.clone());
-            let outcome =
-                self.execute_statements_with_hooks(statements, event_type, state)?;
+            let outcome = self.execute_statements_with_hooks(statements, event_type, state)?;
             match outcome {
                 HookOutcome::Success => {}
                 HookOutcome::FailedContinue => {
@@ -469,8 +472,7 @@ impl<'a> HookComposer<'a> {
             state.clear_variables();
             state.hook_name = Some(Self::extract_flow_identifier(canonical_path));
 
-            let result =
-                self.execute_statements_with_hooks(statements, event_type, state)?;
+            let result = self.execute_statements_with_hooks(statements, event_type, state)?;
 
             match result {
                 HookOutcome::Success => {}
@@ -491,7 +493,8 @@ impl<'a> HookComposer<'a> {
 
         // 4. Walk after blocks in order
         for block in &hook.after {
-            let outcome = self.execute_composition_block(block, canonical_path, event_type, state)?;
+            let outcome =
+                self.execute_composition_block(block, canonical_path, event_type, state)?;
             match outcome {
                 HookOutcome::Success => {}
                 HookOutcome::FailedContinue => {
@@ -543,8 +546,7 @@ impl<'a> HookComposer<'a> {
                 .clone()
                 .or_else(|| Some(Self::extract_flow_identifier(canonical_path)));
 
-            let result =
-                self.execute_statements_with_hooks(statements, event_type, state);
+            let result = self.execute_statements_with_hooks(statements, event_type, state);
 
             // Restore unconditionally
             state.hook_name = saved_hook_name;
@@ -763,7 +765,8 @@ version: "1"
             AgentType::ClaudeCode,
             "test-session".to_string(),
             None::<&str>,
-            DetectionMethod::Hook, SessionMode::Interactive,
+            DetectionMethod::Hook,
+            SessionMode::Interactive,
         );
         let event = AikiEvent::ChangeCompleted(AikiChangeCompletedPayload {
             session,
@@ -1415,7 +1418,10 @@ change.completed:
 
         assert_eq!(lines.len(), 3, "Expected 3 log entries, got: {:?}", lines);
         assert_eq!(lines[0], "PLUGIN_A", "Include plugin runs first");
-        assert_eq!(lines[1], "BEFORE_INLINE", "Inline before handler runs second");
+        assert_eq!(
+            lines[1], "BEFORE_INLINE",
+            "Inline before handler runs second"
+        );
         assert_eq!(lines[2], "MAIN", "Main handler runs last");
     }
 
@@ -1540,7 +1546,12 @@ change.completed:
         let lines: Vec<&str> = log_content.lines().collect();
 
         // Only the before and after shell actions should have run
-        assert_eq!(lines.len(), 2, "Expected 2 log entries (plugin was no-op), got: {:?}", lines);
+        assert_eq!(
+            lines.len(),
+            2,
+            "Expected 2 log entries (plugin was no-op), got: {:?}",
+            lines
+        );
         assert_eq!(lines[0], "BEFORE_HOOK");
         assert_eq!(lines[1], "AFTER_HOOK");
     }
@@ -1597,7 +1608,12 @@ change.completed:
 
         // hook: only runs own handlers, NOT before/after
         // So FROM_SUB should NOT appear
-        assert_eq!(lines.len(), 2, "Expected 2 log entries (hook: skips before/after), got: {:?}", lines);
+        assert_eq!(
+            lines.len(),
+            2,
+            "Expected 2 log entries (hook: skips before/after), got: {:?}",
+            lines
+        );
         assert_eq!(lines[0], "FROM_COMPOSED", "Plugin's own handler runs");
         assert_eq!(lines[1], "MAIN", "Main handler continues after");
     }
@@ -1690,7 +1706,10 @@ change.completed:
 
         assert_eq!(lines.len(), 3, "Expected 3 log entries, got: {:?}", lines);
         assert_eq!(lines[0], "PLUGIN", "hook: in before block runs first");
-        assert_eq!(lines[1], "BEFORE_INLINE", "Inline after hook: in before block");
+        assert_eq!(
+            lines[1], "BEFORE_INLINE",
+            "Inline after hook: in before block"
+        );
         assert_eq!(lines[2], "MAIN", "Main handler runs last");
     }
 
@@ -1970,7 +1989,10 @@ change.completed:
         // Include's before block comes first, then main's own before block
         // Then handler segments (plugin own, main own)
         assert_eq!(lines.len(), 4, "Expected 4 log entries, got: {:?}", lines);
-        assert_eq!(lines[0], "PLUGIN_BEFORE", "Include's before block runs first");
+        assert_eq!(
+            lines[0], "PLUGIN_BEFORE",
+            "Include's before block runs first"
+        );
         assert_eq!(lines[1], "MAIN_BEFORE", "Main's before block runs second");
         assert_eq!(lines[2], "PLUGIN_OWN", "Include's own handlers run third");
         assert_eq!(lines[3], "MAIN_OWN", "Main's own handlers run last");
@@ -2144,8 +2166,14 @@ change.completed:
         let lines: Vec<&str> = log_content.lines().filter(|l| !l.is_empty()).collect();
 
         assert_eq!(lines.len(), 3, "Expected 3 log lines, got: {:?}", lines);
-        assert_eq!(lines[0], "before_hook:before_hook_value", "Var set before hook");
-        assert_eq!(lines[1], "plugin_set:plugin_value", "Plugin sets its own var");
+        assert_eq!(
+            lines[0], "before_hook:before_hook_value",
+            "Var set before hook"
+        );
+        assert_eq!(
+            lines[1], "plugin_set:plugin_value",
+            "Plugin sets its own var"
+        );
         assert_eq!(
             lines[2], "after_hook:before_hook_value",
             "After hook:, caller's var is restored (not leaked)"
@@ -2193,7 +2221,8 @@ change.completed:
         let log_content = fs::read_to_string(&log_path).unwrap();
 
         assert_eq!(
-            log_content.trim(), "val_a|val_b",
+            log_content.trim(),
+            "val_a|val_b",
             "Both caller variables should be restored after hook:"
         );
     }
@@ -2238,7 +2267,10 @@ change.completed:
         let lines: Vec<&str> = log_content.lines().filter(|l| !l.is_empty()).collect();
 
         assert_eq!(lines.len(), 2, "Expected 2 log lines, got: {:?}", lines);
-        assert_eq!(lines[0], "plugin:seg_val", "Plugin segment sees its own var");
+        assert_eq!(
+            lines[0], "plugin:seg_val",
+            "Plugin segment sees its own var"
+        );
         // Main segment starts with clean scope — shouldn't see plugin's var
         assert_eq!(
             lines[1], "main_sees:no_seg_var",
@@ -2286,7 +2318,10 @@ change.completed:
 
         // Only change.completed handlers should run, not session.started
         assert_eq!(lines.len(), 2, "Expected 2 log entries, got: {:?}", lines);
-        assert_eq!(lines[0], "CHANGE_BEFORE", "Only change.completed before runs");
+        assert_eq!(
+            lines[0], "CHANGE_BEFORE",
+            "Only change.completed before runs"
+        );
         assert_eq!(lines[1], "CHANGE_MAIN", "change.completed main runs");
     }
 
@@ -2451,7 +2486,10 @@ change.completed:
 
         // First call: should fail because aiki/mid includes aiki/nonexistent
         let result = composer.compose_hook("aiki/outer", EventType::ChangeCompleted, &mut state);
-        assert!(result.is_err(), "Expected error from missing nested include");
+        assert!(
+            result.is_err(),
+            "Expected error from missing nested include"
+        );
 
         // Second call: compose aiki/mid directly. Before the fix, aiki/mid's
         // canonical path was left on the call_stack from the failed first call,

@@ -90,19 +90,16 @@ mod tests {
     #[test]
     fn test_alias_cross_review() {
         // "claude" alias should resolve to claude-code and pick codex for cross-review
-        let result = determine_reviewer_with(
-            Some("claude"),
-            &[AgentType::ClaudeCode, AgentType::Codex],
-        )
-        .unwrap();
+        let result =
+            determine_reviewer_with(Some("claude"), &[AgentType::ClaudeCode, AgentType::Codex])
+                .unwrap();
         assert_eq!(result, "codex");
     }
 
     #[test]
     fn test_alias_self_review() {
         // "claude" alias with only ClaudeCode available → self-review with canonical name
-        let result =
-            determine_reviewer_with(Some("claude"), &[AgentType::ClaudeCode]).unwrap();
+        let result = determine_reviewer_with(Some("claude"), &[AgentType::ClaudeCode]).unwrap();
         assert_eq!(result, "claude-code");
     }
 

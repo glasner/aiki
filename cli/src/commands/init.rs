@@ -5,8 +5,8 @@ use crate::global;
 use crate::instructions;
 use crate::jj;
 use crate::prerequisites;
-use crate::repos::RepoDetector;
 use crate::repos;
+use crate::repos::RepoDetector;
 use anyhow::Context;
 use std::env;
 use std::fs;
@@ -405,8 +405,7 @@ fn ensure_hooks_yml(repo_root: &Path, quiet: bool) -> Result<()> {
         return Ok(()); // No .aiki dir yet — will be created later in init flow
     }
 
-    fs::write(&hooks_path, HOOKS_YML_TEMPLATE)
-        .context("Failed to create .aiki/hooks.yml")?;
+    fs::write(&hooks_path, HOOKS_YML_TEMPLATE).context("Failed to create .aiki/hooks.yml")?;
 
     if !quiet {
         println!("Created .aiki/hooks.yml with default workflow automation");
@@ -451,12 +450,17 @@ fn init_global_directories(quiet: bool) -> Result<()> {
             let stderr = String::from_utf8_lossy(&result.stderr);
             // Ignore "already exists" errors (idempotent)
             if !stderr.contains("already exists") {
-                return Err(anyhow::anyhow!("Failed to initialize global JJ repo: {}", stderr).into());
+                return Err(
+                    anyhow::anyhow!("Failed to initialize global JJ repo: {}", stderr).into(),
+                );
             }
         }
 
         if !quiet {
-            println!("✓ Initialized global JJ repository at {}", global_jj.display());
+            println!(
+                "✓ Initialized global JJ repository at {}",
+                global_jj.display()
+            );
         }
     } else if !quiet {
         println!("✓ Global JJ repository exists");

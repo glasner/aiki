@@ -45,7 +45,8 @@
 | Issue number | fg |
 | Issue text | fg |
 | `Iteration N` header | bold, fg |
-| Summary total | bold |
+| Summary per-agent line | dim |
+| Summary total line | bold |
 
 ## Shared Components
 
@@ -178,21 +179,25 @@ Used after review phases when issues are found.
 
 ### Summary Line
 
-Final line of a completed pipeline.
+Final line of a completed pipeline. Shows per-agent breakdown when multiple agents were used, plus a total line.
 
 ```
 [80 cols]
  ---                                                ← dim separator
                                                     ← blank row
  合 build completed — mutex-for-task-writes.md      ← bold+fg 合 (static, not spinner), bold+fg text
- ⎿ Total 45m29 — 1.45M tokens                      ← dim ⎿, bold text
+ ⎿ Claude: 2 sessions — 35m33 — 0.72M tokens       ← dim ⎿, dim text
+ ⎿ Codex: 3 sessions — 20m — 0.2M tokens           ← dim ⎿, dim text
+ ⎿ Total: 5 sessions — 55m33 — 0.92M tokens        ← dim ⎿, bold text
                                                     ← blank row
  Run `aiki task diff lkji3d` to see changes.        ← dim text
 ```
 
 - `---` separator before
 - Phase header is bold
+- Per-agent lines are dim (one per distinct agent type)
 - Total line is bold
+- When only one agent type was used, skip per-agent lines — just show the total
 - Hint line is dim
 
 ---
@@ -648,10 +653,13 @@ Build without review. Phases: plan → decompose → subtask table → loop → 
  ---                                                                    ← dim separator
                                                                         ← blank row
  合 build completed — ops/now/tasks/mutex-for-task-writes.md            ← bold+fg 合, bold+fg text
- ⎿ Total 55m33 — 0.92M tokens                                          ← dim ⎿, bold text
+ ⎿ Claude: 2 sessions — 55m33 — 0.92M tokens                           ← dim ⎿, dim text
+ ⎿ Total: 2 sessions — 55m33 — 0.92M tokens                            ← dim ⎿, bold text
                                                                         ← blank row
  Run `aiki task diff lkji3d` to see changes.                            ← dim hint text
 ```
+
+Note: single agent type, so per-agent line and total are identical. Implementations MAY omit the per-agent line when there's only one agent type.
 
 ---
 
@@ -703,7 +711,9 @@ If review finds no issues, the build completes immediately:
  ---                                                                    ← dim separator
                                                                         ← blank row
  合 build completed — ops/now/tasks/mutex-for-task-writes.md            ← bold+fg 合, bold+fg text
- ⎿ Total 56m55 — 1.12M tokens                                          ← dim ⎿, bold text
+ ⎿ Claude: 2 sessions — 45m33 — 0.82M tokens                           ← dim ⎿, dim text
+ ⎿ Codex: 1 session — 11m22 — 0.3M tokens                              ← dim ⎿, dim text
+ ⎿ Total: 3 sessions — 56m55 — 1.12M tokens                            ← dim ⎿, bold text
                                                                         ← blank row
  Run `aiki task diff lkji3d` to see changes.                            ← dim hint text
 ```
@@ -829,7 +839,9 @@ After fix review passes, a second review checks the original scope for regressio
  ---                                                                    ← dim separator
                                                                         ← blank row
  合 build completed — ops/now/tasks/mutex-for-task-writes.md            ← bold+fg 合, bold+fg text
- ⎿ Total 45m29 — 1.45M tokens                                          ← dim ⎿, bold text
+ ⎿ Claude: 3 sessions — 35m29 — 1.05M tokens                           ← dim ⎿, dim text
+ ⎿ Codex: 2 sessions — 10m — 0.4M tokens                               ← dim ⎿, dim text
+ ⎿ Total: 5 sessions — 45m29 — 1.45M tokens                            ← dim ⎿, bold text
                                                                         ← blank row
  Run `aiki task diff lkji3d` to see changes.                            ← dim hint text
 ```
@@ -867,7 +879,9 @@ The fix cycle repeats (states 3.14-3.18) until the review approves or MAX_QUALIT
                                                                         ← blank row
  合 build completed — ops/now/tasks/mutex-for-task-writes.md            ← bold+fg 合, bold+fg text
  ⎿ ⚠ Max iterations reached — 2 issues remain                          ← dim ⎿, yellow ⚠, bold text
- ⎿ Total 2h15m — 8.2M tokens                                           ← dim ⎿, bold text
+ ⎿ Claude: 8 sessions — 1h50m — 6.4M tokens                            ← dim ⎿, dim text
+ ⎿ Codex: 4 sessions — 25m — 1.8M tokens                               ← dim ⎿, dim text
+ ⎿ Total: 12 sessions — 2h15m — 8.2M tokens                            ← dim ⎿, bold text
                                                                         ← blank row
  Run `aiki task diff lkji3d` to see changes.                            ← dim hint text
 ```
@@ -1186,7 +1200,8 @@ Standalone fix pipeline. Takes a review task ID, creates fix-plan → decomposes
  ---                                                                    ← dim separator
                                                                         ← blank row
  合 fix completed — 3/3 issues resolved                                ← bold+fg 合, bold+fg text
- ⎿ Total 8m42 — 0.45M tokens                                           ← dim ⎿, bold text
+ ⎿ Claude: 3 sessions — 8m42 — 0.45M tokens                            ← dim ⎿, dim text
+ ⎿ Total: 3 sessions — 8m42 — 0.45M tokens                             ← dim ⎿, bold text
                                                                         ← blank row
  Run `aiki task diff xkp29m` to see changes.                            ← dim hint text
 ```
@@ -1277,7 +1292,9 @@ This is what scrollback looks like when the build is completely done:
  ---                                                                   ← dim separator
                                                                        ← blank row
  合 build completed — mutex-for-task-writes.md                         ← bold+fg (summary, not dimmed)
- ⎿ Total 45m29 — 1.45M tokens                                         ← dim ⎿, bold text
+ ⎿ Claude: 3 sessions — 35m29 — 1.05M tokens                          ← dim ⎿, dim text
+ ⎿ Codex: 2 sessions — 10m — 0.4M tokens                              ← dim ⎿, dim text
+ ⎿ Total: 5 sessions — 45m29 — 1.45M tokens                           ← dim ⎿, bold text
                                                                        ← blank row
  Run `aiki task diff lkji3d` to see changes.                           ← dim hint text
 ```
@@ -1313,7 +1330,7 @@ As phases complete, their content dims to keep focus on what's active.
 1. **"Initial Build" label** — in the mockup, "Initial Build" appears between plan and decompose. Is this always present? What triggers it vs not?
 2. **Lane completion counts** — `2/3 subtasks completed` when the lane had 3 tasks but only 2 finished. Does the 3rd get reassigned? What's the failure mode?
 3. **Subtask table width** — subtask names can be long. Truncate with `…`? Or wrap?
-4. **Multiple iterations** — `Iteration 2`, `Iteration 3`, etc. **Resolved:** Max is `MAX_QUALITY_ITERATIONS = 10` (defined in `build.rs` command logic). When `iteration == MAX_QUALITY_ITERATIONS` and review still has issues, the summary shows `⚠ Max iterations reached — N issues remain` (see step-2b build flow). The TUI doesn't enforce the limit — it just renders whatever iterations exist. The command logic stops spawning new fix tasks at the max.
+4. **Multiple iterations** — `Iteration 2`, `Iteration 3`, etc. **Resolved:** Max is `MAX_QUALITY_ITERATIONS = 10` (defined in `build.rs` command logic). When `iteration == MAX_QUALITY_ITERATIONS` and review still has issues, the summary shows `⚠ Max iterations reached — N issues remain` (see step-2-new-screens.md, section 2.2). The TUI doesn't enforce the limit — it just renders whatever iterations exist. The command logic stops spawning new fix tasks at the max.
 5. **Detach and reattach** — **Resolved:** Yes, `aiki build --attach <epic-id>` re-enters the inline renderer. Because the view is graph-driven (renders whatever's in the current TaskGraph), it naturally handles cold-start reattachment — "I'm seeing this graph for the first time but the build is 70% done" just works. The view function renders completed phases as dimmed, active phases with spinners, and pending phases as not-yet-rendered. Add a test case: construct a graph that's 70% done, verify `build::view()` produces correct output with dimmed completed phases and active current phase.
 6. **Review phase header variants** — are `review plan`, `review code`, `review task`, `review session` the right labels? Or should it be `review (codex)` with the scope in the result line?
 7. **Session review issue grouping** — session reviews span multiple tasks. Should issues be grouped by task (with `[task name]` prefix) as shown in Flow 7?

@@ -226,7 +226,11 @@ mod tests {
         let temp_dir = setup_test_repo();
         // No git repo - should get local-* ID
         let id = compute_repo_id(temp_dir.path()).unwrap();
-        assert!(id.starts_with("local-"), "Should be local-* without git: {}", id);
+        assert!(
+            id.starts_with("local-"),
+            "Should be local-* without git: {}",
+            id
+        );
     }
 
     #[test]
@@ -235,7 +239,11 @@ mod tests {
         init_git_repo(temp_dir.path());
         // Git repo with no commits - should get local-* ID
         let id = compute_repo_id(temp_dir.path()).unwrap();
-        assert!(id.starts_with("local-"), "Should be local-* without commits: {}", id);
+        assert!(
+            id.starts_with("local-"),
+            "Should be local-* without commits: {}",
+            id
+        );
     }
 
     #[test]
@@ -245,7 +253,11 @@ mod tests {
         create_commit(temp_dir.path(), "Initial commit");
 
         let id = compute_repo_id(temp_dir.path()).unwrap();
-        assert!(!id.starts_with("local-"), "Should be root hash with commits: {}", id);
+        assert!(
+            !id.starts_with("local-"),
+            "Should be root hash with commits: {}",
+            id
+        );
         assert_eq!(id.len(), 8, "Truncated hash should be 8 chars: {}", id);
     }
 

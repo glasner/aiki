@@ -117,7 +117,6 @@ pub fn build_list_output(in_progress: &[&Task], ready_queue: &[&Task]) -> String
     out
 }
 
-
 /// Format a list of tasks for filtered list views
 #[must_use]
 pub fn format_task_list(tasks: &[&Task]) -> String {
@@ -170,6 +169,31 @@ pub fn format_action_started(task: &Task, show_name: bool) -> String {
     let mut md = format!(
         "{}\n---\nRun `aiki task comment add {}` to leave updates as you go\n",
         header,
+        short_id(&task.id),
+    );
+
+    if let Some(ref instructions) = task.instructions {
+        md.push('\n');
+        md.push_str(&format_instructions(instructions));
+    }
+
+    md
+}
+
+/// Format action confirmation when a parent task is auto-started after all subtasks complete.
+///
+/// Guides the agent to review the original instructions for completeness before closing.
+/// Instructions (if present) are appended after the review guidance.
+#[must_use]
+pub fn format_action_parent_autostarted(task: &Task) -> String {
+    let mut md = format!(
+        "Started {} — {}\n\
+         ---\n\
+         All subtasks have been completed. Review the original instructions for completeness, \
+         then close with a summary:\n\
+         `aiki task close {} --summary \"...\"`\n",
+        short_id(&task.id),
+        task.name,
         short_id(&task.id),
     );
 
@@ -241,7 +265,7 @@ mod tests {
             closed_outcome: None,
             summary: None,
             turn_started: None,
-                closed_at: None,
+            closed_at: None,
             turn_closed: None,
             turn_stopped: None,
             comments: Vec::new(),
@@ -402,8 +426,7 @@ mod tests {
 
     #[test]
     fn test_builder_error() {
-        let md = MdBuilder::new()
-            .build_error("Task not found");
+        let md = MdBuilder::new().build_error("Task not found");
         assert!(md.contains("Error: Task not found"));
     }
 

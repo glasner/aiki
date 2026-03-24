@@ -13,26 +13,25 @@ use std::env;
 use std::io::{self, BufRead, IsTerminal};
 use std::path::Path;
 
-use crate::agents::{AgentType, get_available_agents};
+use crate::agents::{get_available_agents, AgentType};
 use crate::error::{AikiError, Result};
 use crate::output_utils;
-use crate::tasks::runner::{ScreenSession, handle_session_result, task_run, task_run_on_session, TaskRunOptions};
-use crate::tui::loading_screen::LoadingScreen;
 use crate::tasks::md::MdBuilder;
+use crate::tasks::runner::{
+    handle_session_result, task_run, task_run_on_session, TaskRunOptions,
+};
 use crate::tasks::templates::get_working_copy_change_id;
 use crate::tasks::{
-    find_task, generate_task_id, materialize_graph, materialize_graph_with_ids,
-    read_events, read_events_with_ids, write_event, write_link_event,
-    write_link_event_with_autorun, Task, TaskEvent, TaskPriority,
+    find_task, generate_task_id, materialize_graph, materialize_graph_with_ids, read_events,
+    read_events_with_ids, write_event, write_link_event, write_link_event_with_autorun, Task,
+    TaskEvent, TaskPriority,
 };
 
-use super::OutputFormat;
 use super::decompose::{run_decompose, DecomposeOptions};
 use super::loop_cmd::{run_loop, LoopOptions};
-use super::review::{
-    create_review, CreateReviewParams, ReviewScope, ReviewScopeKind,
-};
+use super::review::{create_review, CreateReviewParams, ReviewScope, ReviewScopeKind};
 use super::task::{create_from_template, TemplateTaskParams};
+use super::OutputFormat;
 
 /// Maximum iterations of the quality loop to prevent infinite cycles.
 const MAX_QUALITY_ITERATIONS: usize = 10;
@@ -54,9 +53,8 @@ pub fn run(
     once: bool,
     output: Option<OutputFormat>,
 ) -> Result<()> {
-    let cwd = env::current_dir().map_err(|_| {
-        AikiError::InvalidArgument("Failed to get current directory".to_string())
-    })?;
+    let cwd = env::current_dir()
+        .map_err(|_| AikiError::InvalidArgument("Failed to get current directory".to_string()))?;
 
     // Get task ID from argument or stdin
     let task_id = match task_id {
@@ -64,7 +62,20 @@ pub fn run(
         None => read_task_id_from_stdin()?,
     };
 
-    run_fix(&cwd, &task_id, run_async, continue_async, plan_template, decompose_template, loop_template, review_template, agent, autorun, once, output)
+    run_fix(
+        &cwd,
+        &task_id,
+        run_async,
+        continue_async,
+        plan_template,
+        decompose_template,
+        loop_template,
+        review_template,
+        agent,
+        autorun,
+        once,
+        output,
+    )
 }
 
 /// Extract task ID from input, handling XML output format
@@ -88,9 +99,8 @@ fn read_task_id_from_stdin() -> Result<String> {
     let mut input = String::new();
 
     for line in stdin.lock().lines() {
-        let line = line.map_err(|e| {
-            AikiError::InvalidArgument(format!("Failed to read from stdin: {}", e))
-        })?;
+        let line = line
+            .map_err(|e| AikiError::InvalidArgument(format!("Failed to read from stdin: {}", e)))?;
         input.push_str(&line);
         input.push('\n');
     }
@@ -126,7 +136,17 @@ pub fn run_fix(
 ) -> Result<()> {
     // Continue-async path: pick up from a previously created fix-parent
     if let Some(ref fix_parent_id) = continue_async {
-        return run_fix_continue(cwd, fix_parent_id, plan_template, decompose_template, loop_template, review_template, agent, once, output);
+        return run_fix_continue(
+            cwd,
+            fix_parent_id,
+            plan_template,
+            decompose_template,
+            loop_template,
+            review_template,
+            agent,
+            once,
+            output,
+        );
     }
 
     // Parse agent if provided
@@ -160,7 +180,8 @@ pub fn run_fix(
     // Resolve the final template name for fix-plan tasks.
     // Priority chain: CLI --plan-template arg > review_task.data["options.fix_template"] > "fix".
     // See test_resolve_fix_template_name_* tests for coverage of this resolution logic.
-    let plan_template_resolved = resolve_fix_template_name(plan_template.clone(), &review_task.data);
+    let plan_template_resolved =
+        resolve_fix_template_name(plan_template.clone(), &review_task.data);
 
     // Determine assignee for fix tasks.
     // For task-scoped reviews, look up the original task's assignee (the agent who
@@ -169,22 +190,32 @@ pub fn run_fix(
     let assignee = match scope.kind {
         ReviewScopeKind::Task => {
             let original_task = find_task(&tasks, &scope.id).ok();
-            Some(determine_followup_assignee(agent_type, original_task, None)?)
+            Some(determine_followup_assignee(
+                agent_type,
+                original_task,
+                None,
+            )?)
         }
-        _ => Some(determine_followup_assignee(agent_type, Some(review_task), None)?),
+        _ => Some(determine_followup_assignee(
+            agent_type,
+            Some(review_task),
+            None,
+        )?),
     };
 
-    // Async spawn path: create fix-parent synchronously, then spawn background process
-    if run_async {
-        // Short-circuit if no actionable issues
-        if !has_actionable_issues(review_task) {
-            if output != Some(OutputFormat::Id) {
-                output_approved(&review_task.id)?;
-            }
-            return Ok(());
+    // Short-circuit if no actionable issues
+    if !has_actionable_issues(review_task) {
+        if output != Some(OutputFormat::Id) {
+            output_approved(&review_task.id)?;
         }
+        return Ok(());
+    }
 
-        // Create fix-parent task (container, like an epic)
+    let output_id = matches!(output, Some(OutputFormat::Id));
+    let show_tui = !run_async && io::stdout().is_terminal() && !output_id;
+
+    if run_async || show_tui {
+        // Create fix-parent task, spawn background, optionally show TUI
         let fix_parent_id = create_fix_parent(cwd, &review_task.id, &scope, &assignee, autorun)?;
 
         // Build args for background process
@@ -209,36 +240,51 @@ pub fn run_fix(
         }
 
         use super::async_spawn::spawn_aiki_background;
-        spawn_aiki_background(cwd, &spawn_args)?;
+        let child_pid = spawn_aiki_background(cwd, &spawn_args)?;
 
-        // Emit fix-parent ID and return immediately
-        match output {
-            Some(OutputFormat::Id) => println!("{}", fix_parent_id),
-            None => eprintln!("Fix: {}", fix_parent_id),
+        if show_tui {
+            // Show Screen::Fix TUI immediately, kill background on Ctrl+C
+            let events = read_events(cwd)?;
+            let graph = crate::tasks::materialize_graph(&events);
+            let (width, _) = crossterm::terminal::size().unwrap_or((80, 24));
+            let model = crate::tui::app::Model {
+                graph: std::sync::Arc::new(graph),
+                screen: crate::tui::app::Screen::Fix {
+                    fix_parent_id: fix_parent_id.clone(),
+                    review_id: review_task.id.clone(),
+                },
+                window: crate::tui::app::WindowState::new(width),
+            };
+            crate::tui::app::run_with_child(model, cwd, Some(child_pid))?;
+        } else {
+            // --async: emit fix-parent ID and return
+            match output {
+                Some(OutputFormat::Id) => println!("{}", fix_parent_id),
+                None => eprintln!("Fix: {}", fix_parent_id),
+            }
         }
+
         return Ok(());
     }
 
-    // ── Synchronous quality loop ──────────────────────────────────
+    // ── Non-TTY synchronous quality loop ──────────────────────────
     let mut review_id = review_task.id.clone();
 
-    // Create loading screen for immediate TTY feedback, then transition to ScreenSession
-    let mut session = if io::stderr().is_terminal() {
-        let mut loading = LoadingScreen::new("Loading task graph...")?;
-        loading.set_filepath(&scope.name());
-        loading.set_task_context(&review_task.id, &review_task.name);
-        loading.set_step("Starting quality loop...");
-        let screen = loading.into_live_screen()?;
-        Some(ScreenSession::from_live_screen(screen)?)
-    } else {
-        None
-    };
-
-    let result = run_quality_loop(cwd, &mut review_id, &scope, &assignee, &plan_template_resolved, decompose_template.as_deref(), loop_template.as_deref(), review_template.as_deref(), agent.as_deref(), autorun, once, output, &mut session);
-
-    drop(session);
-
-    result
+    run_quality_loop(
+        cwd,
+        &mut review_id,
+        &scope,
+        &assignee,
+        &plan_template_resolved,
+        decompose_template.as_deref(),
+        loop_template.as_deref(),
+        review_template.as_deref(),
+        agent.as_deref(),
+        autorun,
+        once,
+        output,
+        false, // show_tui = false (non-TTY)
+    )
 }
 
 /// Continue an async fix from a previously created fix-parent.
@@ -274,12 +320,16 @@ fn run_fix_continue(
     let fix_parent = find_task(&tasks, fix_parent_id)?;
 
     // Get review_id from fix-parent's data
-    let review_id = fix_parent.data.get("review").ok_or_else(|| {
-        AikiError::InvalidArgument(format!(
-            "Fix-parent task {} missing data.review field",
-            fix_parent_id
-        ))
-    })?.clone();
+    let review_id = fix_parent
+        .data
+        .get("review")
+        .ok_or_else(|| {
+            AikiError::InvalidArgument(format!(
+                "Fix-parent task {} missing data.review field",
+                fix_parent_id
+            ))
+        })?
+        .clone();
 
     // Get scope from fix-parent's data
     let scope = ReviewScope::from_data(&fix_parent.data)?;
@@ -291,9 +341,17 @@ fn run_fix_continue(
     let assignee = match scope.kind {
         ReviewScopeKind::Task => {
             let original_task = find_task(&tasks, &scope.id).ok();
-            Some(determine_followup_assignee(agent_type, original_task, None)?)
+            Some(determine_followup_assignee(
+                agent_type,
+                original_task,
+                None,
+            )?)
         }
-        _ => Some(determine_followup_assignee(agent_type, Some(review_task), None)?),
+        _ => Some(determine_followup_assignee(
+            agent_type,
+            Some(review_task),
+            None,
+        )?),
     };
 
     // Resolve plan template from review task data
@@ -303,23 +361,19 @@ fn run_fix_continue(
     // then continue the quality loop for subsequent iterations.
 
     // Step 3: Create plan-fix task
-    let plan_fix_id = create_plan_fix_task(cwd, &review_id, fix_parent_id, &assignee, Some(&plan_template_resolved))?;
+    let plan_fix_id = create_plan_fix_task(
+        cwd,
+        &review_id,
+        fix_parent_id,
+        &assignee,
+        Some(&plan_template_resolved),
+    )?;
 
-    // Create loading screen for immediate TTY feedback, then transition to ScreenSession
-    let mut session = if io::stderr().is_terminal() {
-        let mut loading = LoadingScreen::new("Preparing fix...")?;
-        loading.set_filepath(&scope.name());
-        loading.set_task_context(fix_parent_id, &fix_parent.name);
-        loading.set_step("Starting fix pipeline...");
-        let screen = loading.into_live_screen()?;
-        Some(ScreenSession::from_live_screen(screen)?)
-    } else {
-        None
-    };
+    let show_tui = io::stderr().is_terminal();
 
     // Step 4: task_run(plan-fix)
     let run_options = TaskRunOptions::new();
-    run_task_with_session(cwd, &plan_fix_id, run_options, &mut session)?;
+    run_task_with_show_tui(cwd, &plan_fix_id, run_options, show_tui)?;
 
     // Step 5-6: Decompose plan into subtasks under fix-parent
     let plan_path = format!("/tmp/aiki/plans/{}.md", plan_fix_id);
@@ -327,7 +381,13 @@ fn run_fix_continue(
         template: decompose_template.clone(),
         agent: assignee.as_deref().and_then(AgentType::from_str),
     };
-    run_decompose(cwd, &plan_path, fix_parent_id, decompose_options, session.as_mut())?;
+    run_decompose(
+        cwd,
+        &plan_path,
+        fix_parent_id,
+        decompose_options,
+        show_tui,
+    )?;
 
     // Step 7: Delete plan file
     let _ = std::fs::remove_file(&plan_path);
@@ -337,11 +397,10 @@ fn run_fix_continue(
     if let Some(ref tmpl) = loop_template {
         loop_options = loop_options.with_template(tmpl.clone());
     }
-    run_loop(cwd, fix_parent_id, loop_options, session.as_mut())?;
+    run_loop(cwd, fix_parent_id, loop_options, show_tui)?;
 
     // Step 9: if --once, we're done
     if once {
-        drop(session);
         return Ok(());
     }
 
@@ -367,7 +426,12 @@ fn run_fix_continue(
     )?;
 
     let run_options = TaskRunOptions::new();
-    run_task_with_session(cwd, &review_result.review_task_id, run_options, &mut session)?;
+    run_task_with_show_tui(
+        cwd,
+        &review_result.review_task_id,
+        run_options,
+        show_tui,
+    )?;
 
     // Two-phase review decision
     let events_with_ids = read_events_with_ids(cwd)?;
@@ -397,7 +461,12 @@ fn run_fix_continue(
                 },
             )?;
             let run_options = TaskRunOptions::new();
-            run_task_with_session(cwd, &original_review_result.review_task_id, run_options, &mut session)?;
+            run_task_with_show_tui(
+                cwd,
+                &original_review_result.review_task_id,
+                run_options,
+                show_tui,
+            )?;
 
             let events_with_ids = read_events_with_ids(cwd)?;
             let current_tasks = materialize_graph_with_ids(&events_with_ids).tasks;
@@ -411,7 +480,6 @@ fn run_fix_continue(
             );
             match orig_outcome {
                 ReviewOutcome::Approved(id) => {
-                    drop(session);
                     if output != Some(OutputFormat::Id) {
                         output_approved(&id)?;
                     }
@@ -427,11 +495,21 @@ fn run_fix_continue(
     }
 
     // Continue the quality loop (iterations 2..MAX)
-    let result = run_quality_loop(cwd, &mut current_review_id, &scope, &assignee, &plan_template_resolved, decompose_template.as_deref(), loop_template.as_deref(), review_template.as_deref(), agent.as_deref(), false, once, output, &mut session);
-
-    drop(session);
-
-    result
+    run_quality_loop(
+        cwd,
+        &mut current_review_id,
+        &scope,
+        &assignee,
+        &plan_template_resolved,
+        decompose_template.as_deref(),
+        loop_template.as_deref(),
+        review_template.as_deref(),
+        agent.as_deref(),
+        false,
+        once,
+        output,
+        show_tui,
+    )
 }
 
 /// Outcome of the two-phase review decision.
@@ -482,7 +560,7 @@ fn run_quality_loop(
     autorun: bool,
     once: bool,
     output: Option<OutputFormat>,
-    session: &mut Option<ScreenSession>,
+    show_tui: bool,
 ) -> Result<()> {
     for _iteration in 0..MAX_QUALITY_ITERATIONS {
         // 1. Short-circuit if no actionable issues
@@ -501,11 +579,17 @@ fn run_quality_loop(
         let fix_parent_id = create_fix_parent(cwd, review_id, scope, assignee, autorun)?;
 
         // 3. Create plan-fix task from fix template
-        let plan_fix_id = create_plan_fix_task(cwd, review_id, &fix_parent_id, assignee, Some(plan_template))?;
+        let plan_fix_id = create_plan_fix_task(
+            cwd,
+            review_id,
+            &fix_parent_id,
+            assignee,
+            Some(plan_template),
+        )?;
 
         // 4. task_run(plan-fix) — agent writes fix plan
         let run_options = TaskRunOptions::new();
-        run_task_with_session(cwd, &plan_fix_id, run_options, session)?;
+        run_task_with_show_tui(cwd, &plan_fix_id, run_options, show_tui)?;
 
         // 5-6. Decompose plan into subtasks under fix-parent
         let plan_path = format!("/tmp/aiki/plans/{}.md", plan_fix_id);
@@ -513,7 +597,13 @@ fn run_quality_loop(
             template: decompose_template.map(|s| s.to_string()),
             agent: assignee.as_deref().and_then(AgentType::from_str),
         };
-        run_decompose(cwd, &plan_path, &fix_parent_id, decompose_options, session.as_mut())?;
+        run_decompose(
+            cwd,
+            &plan_path,
+            &fix_parent_id,
+            decompose_options,
+            show_tui,
+        )?;
 
         // 7. Delete plan file (content now lives as subtasks)
         let _ = std::fs::remove_file(&plan_path);
@@ -523,7 +613,7 @@ fn run_quality_loop(
         if let Some(tmpl) = loop_template {
             loop_options = loop_options.with_template(tmpl.to_string());
         }
-        run_loop(cwd, &fix_parent_id, loop_options, session.as_mut())?;
+        run_loop(cwd, &fix_parent_id, loop_options, show_tui)?;
 
         // 9. if --once: break
         if once {
@@ -550,7 +640,7 @@ fn run_quality_loop(
 
         // 11. task_run(review) — agent reviews the fix
         let run_options = TaskRunOptions::new();
-        run_task_with_session(cwd, &review_result.review_task_id, run_options, session)?;
+        run_task_with_show_tui(cwd, &review_result.review_task_id, run_options, show_tui)?;
 
         // 12-14. Two-phase review decision
         let events_with_ids = read_events_with_ids(cwd)?;
@@ -581,11 +671,17 @@ fn run_quality_loop(
                     },
                 )?;
                 let run_options = TaskRunOptions::new();
-                run_task_with_session(cwd, &original_review_result.review_task_id, run_options, session)?;
+                run_task_with_show_tui(
+                    cwd,
+                    &original_review_result.review_task_id,
+                    run_options,
+                    show_tui,
+                )?;
 
                 let events_with_ids = read_events_with_ids(cwd)?;
                 let current_tasks = materialize_graph_with_ids(&events_with_ids).tasks;
-                let original_review = find_task(&current_tasks, &original_review_result.review_task_id)?;
+                let original_review =
+                    find_task(&current_tasks, &original_review_result.review_task_id)?;
 
                 let orig_outcome = determine_review_outcome(
                     false, // fix-parent already passed
@@ -621,15 +717,15 @@ fn run_quality_loop(
     Ok(())
 }
 
-/// Run a task using the shared screen session if available, otherwise standalone.
-fn run_task_with_session(
+/// Run a task with optional TUI display.
+fn run_task_with_show_tui(
     cwd: &Path,
     task_id: &str,
     options: TaskRunOptions,
-    session: &mut Option<ScreenSession>,
+    show_tui: bool,
 ) -> Result<()> {
-    if let Some(s) = session.as_mut() {
-        let result = task_run_on_session(cwd, task_id, options, s)?;
+    if show_tui {
+        let result = task_run_on_session(cwd, task_id, options, true)?;
         handle_session_result(cwd, task_id, result, true)?;
     } else {
         task_run(cwd, task_id, options)?;
@@ -653,7 +749,7 @@ fn has_actionable_issues(review_task: &Task) -> bool {
 
 /// Output approved message when no issues found
 fn output_approved(task_id: &str) -> Result<()> {
-    use super::output::{CommandOutput, format_command_output};
+    use super::output::{format_command_output, CommandOutput};
     output_utils::emit(|| {
         let output = CommandOutput {
             heading: "Approved",
@@ -767,7 +863,14 @@ fn create_fix_parent(
     let events = read_events(cwd)?;
     let graph = materialize_graph(&events);
     let autorun_opt = if autorun { Some(true) } else { None };
-    write_link_event_with_autorun(cwd, &graph, "remediates", &fix_parent_id, review_id, autorun_opt)?;
+    write_link_event_with_autorun(
+        cwd,
+        &graph,
+        "remediates",
+        &fix_parent_id,
+        review_id,
+        autorun_opt,
+    )?;
 
     // Emit fixes link to the target(s) that were reviewed
     let reviewed_targets = graph.edges.targets(review_id, "validates");
@@ -834,8 +937,7 @@ fn resolve_fix_template_name(
     cli_arg: Option<String>,
     review_data: &HashMap<String, String>,
 ) -> String {
-    resolve_plan_template(cli_arg, review_data)
-        .unwrap_or_else(|| "fix".to_string())
+    resolve_plan_template(cli_arg, review_data).unwrap_or_else(|| "fix".to_string())
 }
 
 #[cfg(test)]
@@ -880,7 +982,7 @@ mod tests {
             closed_outcome: None,
             summary: None,
             turn_started: None,
-                closed_at: None,
+            closed_at: None,
             turn_closed: None,
             turn_stopped: None,
             comments: Vec::new(),
@@ -914,7 +1016,7 @@ mod tests {
             closed_outcome: None,
             summary: None,
             turn_started: None,
-                closed_at: None,
+            closed_at: None,
             turn_closed: None,
             turn_stopped: None,
             comments: Vec::new(),
@@ -930,7 +1032,10 @@ mod tests {
         // No agents available → error
         let result = determine_followup_assignee(None, None, Some(&[]));
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("No agent CLIs found"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("No agent CLIs found"));
     }
 
     #[test]
@@ -971,7 +1076,7 @@ mod tests {
             closed_outcome: None,
             summary: None,
             turn_started: None,
-                closed_at: None,
+            closed_at: None,
             turn_closed: None,
             turn_stopped: None,
             comments: Vec::new(),
@@ -1061,7 +1166,10 @@ mod tests {
     #[test]
     fn test_resolve_plan_template_cli_override() {
         let mut data = HashMap::new();
-        data.insert("options.fix_template".to_string(), "from/review".to_string());
+        data.insert(
+            "options.fix_template".to_string(),
+            "from/review".to_string(),
+        );
         let result = resolve_plan_template(Some("custom/template".to_string()), &data);
         assert_eq!(result, Some("custom/template".to_string()));
     }
@@ -1069,7 +1177,10 @@ mod tests {
     #[test]
     fn test_resolve_plan_template_from_review_data() {
         let mut data = HashMap::new();
-        data.insert("options.fix_template".to_string(), "from/review".to_string());
+        data.insert(
+            "options.fix_template".to_string(),
+            "from/review".to_string(),
+        );
         let result = resolve_plan_template(None, &data);
         assert_eq!(result, Some("from/review".to_string()));
     }
@@ -1109,7 +1220,10 @@ mod tests {
     fn test_resolve_fix_template_name_full_chain() {
         // 1. CLI arg provided → uses CLI arg (ignores review data and default)
         let mut data = HashMap::new();
-        data.insert("options.fix_template".to_string(), "from/review".to_string());
+        data.insert(
+            "options.fix_template".to_string(),
+            "from/review".to_string(),
+        );
         assert_eq!(
             resolve_fix_template_name(Some("cli/override".to_string()), &data),
             "cli/override"
@@ -1117,18 +1231,15 @@ mod tests {
 
         // 2. No CLI arg, review data has options.fix_template → uses review data value
         let mut data = HashMap::new();
-        data.insert("options.fix_template".to_string(), "from/review".to_string());
-        assert_eq!(
-            resolve_fix_template_name(None, &data),
-            "from/review"
+        data.insert(
+            "options.fix_template".to_string(),
+            "from/review".to_string(),
         );
+        assert_eq!(resolve_fix_template_name(None, &data), "from/review");
 
         // 3. No CLI arg, no review data → falls back to "fix"
         let data = HashMap::new();
-        assert_eq!(
-            resolve_fix_template_name(None, &data),
-            "fix"
-        );
+        assert_eq!(resolve_fix_template_name(None, &data), "fix");
     }
 
     // determine_review_outcome tests
@@ -1184,7 +1295,8 @@ mod tests {
             assert_eq!(outcome, ReviewOutcome::LoopBack(review_id));
         }
         // On the next iteration, fix-parent passes and original scope also passes
-        let outcome = determine_review_outcome(false, "fix-review-final", Some(false), Some("orig-final"));
+        let outcome =
+            determine_review_outcome(false, "fix-review-final", Some(false), Some("orig-final"));
         assert_eq!(outcome, ReviewOutcome::Approved("orig-final".to_string()));
     }
 
@@ -1217,7 +1329,8 @@ mod tests {
         // When issue_count is unparseable, falls back to comment-based check
         use crate::tasks::TaskComment;
         let mut task = make_test_task("review-bad-count");
-        task.data.insert("issue_count".to_string(), "not-a-number".to_string());
+        task.data
+            .insert("issue_count".to_string(), "not-a-number".to_string());
         task.comments.push(TaskComment {
             id: None,
             text: "Issue: missing validation".to_string(),
@@ -1234,7 +1347,8 @@ mod tests {
         // When issue_count is unparseable, falls back to issue comments (data.issue="true")
         use crate::tasks::TaskComment;
         let mut task = make_test_task("review-bad-count-2");
-        task.data.insert("issue_count".to_string(), "bad".to_string());
+        task.data
+            .insert("issue_count".to_string(), "bad".to_string());
         let mut issue_data = HashMap::new();
         issue_data.insert("issue".to_string(), "true".to_string());
         task.comments.push(TaskComment {
@@ -1368,7 +1482,10 @@ mod tests {
         let task = make_test_task("no-assignee");
         let result = determine_followup_assignee(None, Some(&task), Some(&[]));
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("No agent CLIs found"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("No agent CLIs found"));
     }
 
     #[test]

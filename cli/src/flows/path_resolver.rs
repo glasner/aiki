@@ -94,7 +94,6 @@ impl PathResolver {
     pub fn home_dir(&self) -> &Path {
         &self.home_dir
     }
-
 }
 
 #[cfg(test)]
@@ -137,5 +136,4 @@ mod tests {
         let result = PathResolver::with_start_dir(temp_dir.path());
         assert!(matches!(result, Err(AikiError::NotInAikiProject { .. })));
     }
-
 }

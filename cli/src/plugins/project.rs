@@ -64,7 +64,11 @@ pub fn install_project_plugins(project_root: &Path) -> Result<usize> {
             .join("; ");
         return Err(crate::error::AikiError::PluginOperationFailed {
             plugin: "project plugins".to_string(),
-            details: format!("{} plugin(s) failed to install: {}", all_failures.len(), details),
+            details: format!(
+                "{} plugin(s) failed to install: {}",
+                all_failures.len(),
+                details
+            ),
         });
     }
 

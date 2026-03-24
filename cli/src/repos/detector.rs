@@ -67,7 +67,10 @@ impl RepoDetector {
     ///
     /// Falls back to the `cwd` folder name if `.git` can't be found.
     pub fn repo_folder_name(&self) -> String {
-        let root = self.find_repo_root().ok().unwrap_or_else(|| self.current_dir.clone());
+        let root = self
+            .find_repo_root()
+            .ok()
+            .unwrap_or_else(|| self.current_dir.clone());
         root.file_name()
             .unwrap_or_default()
             .to_string_lossy()
@@ -155,5 +158,4 @@ mod tests {
 
         assert!(!RepoDetector::has_jj(temp_dir.path()));
     }
-
 }

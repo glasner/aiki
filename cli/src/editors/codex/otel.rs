@@ -199,22 +199,16 @@ pub struct SpanEvent {
 #[derive(Debug, Clone)]
 pub enum CodexOtelEvent {
     /// `codex.conversation_starts` - New session started
-    ConversationStarts {
-        conversation_id: String,
-    },
+    ConversationStarts { conversation_id: String },
     /// `codex.user_prompt` - Turn started (user submitted prompt)
     UserPrompt {
         conversation_id: String,
         prompt: Option<String>,
     },
     /// `codex.tool_result` - Tool execution completed (may contain file modifications)
-    ToolResult {
-        conversation_id: String,
-    },
+    ToolResult { conversation_id: String },
     /// Unrecognized event (acknowledged but not processed)
-    Unknown {
-        event_name: String,
-    },
+    Unknown { event_name: String },
 }
 
 /// Additional context captured from OTel resource/log attributes.
@@ -254,8 +248,8 @@ pub fn parse_otlp_logs(data: &[u8]) -> Vec<(CodexOtelEvent, CodexOtelContext)> {
         for (si, scope_logs) in resource_logs.scope_logs.iter().enumerate() {
             for (li, log_record) in scope_logs.log_records.iter().enumerate() {
                 debug_log(|| {
-                    let body_str = get_body_string(log_record)
-                        .unwrap_or_else(|| "<no body>".to_string());
+                    let body_str =
+                        get_body_string(log_record).unwrap_or_else(|| "<no body>".to_string());
                     format!(
                         "OTLP LOG record[{}.{}.{}] body={:?} attributes:",
                         ri, si, li, body_str
@@ -308,20 +302,24 @@ pub fn parse_otlp_traces(data: &[u8]) -> Vec<(CodexOtelEvent, CodexOtelContext)>
 
         for (si, scope_spans) in resource_spans.scope_spans.iter().enumerate() {
             for (spi, span) in scope_spans.spans.iter().enumerate() {
-                debug_log(|| format!(
-                    "OTLP TRACE span[{}.{}.{}] name={:?} attributes:",
-                    ri, si, spi, span.name
-                ));
+                debug_log(|| {
+                    format!(
+                        "OTLP TRACE span[{}.{}.{}] name={:?} attributes:",
+                        ri, si, spi, span.name
+                    )
+                });
                 for kv in &span.attributes {
                     debug_log(|| format!("  {} = {}", kv.key, format_any_value(&kv.value)));
                 }
 
                 // Dump and parse span events
                 for (ei, span_event) in span.events.iter().enumerate() {
-                    debug_log(|| format!(
-                        "OTLP TRACE span_event[{}.{}.{}.{}] name={:?} attributes:",
-                        ri, si, spi, ei, span_event.name
-                    ));
+                    debug_log(|| {
+                        format!(
+                            "OTLP TRACE span_event[{}.{}.{}.{}] name={:?} attributes:",
+                            ri, si, spi, ei, span_event.name
+                        )
+                    });
                     for kv in &span_event.attributes {
                         debug_log(|| format!("  {} = {}", kv.key, format_any_value(&kv.value)));
                     }
@@ -355,9 +353,7 @@ fn parse_span_event(event: &SpanEvent) -> Option<CodexOtelEvent> {
     }
 
     match event_name.as_str() {
-        "codex.conversation_starts" => Some(CodexOtelEvent::ConversationStarts {
-            conversation_id,
-        }),
+        "codex.conversation_starts" => Some(CodexOtelEvent::ConversationStarts { conversation_id }),
         "codex.user_prompt" => {
             let prompt = get_string_attribute(&event.attributes, "prompt")
                 .or_else(|| get_string_attribute(&event.attributes, "content"));
@@ -366,11 +362,7 @@ fn parse_span_event(event: &SpanEvent) -> Option<CodexOtelEvent> {
                 prompt,
             })
         }
-        "codex.tool_result" => {
-            Some(CodexOtelEvent::ToolResult {
-                conversation_id,
-            })
-        }
+        "codex.tool_result" => Some(CodexOtelEvent::ToolResult { conversation_id }),
         // Deferred events: acknowledged but not mapped
         "codex.api_request" | "codex.sse_event" | "codex.tool_decision" => {
             Some(CodexOtelEvent::Unknown {
@@ -395,9 +387,7 @@ fn parse_log_record(record: &LogRecord) -> Option<CodexOtelEvent> {
         .unwrap_or_default();
 
     match event_name.as_str() {
-        "codex.conversation_starts" => Some(CodexOtelEvent::ConversationStarts {
-            conversation_id,
-        }),
+        "codex.conversation_starts" => Some(CodexOtelEvent::ConversationStarts { conversation_id }),
         "codex.user_prompt" => {
             let prompt = get_string_attribute(&record.attributes, "prompt")
                 .or_else(|| get_string_attribute(&record.attributes, "content"));
@@ -406,11 +396,7 @@ fn parse_log_record(record: &LogRecord) -> Option<CodexOtelEvent> {
                 prompt,
             })
         }
-        "codex.tool_result" => {
-            Some(CodexOtelEvent::ToolResult {
-                conversation_id,
-            })
-        }
+        "codex.tool_result" => Some(CodexOtelEvent::ToolResult { conversation_id }),
         // Deferred events: acknowledged but not mapped
         "codex.api_request" | "codex.sse_event" | "codex.tool_decision" => {
             Some(CodexOtelEvent::Unknown {
@@ -446,9 +432,12 @@ fn format_any_value(value: &Option<AnyValue>) -> String {
             format!("<array len={}>", arr.values.len())
         }
         Some(any_value::Value::KvlistValue(kvs)) => {
-            let items: Vec<String> = kvs.values.iter().take(10).map(|kv| {
-                format!("{}={}", kv.key, format_any_value(&kv.value))
-            }).collect();
+            let items: Vec<String> = kvs
+                .values
+                .iter()
+                .take(10)
+                .map(|kv| format!("{}={}", kv.key, format_any_value(&kv.value)))
+                .collect();
             if kvs.values.len() > 10 {
                 format!("{{{}, ... +{}}}", items.join(", "), kvs.values.len() - 10)
             } else {
@@ -673,7 +662,10 @@ mod tests {
         let (_, context) = &events[0];
         assert_eq!(context.agent_pid, Some(4242));
         assert_eq!(
-            context.cwd.as_ref().map(|p| p.to_string_lossy().to_string()),
+            context
+                .cwd
+                .as_ref()
+                .map(|p| p.to_string_lossy().to_string()),
             Some("/tmp/test-repo".to_string())
         );
     }
@@ -793,9 +785,7 @@ mod tests {
 
         assert_eq!(events.len(), 1);
         match &events[0].0 {
-            CodexOtelEvent::ToolResult {
-                conversation_id,
-            } => {
+            CodexOtelEvent::ToolResult { conversation_id } => {
                 assert_eq!(conversation_id, "conv_789");
             }
             _ => panic!("Expected ToolResult event"),
@@ -863,7 +853,10 @@ mod tests {
         let events = parse_otlp_logs(&encoded);
 
         assert_eq!(events.len(), 2);
-        assert!(matches!(&events[0].0, CodexOtelEvent::ConversationStarts { .. }));
+        assert!(matches!(
+            &events[0].0,
+            CodexOtelEvent::ConversationStarts { .. }
+        ));
         assert!(matches!(&events[1].0, CodexOtelEvent::UserPrompt { .. }));
     }
 
@@ -1072,7 +1065,10 @@ mod tests {
         let encoded = request.encode_to_vec();
         let events = parse_otlp_traces(&encoded);
 
-        assert!(events.is_empty(), "Should skip events without conversation.id");
+        assert!(
+            events.is_empty(),
+            "Should skip events without conversation.id"
+        );
     }
 
     #[test]

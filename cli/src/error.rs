@@ -92,7 +92,9 @@ pub enum AikiError {
     LockFailed(String),
 
     // Hook composition errors (Milestone 1.3)
-    #[error("Not in an Aiki project. No .aiki/ directory found searching upward from: {searched_from}")]
+    #[error(
+        "Not in an Aiki project. No .aiki/ directory found searching upward from: {searched_from}"
+    )]
     NotInAikiProject { searched_from: PathBuf },
 
     #[error("Invalid hook path: '{path}'. {reason}")]
@@ -153,7 +155,11 @@ Alternatively, install the agent globally:
     TaskNotFound(String),
 
     #[error("Ambiguous task ID prefix '{prefix}' — matches {count} tasks:\n{matches}")]
-    AmbiguousTaskId { prefix: String, count: usize, matches: String },
+    AmbiguousTaskId {
+        prefix: String,
+        count: usize,
+        matches: String,
+    },
 
     #[error("Task '{root}' has no subtask '.{subtask}'")]
     SubtaskNotFound { root: String, subtask: String },
@@ -193,15 +199,10 @@ Alternatively, install the agent globally:
     },
 
     #[error("Invalid link target for '{kind}': '{target}' is not a task. {kind} links require a task ID as target")]
-    InvalidLinkTarget {
-        kind: String,
-        target: String,
-    },
+    InvalidLinkTarget { kind: String, target: String },
 
     #[error("Link would create a cycle in '{kind}' links")]
-    LinkCycle {
-        kind: String,
-    },
+    LinkCycle { kind: String },
 
     #[error("Task '{0}' has no assignee and no --agent specified")]
     TaskNoAssignee(String),
@@ -237,10 +238,7 @@ Alternatively, install the agent globally:
     },
 
     #[error("Variable '{variable}' not found: {hint}")]
-    VariableNotFound {
-        variable: String,
-        hint: String,
-    },
+    VariableNotFound { variable: String, hint: String },
 
     #[error("Invalid template frontmatter\n  File: {file}\n  {details}")]
     TemplateFrontmatterInvalid { file: String, details: String },

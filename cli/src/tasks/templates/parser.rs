@@ -25,7 +25,9 @@
 
 use crate::error::{AikiError, Result};
 
-use super::types::{SubtaskFrontmatter, TaskDefaults, TaskDefinition, TaskTemplate, TemplateFrontmatter};
+use super::types::{
+    SubtaskFrontmatter, TaskDefaults, TaskDefinition, TaskTemplate, TemplateFrontmatter,
+};
 
 /// Errors that can occur when extracting YAML frontmatter
 #[derive(Debug)]
@@ -41,7 +43,10 @@ impl std::fmt::Display for FrontmatterError {
         match self {
             FrontmatterError::Yaml(e) => write!(f, "{}", e),
             FrontmatterError::Unterminated => {
-                write!(f, "Unterminated frontmatter: found opening '---' but no closing '---'")
+                write!(
+                    f,
+                    "Unterminated frontmatter: found opening '---' but no closing '---'"
+                )
             }
         }
     }
@@ -106,10 +111,7 @@ pub fn parse_template(content: &str, name: &str, file_path: &str) -> Result<Task
             "loop.index1".to_string(),
             serde_yaml::Value::String("data.loop.index1 + 1".to_string()),
         );
-        spawn_data.insert(
-            "loop.first".to_string(),
-            serde_yaml::Value::Bool(false),
-        );
+        spawn_data.insert("loop.first".to_string(), serde_yaml::Value::Bool(false));
         let spawn_entry = SpawnEntry {
             when: format!("not ({})", loop_config.until),
             max_iterations: Some(loop_config.max_iterations),
@@ -125,18 +127,18 @@ pub fn parse_template(content: &str, name: &str, file_path: &str) -> Result<Task
         template.spawns.push(spawn_entry);
 
         // Add initial loop metadata to template defaults
-        template.defaults.data.insert(
-            "loop.index".to_string(),
-            serde_json::json!(0),
-        );
-        template.defaults.data.insert(
-            "loop.index1".to_string(),
-            serde_json::json!(1),
-        );
-        template.defaults.data.insert(
-            "loop.first".to_string(),
-            serde_json::json!(true),
-        );
+        template
+            .defaults
+            .data
+            .insert("loop.index".to_string(), serde_json::json!(0));
+        template
+            .defaults
+            .data
+            .insert("loop.index1".to_string(), serde_json::json!(1));
+        template
+            .defaults
+            .data
+            .insert("loop.first".to_string(), serde_json::json!(true));
     }
 
     // Validate spawn entries: each must have exactly one of task/subtask
@@ -247,7 +249,8 @@ fn extract_frontmatter(content: &str, file_path: &str) -> Result<(TemplateFrontm
             // No closing delimiter found - error
             Err(AikiError::TemplateFrontmatterInvalid {
                 file: file_path.to_string(),
-                details: "Unterminated frontmatter: found opening '---' but no closing '---'".to_string(),
+                details: "Unterminated frontmatter: found opening '---' but no closing '---'"
+                    .to_string(),
             })
         }
     }
@@ -272,7 +275,7 @@ fn parse_markdown_body(
 
     let parent = TaskDefinition {
         name: task_name,
-        slug: None, // Parent tasks don't have slugs from templates
+        slug: None,      // Parent tasks don't have slugs from templates
         task_type: None, // Set from frontmatter by resolver
         instructions: parent_instructions,
         priority: None,
@@ -387,10 +390,12 @@ fn extract_subtask_frontmatter(
     file_path: &str,
 ) -> Result<(SubtaskFrontmatter, String)> {
     let content = lines.join("\n");
-    let (frontmatter, body) = extract_yaml_frontmatter::<SubtaskFrontmatter>(&content)
-        .map_err(|e| AikiError::TemplateFrontmatterInvalid {
-            file: file_path.to_string(),
-            details: e.to_string(),
+    let (frontmatter, body) =
+        extract_yaml_frontmatter::<SubtaskFrontmatter>(&content).map_err(|e| {
+            AikiError::TemplateFrontmatterInvalid {
+                file: file_path.to_string(),
+                details: e.to_string(),
+            }
         })?;
     Ok((frontmatter.unwrap_or_default(), body.trim().to_string()))
 }
@@ -760,7 +765,11 @@ Review the changes.
         let result = parse_template(content, "review", "review.md");
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("neither 'task' nor 'subtask'"), "Error: {}", err);
+        assert!(
+            err.contains("neither 'task' nor 'subtask'"),
+            "Error: {}",
+            err
+        );
     }
 
     #[test]
@@ -874,15 +883,9 @@ Do something.
         // Explicit spawn + desugared loop spawn
         assert_eq!(template.spawns.len(), 2);
         assert_eq!(template.spawns[0].when, "not data.approved");
-        assert_eq!(
-            template.spawns[0].task.as_ref().unwrap().template,
-            "fix"
-        );
+        assert_eq!(template.spawns[0].task.as_ref().unwrap().template, "fix");
         assert_eq!(template.spawns[1].when, "not (data.approved)");
-        assert_eq!(
-            template.spawns[1].task.as_ref().unwrap().template,
-            "self"
-        );
+        assert_eq!(template.spawns[1].task.as_ref().unwrap().template, "self");
         assert!(template.spawns[1].task.as_ref().unwrap().autorun);
     }
 

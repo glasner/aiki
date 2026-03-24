@@ -60,9 +60,7 @@ pub fn create_isolated_workspace(
 ) -> Result<IsolatedWorkspace> {
     let repo_id = repos::ensure_repo_id(repo_root)?;
 
-    let workspace_path = workspaces_dir()
-        .join(&repo_id)
-        .join(session_uuid);
+    let workspace_path = workspaces_dir().join(&repo_id).join(session_uuid);
     let workspace_name = format!("aiki-{}", session_uuid);
 
     let workspace = IsolatedWorkspace {
@@ -81,42 +79,52 @@ pub fn create_isolated_workspace(
         match resolve_at_minus(repo_root) {
             Ok(target) => {
                 match resolve_at_minus_in_path(&workspace_path) {
-                    Ok(workspace_parent) => match lineage_contains_change(repo_root, &workspace_parent, &target) {
-                        Ok(true) => {
-                            let output = jj_cmd()
-                                .current_dir(&workspace_path)
-                                .args(["rebase", "-r", "@", "-d", &target])
-                                .output();
+                    Ok(workspace_parent) => {
+                        match lineage_contains_change(repo_root, &workspace_parent, &target) {
+                            Ok(true) => {
+                                let output = jj_cmd()
+                                    .current_dir(&workspace_path)
+                                    .args(["rebase", "-r", "@", "-d", &target])
+                                    .output();
 
-                            match output {
-                                Ok(o) if o.status.success() => {
-                                    debug_log(|| {
-                                        format!(
-                                            "[workspace] Rebased existing workspace to {}",
-                                            &target[..target.len().min(12)]
-                                        )
-                                    });
-                                    return Ok(workspace);
-                                }
-                                _ => {
-                                    // Rebase failed — fall through to destroy + recreate
-                                    debug_log(|| "[workspace] Rebase failed, recreating workspace".to_string());
-                                    cleanup_workspace(repo_root, &workspace)?;
+                                match output {
+                                    Ok(o) if o.status.success() => {
+                                        debug_log(|| {
+                                            format!(
+                                                "[workspace] Rebased existing workspace to {}",
+                                                &target[..target.len().min(12)]
+                                            )
+                                        });
+                                        return Ok(workspace);
+                                    }
+                                    _ => {
+                                        // Rebase failed — fall through to destroy + recreate
+                                        debug_log(|| {
+                                            "[workspace] Rebase failed, recreating workspace"
+                                                .to_string()
+                                        });
+                                        cleanup_workspace(repo_root, &workspace)?;
+                                    }
                                 }
                             }
+                            Ok(false) => {
+                                debug_log(|| {
+                                    "[workspace] Workspace lineage diverged from current @-, recreating workspace".to_string()
+                                });
+                                cleanup_workspace(repo_root, &workspace)?;
+                            }
+                            Err(e) => {
+                                debug_log(|| format!("[workspace] Failed ancestry check: {e}"));
+                                cleanup_workspace(repo_root, &workspace)?;
+                            }
                         }
-                        Ok(false) => {
-                            debug_log(|| "[workspace] Workspace lineage diverged from current @-, recreating workspace".to_string());
-                            cleanup_workspace(repo_root, &workspace)?;
-                        }
-                        Err(e) => {
-                            debug_log(|| format!("[workspace] Failed ancestry check: {e}"));
-                            cleanup_workspace(repo_root, &workspace)?;
-                        }
-                    },
+                    }
                     Err(_) => {
                         // Can't resolve workspace @- — fall through to destroy + recreate
-                        debug_log(|| "[workspace] Could not resolve workspace @-, recreating workspace".to_string());
+                        debug_log(|| {
+                            "[workspace] Could not resolve workspace @-, recreating workspace"
+                                .to_string()
+                        });
                         cleanup_workspace(repo_root, &workspace)?;
                     }
                 }
@@ -156,9 +164,7 @@ pub fn create_isolated_workspace(
             "--ignore-working-copy",
         ])
         .output()
-        .map_err(|e| {
-            AikiError::WorkspaceCreationFailed(format!("Failed to resolve @-: {}", e))
-        })?;
+        .map_err(|e| AikiError::WorkspaceCreationFailed(format!("Failed to resolve @-: {}", e)))?;
 
     let parent_change_id = if parent_output.status.success() {
         let id = String::from_utf8_lossy(&parent_output.stdout)
@@ -237,10 +243,14 @@ static LOCK_CACHE: LazyLock<Mutex<HashMap<PathBuf, &'static CachedLock>>> =
 /// Lock instances are cached per path — subsequent calls with the same name
 /// return the same underlying lock, preventing duplicate FDs and ensuring
 /// mutual exclusion within the process.
-pub fn acquire_named_lock(repo_root: &Path, name: &str) -> Result<fd_lock::RwLockWriteGuard<'static, std::fs::File>> {
+pub fn acquire_named_lock(
+    repo_root: &Path,
+    name: &str,
+) -> Result<fd_lock::RwLockWriteGuard<'static, std::fs::File>> {
     let repo_id = repos::ensure_repo_id(repo_root)?;
     let lock_dir = workspaces_dir().join(&repo_id);
-    fs::create_dir_all(&lock_dir).map_err(|e| AikiError::LockFailed(format!("Failed to create lock directory: {e}")))?;
+    fs::create_dir_all(&lock_dir)
+        .map_err(|e| AikiError::LockFailed(format!("Failed to create lock directory: {e}")))?;
     let lock_path = lock_dir.join(format!(".{}.lock", name));
 
     let cached: &'static CachedLock = {
@@ -248,12 +258,11 @@ pub fn acquire_named_lock(repo_root: &Path, name: &str) -> Result<fd_lock::RwLoc
         if let Some(&existing) = cache.get(&lock_path) {
             existing
         } else {
-            let file = std::fs::File::create(&lock_path).map_err(|e| {
-                AikiError::LockFailed(format!("Failed to create lock file: {}", e))
-            })?;
-            let leaked: &'static CachedLock = Box::leak(Box::new(CachedLock(
-                UnsafeCell::new(fd_lock::RwLock::new(file)),
-            )));
+            let file = std::fs::File::create(&lock_path)
+                .map_err(|e| AikiError::LockFailed(format!("Failed to create lock file: {}", e)))?;
+            let leaked: &'static CachedLock = Box::leak(Box::new(CachedLock(UnsafeCell::new(
+                fd_lock::RwLock::new(file),
+            ))));
             cache.insert(lock_path.clone(), leaked);
             leaked
         }
@@ -264,9 +273,9 @@ pub fn acquire_named_lock(repo_root: &Path, name: &str) -> Result<fd_lock::RwLoc
     // practice callers serialize access through higher-level locks.
     let lock: &'static mut fd_lock::RwLock<std::fs::File> = unsafe { &mut *cached.0.get() };
 
-    let guard = lock.write().map_err(|e| {
-        AikiError::LockFailed(format!("Failed to acquire {} lock: {}", name, e))
-    })?;
+    let guard = lock
+        .write()
+        .map_err(|e| AikiError::LockFailed(format!("Failed to acquire {} lock: {}", name, e)))?;
 
     debug_log(|| format!("Acquired '{}' lock at {}", name, lock_path.display()));
     Ok(guard)
@@ -346,11 +355,8 @@ pub fn absorb_workspace(
 
     // Determine absorb target directory
     let target_dir = if let Some(parent_uuid) = parent_session_uuid {
-        let repo_id = repos::ensure_repo_id(repo_root)
-            .unwrap_or_default();
-        let parent_ws_path = workspaces_dir()
-            .join(&repo_id)
-            .join(parent_uuid);
+        let repo_id = repos::ensure_repo_id(repo_root).unwrap_or_default();
+        let parent_ws_path = workspaces_dir().join(&repo_id).join(parent_uuid);
         if parent_ws_path.exists() {
             parent_ws_path
         } else {
@@ -368,10 +374,7 @@ pub fn absorb_workspace(
     // Snapshot target working copy while holding the absorption lock.
     // Without this, changes made in the target workspace while an agent is
     // working in an isolated one are not captured into @'s committed tree.
-    let _ = jj_cmd()
-        .current_dir(&target_dir)
-        .args(["status"])
-        .output();
+    let _ = jj_cmd().current_dir(&target_dir).args(["status"]).output();
 
     // Step 1: Rebase workspace chain onto target's @-
     //
@@ -386,13 +389,18 @@ pub fn absorb_workspace(
     let output = jj_cmd()
         .current_dir(&target_dir)
         .args([
-            "rebase", "-b", &ws_head, "-d", "@-",
+            "rebase",
+            "-b",
+            &ws_head,
+            "-d",
+            "@-",
             "--ignore-working-copy",
         ])
         .output()
         .map_err(|e| {
             AikiError::WorkspaceAbsorbFailed(format!(
-                "Failed to rebase workspace chain onto @-: {}", e
+                "Failed to rebase workspace chain onto @-: {}",
+                e
             ))
         })?;
 
@@ -416,8 +424,14 @@ pub fn absorb_workspace(
     let ancestor_check = jj_cmd()
         .current_dir(&target_dir)
         .args([
-            "log", "-r", &format!("{} & ::@", ws_head),
-            "--no-graph", "-T", "change_id", "--limit", "1",
+            "log",
+            "-r",
+            &format!("{} & ::@", ws_head),
+            "--no-graph",
+            "-T",
+            "change_id",
+            "--limit",
+            "1",
             "--ignore-working-copy",
         ])
         .output();
@@ -455,7 +469,8 @@ pub fn absorb_workspace(
         .output()
         .map_err(|e| {
             AikiError::WorkspaceAbsorbFailed(format!(
-                "Failed to rebase @ onto workspace head: {}", e
+                "Failed to rebase @ onto workspace head: {}",
+                e
             ))
         })?;
 
@@ -473,8 +488,14 @@ pub fn absorb_workspace(
     let verify_check = jj_cmd()
         .current_dir(&target_dir)
         .args([
-            "log", "-r", &format!("{} & ::@", ws_head),
-            "--no-graph", "-T", "change_id", "--limit", "1",
+            "log",
+            "-r",
+            &format!("{} & ::@", ws_head),
+            "--no-graph",
+            "-T",
+            "change_id",
+            "--limit",
+            "1",
             "--ignore-working-copy",
         ])
         .output();
@@ -493,10 +514,7 @@ pub fn absorb_workspace(
                 });
                 let fix_output = jj_cmd()
                     .current_dir(&target_dir)
-                    .args([
-                        "rebase", "-s", "@", "-d", &ws_head,
-                        "--ignore-working-copy",
-                    ])
+                    .args(["rebase", "-s", "@", "-d", &ws_head, "--ignore-working-copy"])
                     .output();
                 match fix_output {
                     Ok(fo) if !fo.status.success() => {
@@ -513,7 +531,9 @@ pub fn absorb_workspace(
                         );
                     }
                     _ => {
-                        debug_log(|| "[workspace] Post-absorption fix: rebased @ onto ws_head".to_string());
+                        debug_log(|| {
+                            "[workspace] Post-absorption fix: rebased @ onto ws_head".to_string()
+                        });
                     }
                 }
             }
@@ -567,14 +587,16 @@ pub fn absorb_workspace(
 }
 
 /// Forget workspace in JJ and delete its directory.
-pub fn cleanup_workspace(
-    repo_root: &Path,
-    workspace: &IsolatedWorkspace,
-) -> Result<()> {
+pub fn cleanup_workspace(repo_root: &Path, workspace: &IsolatedWorkspace) -> Result<()> {
     // Forget the workspace in JJ
     let output = jj_cmd()
         .current_dir(repo_root)
-        .args(["workspace", "forget", &workspace.name, "--ignore-working-copy"])
+        .args([
+            "workspace",
+            "forget",
+            &workspace.name,
+            "--ignore-working-copy",
+        ])
         .output()
         .map_err(|e| {
             AikiError::Other(anyhow::anyhow!(
@@ -632,12 +654,8 @@ pub fn recover_orphaned_workspaces(session_uuid: &str) -> Result<u32> {
     let mut recovered = 0u32;
 
     // Scan repo-id directories
-    let entries = fs::read_dir(&ws_dir).map_err(|e| {
-        AikiError::Other(anyhow::anyhow!(
-            "Failed to read workspaces dir: {}",
-            e
-        ))
-    })?;
+    let entries = fs::read_dir(&ws_dir)
+        .map_err(|e| AikiError::Other(anyhow::anyhow!("Failed to read workspaces dir: {}", e)))?;
 
     for entry in entries.flatten() {
         let repo_id_dir = entry.path();
@@ -694,9 +712,7 @@ pub fn recover_orphaned_workspaces(session_uuid: &str) -> Result<u32> {
                 );
                 // Try to create a recovery bookmark using workspace list parsing
                 let bookmark_name = format!("aiki/recovered/{}", workspace_name);
-                if let Ok(Some(ws_cid)) =
-                    find_workspace_change_id(&repo_root, &workspace_name)
-                {
+                if let Ok(Some(ws_cid)) = find_workspace_change_id(&repo_root, &workspace_name) {
                     let _ = jj_cmd()
                         .current_dir(&repo_root)
                         .args([
@@ -739,9 +755,7 @@ pub fn cleanup_orphaned_workspaces(repo_root: &Path) -> Result<u32> {
         .current_dir(repo_root)
         .args(["workspace", "list", "--ignore-working-copy"])
         .output()
-        .map_err(|e| {
-            AikiError::Other(anyhow::anyhow!("Failed to list workspaces: {}", e))
-        })?;
+        .map_err(|e| AikiError::Other(anyhow::anyhow!("Failed to list workspaces: {}", e)))?;
 
     if !output.status.success() {
         return Ok(0);
@@ -786,9 +800,7 @@ pub fn cleanup_orphaned_workspaces(repo_root: &Path) -> Result<u32> {
 
         // Also clean up workspace directory if it exists
         if let Ok(repo_id) = crate::repos::ensure_repo_id(repo_root) {
-            let ws_dir = workspaces_dir()
-                .join(&repo_id)
-                .join(uuid);
+            let ws_dir = workspaces_dir().join(&repo_id).join(uuid);
             if ws_dir.exists() {
                 let _ = fs::remove_dir_all(&ws_dir);
             }
@@ -841,7 +853,11 @@ pub fn find_workspace_change_id(repo_root: &Path, workspace_name: &str) -> Resul
         .find(|line| line.starts_with(&prefix))
         .and_then(|line| {
             // After "workspace_name: ", first token is the short change ID
-            line[prefix.len()..].trim().split_whitespace().next().map(String::from)
+            line[prefix.len()..]
+                .trim()
+                .split_whitespace()
+                .next()
+                .map(String::from)
         }) {
         Some(id) => id,
         None => return Ok(None),
@@ -864,9 +880,7 @@ pub fn find_workspace_change_id(repo_root: &Path, workspace_name: &str) -> Resul
         .map_err(|e| {
             AikiError::WorkspaceAbsorbFailed(format!(
                 "Failed to resolve workspace `{}` short id `{}`: {}",
-                workspace_name,
-                short_change_id,
-                e
+                workspace_name, short_change_id, e
             ))
         })?;
 
@@ -932,9 +946,25 @@ fn resolve_at_minus(repo_root: &Path) -> Result<String> {
 fn resolve_at_minus_in_path(path: &Path) -> Result<String> {
     let output = jj_cmd()
         .current_dir(path)
-        .args(["log", "-r", "@-", "--no-graph", "-T", "change_id", "--ignore-working-copy", "--limit", "1"])
+        .args([
+            "log",
+            "-r",
+            "@-",
+            "--no-graph",
+            "-T",
+            "change_id",
+            "--ignore-working-copy",
+            "--limit",
+            "1",
+        ])
         .output()
-        .map_err(|e| AikiError::Other(anyhow::anyhow!("Failed to run jj log for @- in {}: {}", path.display(), e)))?;
+        .map_err(|e| {
+            AikiError::Other(anyhow::anyhow!(
+                "Failed to run jj log for @- in {}: {}",
+                path.display(),
+                e
+            ))
+        })?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(AikiError::Other(anyhow::anyhow!(
@@ -957,7 +987,11 @@ fn resolve_at_minus_in_path(path: &Path) -> Result<String> {
 ///
 /// Uses an explicit ancestry query rather than trusting rebase alone. If the
 /// revset is empty, the workspace likely forked from a diverged branch.
-fn lineage_contains_change(repo_root: &Path, workspace_parent: &str, current_parent: &str) -> Result<bool> {
+fn lineage_contains_change(
+    repo_root: &Path,
+    workspace_parent: &str,
+    current_parent: &str,
+) -> Result<bool> {
     let revset = format!("{}::{}", workspace_parent, current_parent);
     let output = jj_cmd()
         .current_dir(repo_root)

@@ -231,13 +231,10 @@ fn test_blame_shows_recorded_change() {
     // Session ID is now a UUID (deterministic hash of agent_type + external_id)
     // Verify it appears in UUID format (8 hex chars followed by hyphen)
     // The format is truncated in blame output to first 9 chars like "abc12345-..."
-    let has_uuid_prefix = blame_output
-        .lines()
-        .any(|line| {
-            // Look for a UUID-like pattern: 8 hex chars followed by hyphen
-            line.contains(char::is_alphanumeric)
-                && line.chars().filter(|c| *c == '-').count() >= 1
-        });
+    let has_uuid_prefix = blame_output.lines().any(|line| {
+        // Look for a UUID-like pattern: 8 hex chars followed by hyphen
+        line.contains(char::is_alphanumeric) && line.chars().filter(|c| *c == '-').count() >= 1
+    });
     assert!(
         has_uuid_prefix || blame_output.contains("..."),
         "Blame should show truncated session UUID. Output:\n{}",
@@ -264,4 +261,3 @@ fn get_aiki_binary_path() -> PathBuf {
     path.push("aiki");
     path
 }
-

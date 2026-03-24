@@ -1083,7 +1083,11 @@ mod tests {
             turn_id: String::new(),
             turn_source: String::new(),
             coauthor: None,
-            tasks: vec!["task1".to_string(), "task2".to_string(), "task3".to_string()],
+            tasks: vec![
+                "task1".to_string(),
+                "task2".to_string(),
+                "task3".to_string(),
+            ],
             prompt_change_id: None,
         };
 

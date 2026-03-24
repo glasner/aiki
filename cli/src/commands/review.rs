@@ -10,6 +10,7 @@
 use clap::Subcommand;
 use std::collections::HashMap;
 use std::env;
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
 use crate::output_utils;
@@ -19,17 +20,17 @@ use crate::agents::{determine_reviewer, is_agent_available, AgentType};
 use crate::commands::OutputFormat;
 use crate::error::{AikiError, Result};
 use crate::session::find_active_session;
+use crate::tasks::md::MdBuilder;
 use crate::tasks::runner::{task_run, TaskRunOptions};
 use crate::tasks::templates::create_review_task_from_template;
-use crate::tasks::md::MdBuilder;
-use crate::tui;
-use crate::tui::buffer_ansi::buffer_to_ansi;
-use crate::tui::theme::{detect_mode, Theme};
-use crate::tui::views::issue_list::{render_issue_list, IssueListItem};
 use crate::tasks::{
     find_task, materialize_graph, read_events, reassign_task, start_task_core,
     write_link_event_with_autorun, Task, TaskComment, TaskStatus,
 };
+use crate::tui;
+use crate::tui::app::WindowState;
+use crate::tui::render::render_to_string;
+use crate::tui::theme::{detect_mode, Theme};
 
 /// What kind of review scope this is
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -117,20 +118,17 @@ impl ReviewScope {
 
         // scope.id is required for non-Session scopes (Task, Plan, Code)
         let id = match kind {
-            ReviewScopeKind::Session => {
-                data.get("scope.id").cloned().unwrap_or_default()
-            }
-            _ => {
-                data.get("scope.id")
-                    .filter(|s| !s.is_empty())
-                    .cloned()
-                    .ok_or_else(|| {
-                        AikiError::InvalidArgument(format!(
-                            "Missing scope.id in review task data (required for {:?} scope kind)",
-                            kind_str
-                        ))
-                    })?
-            }
+            ReviewScopeKind::Session => data.get("scope.id").cloned().unwrap_or_default(),
+            _ => data
+                .get("scope.id")
+                .filter(|s| !s.is_empty())
+                .cloned()
+                .ok_or_else(|| {
+                    AikiError::InvalidArgument(format!(
+                        "Missing scope.id in review task data (required for {:?} scope kind)",
+                        kind_str
+                    ))
+                })?,
         };
 
         Ok(Self {
@@ -157,7 +155,9 @@ impl Location {
     pub fn parse(s: &str) -> Result<Location> {
         let s = s.trim();
         if s.is_empty() {
-            return Err(AikiError::InvalidArgument("Location path must not be empty".into()));
+            return Err(AikiError::InvalidArgument(
+                "Location path must not be empty".into(),
+            ));
         }
 
         if let Some(colon_pos) = s.rfind(':') {
@@ -166,7 +166,9 @@ impl Location {
 
             if !line_spec.is_empty() && line_spec.chars().all(|c| c.is_ascii_digit() || c == '-') {
                 if path.is_empty() {
-                    return Err(AikiError::InvalidArgument("Location path must not be empty".into()));
+                    return Err(AikiError::InvalidArgument(
+                        "Location path must not be empty".into(),
+                    ));
                 }
                 if let Some(dash_pos) = line_spec.find('-') {
                     let start_str = &line_spec[..dash_pos];
@@ -178,11 +180,14 @@ impl Location {
                         AikiError::InvalidArgument(format!("Invalid end line: {}", end_str))
                     })?;
                     if start == 0 || end == 0 {
-                        return Err(AikiError::InvalidArgument("Line numbers must be positive".into()));
+                        return Err(AikiError::InvalidArgument(
+                            "Line numbers must be positive".into(),
+                        ));
                     }
                     if end < start {
                         return Err(AikiError::InvalidArgument(format!(
-                            "End line ({}) must be >= start line ({})", end, start
+                            "End line ({}) must be >= start line ({})",
+                            end, start
                         )));
                     }
                     return Ok(Location {
@@ -195,7 +200,9 @@ impl Location {
                         AikiError::InvalidArgument(format!("Invalid line number: {}", line_spec))
                     })?;
                     if line == 0 {
-                        return Err(AikiError::InvalidArgument("Line numbers must be positive".into()));
+                        return Err(AikiError::InvalidArgument(
+                            "Line numbers must be positive".into(),
+                        ));
                     }
                     return Ok(Location {
                         path: path.to_string(),
@@ -279,14 +286,21 @@ fn severity_order(severity: &str) -> u8 {
 
 /// Get severity from a comment's data, defaulting to "medium".
 fn comment_severity(comment: &TaskComment) -> &str {
-    comment.data.get("severity").map(|s| s.as_str()).unwrap_or("medium")
+    comment
+        .data
+        .get("severity")
+        .map(|s| s.as_str())
+        .unwrap_or("medium")
 }
 
 /// Parse and validate a severity value for clap's value_parser.
 fn parse_severity(s: &str) -> std::result::Result<String, String> {
     match s {
         "high" | "medium" | "low" => Ok(s.to_string()),
-        _ => Err(format!("invalid severity '{}': must be high, medium, or low", s)),
+        _ => Err(format!(
+            "invalid severity '{}': must be high, medium, or low",
+            s
+        )),
     }
 }
 
@@ -401,7 +415,11 @@ pub fn run(args: ReviewArgs) -> Result<()> {
         .map_err(|_| AikiError::InvalidArgument("Failed to get current directory".to_string()))?;
 
     // Resolve --fix / --fix-template into a single Option<String>
-    let fix_template = args.fix_template.or(if args.fix { Some("fix".to_string()) } else { None });
+    let fix_template = args.fix_template.or(if args.fix {
+        Some("fix".to_string())
+    } else {
+        None
+    });
 
     // Internal: continue an async review+fix from a previously created review task
     if let Some(ref review_id) = args.continue_async {
@@ -414,9 +432,14 @@ pub fn run(args: ReviewArgs) -> Result<()> {
             ReviewSubcommands::List { all } => list_reviews(&cwd, all),
             ReviewSubcommands::Show { task_id } => show_review(&cwd, &task_id),
             ReviewSubcommands::Issue { command } => match command {
-                ReviewIssueSubcommands::Add { review_id, text, severity, files, high, low } => {
-                    run_issue_add(&cwd, &review_id, &text, severity, &files, high, low)
-                }
+                ReviewIssueSubcommands::Add {
+                    review_id,
+                    text,
+                    severity,
+                    files,
+                    high,
+                    low,
+                } => run_issue_add(&cwd, &review_id, &text, severity, &files, high, low),
                 ReviewIssueSubcommands::List { review_id } => run_issue_list(&cwd, &review_id),
             },
         };
@@ -588,15 +611,14 @@ pub fn detect_target(
             Ok((scope, worker))
         }
 
-        Some(s) if Path::new(s).exists() => {
-            Err(AikiError::InvalidArgument(
-                "File review only supports .md files currently".to_string(),
-            ))
-        }
+        Some(s) if Path::new(s).exists() => Err(AikiError::InvalidArgument(
+            "File review only supports .md files currently".to_string(),
+        )),
 
-        Some(s) => {
-            Err(AikiError::InvalidArgument(format!("Target not found: {}", s)))
-        }
+        Some(s) => Err(AikiError::InvalidArgument(format!(
+            "Target not found: {}",
+            s
+        ))),
     }
 }
 
@@ -620,10 +642,7 @@ pub fn create_review(cwd: &Path, params: CreateReviewParams) -> Result<CreateRev
             let task = find_task(&tasks, &scope.id)?;
             task.assignee.as_deref().map(|s| s.to_string())
         }
-        _ => {
-            find_active_session(cwd)
-                .map(|s| s.agent_type.as_str().to_string())
-        }
+        _ => find_active_session(cwd).map(|s| s.agent_type.as_str().to_string()),
     };
 
     // Determine assignee for review task
@@ -670,13 +689,8 @@ pub fn create_review(cwd: &Path, params: CreateReviewParams) -> Result<CreateRev
         _ => vec![],
     };
 
-    let review_id = create_review_task_from_template(
-        cwd,
-        &scope_data,
-        &sources,
-        &assignee,
-        template,
-    )?;
+    let review_id =
+        create_review_task_from_template(cwd, &scope_data, &sources, &assignee, template)?;
 
     // Emit validates link for task-scoped reviews: review validates the original task
     // Autorun is opt-in only (--autorun flag); default is no autorun
@@ -735,7 +749,8 @@ fn run_review(
     // --fix/--fix-template and --start cannot be used together
     if fix_template.is_some() && start {
         return Err(AikiError::InvalidArgument(
-            "--fix and --start cannot be used together. Use --fix with blocking or --async mode.".to_string(),
+            "--fix and --start cannot be used together. Use --fix with blocking or --async mode."
+                .to_string(),
         ));
     }
 
@@ -813,39 +828,72 @@ fn run_review(
             output_review_async(cwd, &review_id)?;
         }
     } else {
-        // Run to completion (default)
-        let options = TaskRunOptions::new();
-        task_run(cwd, &review_id, options)?;
+        // Sync path: blocking review (+ optional fix)
+        let show_tui = std::io::stdout().is_terminal() && !output_id;
 
-        // Check data.issue_count to determine if issues were found
-        let events = read_events(cwd)?;
-        let graph = materialize_graph(&events);
-        let has_issues = find_task(&graph.tasks, &review_id)
-            .map(|t| t.data.get("issue_count")
-                .and_then(|c| c.parse::<usize>().ok())
-                .unwrap_or(0) > 0)
-            .unwrap_or(false);
-
-        if fix_template_for_async.is_some() && has_issues {
-            super::fix::run_fix(
-                cwd,
+        if show_tui {
+            // Spawn background process, show Screen::Review TUI immediately
+            let spawn_args = build_async_review_args(
                 &review_id,
-                false,         // not async
-                None,          // no continue-async
-                fix_template_for_async.clone(),  // forward caller's fix template
-                None,          // default decompose template
-                None,          // default loop template
-                None,          // default review template
-                agent.clone(), // pass through agent override
+                fix_template_for_async.as_deref(),
+                agent.as_deref(),
                 autorun,
-                false,         // not --once
-                output_format.clone(), // pass through caller's output format
-            )?;
-        }
-        if output_id {
-            println!("{}", review_id);
-        } else if !(fix_template_for_async.is_some() && has_issues) {
-            output_review_completed(cwd, &review_id)?;
+            );
+            let spawn_args_refs: Vec<&str> = spawn_args.iter().map(|s| s.as_str()).collect();
+            let child_pid = async_spawn::spawn_aiki_background(cwd, &spawn_args_refs)?;
+
+            let target = result.scope.id.clone();
+            let events = read_events(cwd)?;
+            let graph = materialize_graph(&events);
+            let (width, _) = crossterm::terminal::size().unwrap_or((80, 24));
+            let model = tui::app::Model {
+                graph: std::sync::Arc::new(graph),
+                screen: tui::app::Screen::Review {
+                    review_id: review_id.clone(),
+                    target,
+                },
+                window: WindowState::new(width),
+            };
+            tui::app::run_with_child(model, cwd, Some(child_pid))?;
+        } else {
+            // Non-TTY: run blocking with text output
+            let options = TaskRunOptions::new();
+            task_run(cwd, &review_id, options)?;
+
+            // Check data.issue_count to determine if issues were found
+            let events = read_events(cwd)?;
+            let graph = materialize_graph(&events);
+            let has_issues = find_task(&graph.tasks, &review_id)
+                .map(|t| {
+                    t.data
+                        .get("issue_count")
+                        .and_then(|c| c.parse::<usize>().ok())
+                        .unwrap_or(0)
+                        > 0
+                })
+                .unwrap_or(false);
+
+            if fix_template_for_async.is_some() && has_issues {
+                super::fix::run_fix(
+                    cwd,
+                    &review_id,
+                    false,                          // not async
+                    None,                           // no continue-async
+                    fix_template_for_async.clone(), // forward caller's fix template
+                    None,                           // default decompose template
+                    None,                           // default loop template
+                    None,                           // default review template
+                    agent.clone(),                  // pass through agent override
+                    autorun,
+                    false,                 // not --once
+                    output_format.clone(), // pass through caller's output format
+                )?;
+            }
+            if output_id {
+                println!("{}", review_id);
+            } else if !(fix_template_for_async.is_some() && has_issues) {
+                output_review_completed(cwd, &review_id)?;
+            }
         }
     }
 
@@ -900,7 +948,18 @@ fn run_continue_async(
 
     if has_issues {
         super::fix::run_fix(
-            cwd, review_id, false, None, fix_template, None, None, None, agent, autorun, false, None,
+            cwd,
+            review_id,
+            false,
+            None,
+            fix_template,
+            None,
+            None,
+            None,
+            agent,
+            autorun,
+            false,
+            None,
         )?;
     }
 
@@ -910,8 +969,7 @@ fn run_continue_async(
 /// Output message when there's nothing to review
 fn output_nothing_to_review() -> Result<()> {
     output_utils::emit(|| {
-        MdBuilder::new()
-            .build("Nothing to review — no closed tasks in session.\n")
+        MdBuilder::new().build("Nothing to review — no closed tasks in session.\n")
     });
     Ok(())
 }
@@ -926,25 +984,26 @@ fn render_review_workflow(cwd: &Path, review_id: &str) -> Result<String> {
     let graph = materialize_graph(&events);
 
     let review_task = find_task(&graph.tasks, review_id)?;
-    let repo_name = crate::repos::repo_folder_name(cwd);
     let theme = Theme::from_mode(detect_mode());
+    let window = WindowState::new(80);
 
     let scope_kind = review_task.data.get("scope.kind").map(|s| s.as_str());
 
-    // Code/plan reviews: render the review task's own subtask progress
+    // Code/plan reviews: render the review screen with scope.id as target
     if matches!(scope_kind, Some("code") | Some("plan")) {
-        let plan_path = review_task
+        let target = review_task
             .data
             .get("scope.id")
             .map(|s| s.as_str())
             .unwrap_or("unknown");
-        let chat = tui::chat_builder::build_review_chat(&graph, review_id);
-        let buf = tui::views::pipeline_chat::render_pipeline_chat(&chat, &theme, &repo_name, plan_path);
-        return Ok(buffer_to_ansi(&buf));
+        let mut lines = tui::screens::review::view(&graph, review_id, target, &window);
+        return Ok(render_to_string(&mut lines, &theme));
     }
 
     // Task/session reviews: find the epic via validates edge, show build pipeline
-    let epic = graph.edges.targets(review_id, "validates")
+    let epic = graph
+        .edges
+        .targets(review_id, "validates")
         .first()
         .and_then(|id| graph.tasks.get(id.as_str()));
 
@@ -954,9 +1013,14 @@ fn render_review_workflow(cwd: &Path, review_id: &str) -> Result<String> {
         .map(|s| s.as_str())
         .unwrap_or("unknown");
 
-    let chat = tui::chat_builder::build_pipeline_chat(&graph, plan_path);
-    let buf = tui::views::pipeline_chat::render_pipeline_chat(&chat, &theme, &repo_name, plan_path);
-    Ok(buffer_to_ansi(&buf))
+    if let Some(epic) = epic {
+        let mut lines = tui::screens::build::view(&graph, &epic.id, plan_path, &window);
+        Ok(render_to_string(&mut lines, &theme))
+    } else {
+        let mut lines =
+            tui::screens::review::view(&graph, review_id, plan_path, &window);
+        Ok(render_to_string(&mut lines, &theme))
+    }
 }
 
 /// Output review started message (for --start mode)
@@ -994,7 +1058,9 @@ fn output_review_completed(cwd: &Path, review_id: &str) -> Result<()> {
     output_utils::emit(|| {
         let status = format!("Completed: {review_id}\n");
         if rendered.trim().is_empty() {
-            format!("{status}Review completed — run `aiki task show {review_id}` for details.{hint}")
+            format!(
+                "{status}Review completed — run `aiki task show {review_id}` for details.{hint}"
+            )
         } else {
             format!("{status}{rendered}{hint}")
         }
@@ -1088,8 +1154,8 @@ fn run_issue_add(
 /// List issues on a review task
 fn run_issue_list(cwd: &Path, review_id: &str) -> Result<()> {
     let events = read_events(cwd)?;
-    let tasks = materialize_graph(&events).tasks;
-    let task = find_task(&tasks, review_id)?;
+    let graph = materialize_graph(&events);
+    let task = find_task(&graph.tasks, review_id)?;
 
     // Validate it's a review task
     if !super::fix::is_review_task(task) {
@@ -1099,29 +1165,11 @@ fn run_issue_list(cwd: &Path, review_id: &str) -> Result<()> {
         )));
     }
 
-    let mut issues = get_issue_comments(task);
+    let theme = Theme::from_mode(detect_mode());
+    let window = WindowState::new(80);
+    let mut lines = tui::screens::review_show::view(&graph, review_id, &window);
 
-    // Sort by severity: high → medium → low
-    issues.sort_by_key(|c| severity_order(comment_severity(c)));
-
-    let items: Vec<IssueListItem> = issues
-        .iter()
-        .map(|comment| {
-            let severity = comment_severity(comment).to_string();
-            let locations = parse_locations(&comment.data);
-            IssueListItem {
-                severity,
-                text: comment.text.clone(),
-                location: format_locations(&locations),
-            }
-        })
-        .collect();
-
-    output_utils::emit(|| {
-        let theme = Theme::from_mode(detect_mode());
-        let buffer = render_issue_list(&task.id, &task.name, &items, &theme);
-        buffer_to_ansi(&buffer)
-    });
+    output_utils::emit(|| render_to_string(&mut lines, &theme));
 
     Ok(())
 }
@@ -1161,6 +1209,7 @@ fn list_reviews(cwd: &Path, all: bool) -> Result<()> {
         for review in &reviews {
             let status_str = match review.status {
                 TaskStatus::Open => "open",
+                TaskStatus::Reserved => "reserved",
                 TaskStatus::InProgress => "in_progress",
                 TaskStatus::Stopped => "stopped",
                 TaskStatus::Closed => "closed",
@@ -1180,11 +1229,7 @@ fn list_reviews(cwd: &Path, all: bool) -> Result<()> {
 
             content.push_str(&format!(
                 "| {} | {} | {} | {} | {} |\n",
-                &review.id,
-                status_str,
-                outcome_str,
-                issue_count,
-                &review.name
+                &review.id, status_str, outcome_str, issue_count, &review.name
             ));
         }
         MdBuilder::new().build(&content)
@@ -1196,9 +1241,9 @@ fn list_reviews(cwd: &Path, all: bool) -> Result<()> {
 /// Show review task details
 fn show_review(cwd: &Path, task_id: &str) -> Result<()> {
     let events = read_events(cwd)?;
-    let tasks = materialize_graph(&events).tasks;
+    let graph = materialize_graph(&events);
 
-    let task = find_task(&tasks, task_id)?;
+    let task = find_task(&graph.tasks, task_id)?;
 
     // Verify it's a review task
     if task.task_type.as_deref() != Some("review") {
@@ -1208,27 +1253,11 @@ fn show_review(cwd: &Path, task_id: &str) -> Result<()> {
         )));
     }
 
-    let mut issues = get_issue_comments(task);
-    issues.sort_by_key(|c| severity_order(comment_severity(c)));
+    let theme = Theme::from_mode(detect_mode());
+    let window = WindowState::new(80);
+    let mut lines = tui::screens::review_show::view(&graph, task_id, &window);
 
-    let items: Vec<IssueListItem> = issues
-        .iter()
-        .map(|comment| {
-            let severity = comment_severity(comment).to_string();
-            let locations = parse_locations(&comment.data);
-            IssueListItem {
-                severity,
-                text: comment.text.clone(),
-                location: format_locations(&locations),
-            }
-        })
-        .collect();
-
-    output_utils::emit(|| {
-        let theme = Theme::from_mode(detect_mode());
-        let buffer = render_issue_list(&task.id, &task.name, &items, &theme);
-        buffer_to_ansi(&buffer)
-    });
+    output_utils::emit(|| render_to_string(&mut lines, &theme));
 
     Ok(())
 }
@@ -1287,10 +1316,22 @@ mod tests {
 
     #[test]
     fn test_scope_kind_from_str() {
-        assert_eq!(ReviewScopeKind::from_str("task").unwrap(), ReviewScopeKind::Task);
-        assert_eq!(ReviewScopeKind::from_str("plan").unwrap(), ReviewScopeKind::Plan);
-        assert_eq!(ReviewScopeKind::from_str("code").unwrap(), ReviewScopeKind::Code);
-        assert_eq!(ReviewScopeKind::from_str("session").unwrap(), ReviewScopeKind::Session);
+        assert_eq!(
+            ReviewScopeKind::from_str("task").unwrap(),
+            ReviewScopeKind::Task
+        );
+        assert_eq!(
+            ReviewScopeKind::from_str("plan").unwrap(),
+            ReviewScopeKind::Plan
+        );
+        assert_eq!(
+            ReviewScopeKind::from_str("code").unwrap(),
+            ReviewScopeKind::Code
+        );
+        assert_eq!(
+            ReviewScopeKind::from_str("session").unwrap(),
+            ReviewScopeKind::Session
+        );
     }
 
     #[test]
@@ -1548,10 +1589,7 @@ mod tests {
         // Not a file, not a task ID (has digits and hyphen)
         let result = detect_target(dir.path(), Some("not-a-target-123"), false);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Target not found"));
+        assert!(result.unwrap_err().to_string().contains("Target not found"));
     }
 
     // looks_like_task_id tests
@@ -1622,25 +1660,41 @@ mod tests {
 
     #[test]
     fn test_location_display_path_only() {
-        let loc = Location { path: "src/auth.rs".into(), start_line: None, end_line: None };
+        let loc = Location {
+            path: "src/auth.rs".into(),
+            start_line: None,
+            end_line: None,
+        };
         assert_eq!(loc.to_string(), "src/auth.rs");
     }
 
     #[test]
     fn test_location_display_with_line() {
-        let loc = Location { path: "src/auth.rs".into(), start_line: Some(42), end_line: None };
+        let loc = Location {
+            path: "src/auth.rs".into(),
+            start_line: Some(42),
+            end_line: None,
+        };
         assert_eq!(loc.to_string(), "src/auth.rs:42");
     }
 
     #[test]
     fn test_location_display_with_range() {
-        let loc = Location { path: "src/auth.rs".into(), start_line: Some(42), end_line: Some(50) };
+        let loc = Location {
+            path: "src/auth.rs".into(),
+            start_line: Some(42),
+            end_line: Some(50),
+        };
         assert_eq!(loc.to_string(), "src/auth.rs:42-50");
     }
 
     #[test]
     fn test_location_display_same_start_end() {
-        let loc = Location { path: "src/auth.rs".into(), start_line: Some(42), end_line: Some(42) };
+        let loc = Location {
+            path: "src/auth.rs".into(),
+            start_line: Some(42),
+            end_line: Some(42),
+        };
         assert_eq!(loc.to_string(), "src/auth.rs:42");
     }
 
@@ -1675,7 +1729,10 @@ mod tests {
     #[test]
     fn test_parse_locations_multi() {
         let mut data = HashMap::new();
-        data.insert("locations".into(), "src/auth.rs:42-50,src/main.rs:108".into());
+        data.insert(
+            "locations".into(),
+            "src/auth.rs:42-50,src/main.rs:108".into(),
+        );
         let locs = parse_locations(&data);
         assert_eq!(locs.len(), 2);
         assert_eq!(locs[0].path, "src/auth.rs");
@@ -1689,17 +1746,32 @@ mod tests {
 
     #[test]
     fn test_format_locations_single() {
-        let locs = vec![Location { path: "src/auth.rs".into(), start_line: Some(42), end_line: Some(50) }];
+        let locs = vec![Location {
+            path: "src/auth.rs".into(),
+            start_line: Some(42),
+            end_line: Some(50),
+        }];
         assert_eq!(format_locations(&locs), "(src/auth.rs:42-50)");
     }
 
     #[test]
     fn test_format_locations_multiple() {
         let locs = vec![
-            Location { path: "src/auth.rs".into(), start_line: Some(42), end_line: Some(50) },
-            Location { path: "src/main.rs".into(), start_line: Some(108), end_line: None },
+            Location {
+                path: "src/auth.rs".into(),
+                start_line: Some(42),
+                end_line: Some(50),
+            },
+            Location {
+                path: "src/main.rs".into(),
+                start_line: Some(108),
+                end_line: None,
+            },
         ];
-        assert_eq!(format_locations(&locs), "(src/auth.rs:42-50, src/main.rs:108)");
+        assert_eq!(
+            format_locations(&locs),
+            "(src/auth.rs:42-50, src/main.rs:108)"
+        );
     }
 
     // build_async_review_args tests
@@ -1739,16 +1811,19 @@ mod tests {
     #[test]
     fn build_async_review_args_all_flags() {
         let args = build_async_review_args("rev123", Some("fix"), Some("claude-code"), true);
-        assert_eq!(args, vec![
-            "review",
-            "--_continue-async",
-            "rev123",
-            "--fix-template",
-            "fix",
-            "--agent",
-            "claude-code",
-            "--autorun",
-        ]);
+        assert_eq!(
+            args,
+            vec![
+                "review",
+                "--_continue-async",
+                "rev123",
+                "--fix-template",
+                "fix",
+                "--agent",
+                "claude-code",
+                "--autorun",
+            ]
+        );
     }
 
     // ── Regression tests for review-fix execution paths ──────────────
@@ -1775,7 +1850,7 @@ mod tests {
             closed_outcome: None,
             summary: None,
             turn_started: None,
-                closed_at: None,
+            closed_at: None,
             turn_closed: None,
             turn_stopped: None,
             comments: Vec::new(),
@@ -1865,27 +1940,33 @@ mod tests {
     fn build_async_review_args_fix_template_only() {
         // Verify --fix-template flag is correctly placed in args for async path
         let args = build_async_review_args("rev456", Some("fix"), None, false);
-        assert_eq!(args, vec![
-            "review",
-            "--_continue-async",
-            "rev456",
-            "--fix-template",
-            "fix",
-        ]);
+        assert_eq!(
+            args,
+            vec![
+                "review",
+                "--_continue-async",
+                "rev456",
+                "--fix-template",
+                "fix",
+            ]
+        );
     }
 
     #[test]
     fn build_async_review_args_fix_template_with_autorun() {
         // --fix-template + --autorun (no agent) for async path
         let args = build_async_review_args("rev789", Some("fix"), None, true);
-        assert_eq!(args, vec![
-            "review",
-            "--_continue-async",
-            "rev789",
-            "--fix-template",
-            "fix",
-            "--autorun",
-        ]);
+        assert_eq!(
+            args,
+            vec![
+                "review",
+                "--_continue-async",
+                "rev789",
+                "--fix-template",
+                "fix",
+                "--autorun",
+            ]
+        );
     }
 
     #[test]

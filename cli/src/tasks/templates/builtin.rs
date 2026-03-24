@@ -100,10 +100,7 @@ mod tests {
     fn test_default_plugin_templates_non_empty() {
         let templates = default_plugin_templates();
         for (name, content) in &templates {
-            assert!(
-                !content.is_empty(),
-                "Template {name} has empty content"
-            );
+            assert!(!content.is_empty(), "Template {name} has empty content");
         }
     }
 }

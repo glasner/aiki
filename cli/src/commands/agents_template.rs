@@ -8,7 +8,10 @@ pub const AIKI_BLOCK_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Returns the full <aiki> block template with the current version
 pub fn aiki_block_template() -> String {
-    format!("<aiki version=\"{}\">{}",  AIKI_BLOCK_VERSION, AIKI_BLOCK_INNER)
+    format!(
+        "<aiki version=\"{}\">{}",
+        AIKI_BLOCK_VERSION, AIKI_BLOCK_INNER
+    )
 }
 
 /// Template body (everything after the opening tag)

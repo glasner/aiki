@@ -10,17 +10,16 @@ use std::path::Path;
 
 use clap::Subcommand;
 
-use super::OutputFormat;
 use super::decompose::{run_decompose, DecomposeOptions};
+use super::OutputFormat;
 use crate::agents::AgentType;
-use crate::output_utils;
 use crate::config::get_aiki_binary_path;
-use crate::tasks::runner::ScreenSession;
 use crate::error::{AikiError, Result};
-use crate::tasks::id::is_task_id;
-use crate::tasks::templates::get_working_copy_change_id;
+use crate::output_utils;
 use crate::plans::{parse_plan_metadata, PlanGraph};
+use crate::tasks::id::is_task_id;
 use crate::tasks::md::MdBuilder;
+use crate::tasks::templates::get_working_copy_change_id;
 use crate::tasks::{
     find_task, generate_task_id, get_subtasks, is_task_id_prefix, materialize_graph, read_events,
     write_event, Task, TaskEvent, TaskOutcome, TaskPriority, TaskStatus,
@@ -66,9 +65,8 @@ pub enum EpicCommands {
 
 /// Run the epic command
 pub fn run(command: EpicCommands) -> Result<()> {
-    let cwd = env::current_dir().map_err(|_| {
-        AikiError::InvalidArgument("Failed to get current directory".to_string())
-    })?;
+    let cwd = env::current_dir()
+        .map_err(|_| AikiError::InvalidArgument("Failed to get current directory".to_string()))?;
 
     match command {
         EpicCommands::Add {
@@ -139,7 +137,7 @@ fn run_add(
                 close_epic(cwd, &epic.id)?;
             }
         }
-        let epic_id = create_epic(cwd, plan_path, template_name.as_deref(), agent_type, None)?;
+        let epic_id = create_epic(cwd, plan_path, template_name.as_deref(), agent_type, false)?;
         return output_epic_result(cwd, &epic_id, true, output_format);
     }
 
@@ -153,7 +151,8 @@ fn run_add(
             if subtasks.is_empty() {
                 // Invalid epic (no subtasks) — decompose agent failed
                 close_epic_as_invalid(cwd, &epic.id)?;
-                let epic_id = create_epic(cwd, plan_path, template_name.as_deref(), agent_type, None)?;
+                let epic_id =
+                    create_epic(cwd, plan_path, template_name.as_deref(), agent_type, false)?;
                 return output_epic_result(cwd, &epic_id, true, output_format);
             }
 
@@ -167,7 +166,7 @@ fn run_add(
         }
         _ => {
             // No epic, or epic is closed — create new
-            let epic_id = create_epic(cwd, plan_path, template_name.as_deref(), agent_type, None)?;
+            let epic_id = create_epic(cwd, plan_path, template_name.as_deref(), agent_type, false)?;
             output_epic_result(cwd, &epic_id, true, output_format)
         }
     }
@@ -184,7 +183,7 @@ pub(super) fn create_epic(
     plan_path: &str,
     template_name: Option<&str>,
     agent_type: Option<AgentType>,
-    session: Option<&mut ScreenSession>,
+    show_tui: bool,
 ) -> Result<String> {
     // Create the epic task first so the decompose agent can add subtasks to it
     let epic_id = create_epic_task(cwd, plan_path)?;
@@ -193,7 +192,7 @@ pub(super) fn create_epic(
         template: template_name.map(|s| s.to_string()),
         agent: agent_type,
     };
-    run_decompose(cwd, plan_path, &epic_id, options, session)?;
+    run_decompose(cwd, plan_path, &epic_id, options, show_tui)?;
 
     Ok(epic_id)
 }
@@ -259,7 +258,7 @@ pub fn find_or_create_epic(
     cwd: &Path,
     plan_path: &str,
     decompose_template: Option<&str>,
-    session: Option<&mut ScreenSession>,
+    show_tui: bool,
 ) -> Result<String> {
     let events = read_events(cwd)?;
     let graph = materialize_graph(&events);
@@ -272,12 +271,12 @@ pub fn find_or_create_epic(
             let subtasks = get_subtasks(&graph, &epic.id);
             if subtasks.is_empty() {
                 close_epic_as_invalid(cwd, &epic.id)?;
-                create_epic(cwd, plan_path, decompose_template, None, session)
+                create_epic(cwd, plan_path, decompose_template, None, show_tui)
             } else {
                 Ok(epic.id.clone())
             }
         }
-        _ => create_epic(cwd, plan_path, decompose_template, None, session),
+        _ => create_epic(cwd, plan_path, decompose_template, None, show_tui),
     }
 }
 
@@ -308,9 +307,9 @@ fn run_show(cwd: &Path, arg: &str, output_format: Option<OutputFormat>) -> Resul
     } else {
         // Plan path lookup via PlanGraph
         let plan_graph = PlanGraph::build(&graph);
-        plan_graph.find_epic_for_plan(arg, &graph).ok_or_else(|| {
-            AikiError::InvalidArgument(format!("No epic found for plan: {}", arg))
-        })?
+        plan_graph
+            .find_epic_for_plan(arg, &graph)
+            .ok_or_else(|| AikiError::InvalidArgument(format!("No epic found for plan: {}", arg)))?
     };
 
     match output_format {
@@ -358,19 +357,19 @@ fn run_list(cwd: &Path) -> Result<()> {
     for epic in &epics {
         let status_str = match epic.status {
             TaskStatus::Open => "open",
+            TaskStatus::Reserved => "reserved",
             TaskStatus::InProgress => "in_progress",
             TaskStatus::Stopped => "stopped",
             TaskStatus::Closed => "closed",
         };
 
-        let plan_str = epic
-            .data
-            .get("plan")
-            .map(|s| s.as_str())
-            .unwrap_or("-");
+        let plan_str = epic.data.get("plan").map(|s| s.as_str()).unwrap_or("-");
 
         let subtasks = get_subtasks(&graph, &epic.id);
-        let completed = subtasks.iter().filter(|t| t.status == TaskStatus::Closed).count();
+        let completed = subtasks
+            .iter()
+            .filter(|t| t.status == TaskStatus::Closed)
+            .count();
         let total = subtasks.len();
         let progress = if total > 0 {
             format!("{}/{}", completed, total)
@@ -427,9 +426,7 @@ fn undo_completed_subtasks(cwd: &Path, epic_id: &str) -> Result<()> {
         .current_dir(cwd)
         .args(["task", "undo", epic_id, "--completed"])
         .output()
-        .map_err(|e| {
-            AikiError::JjCommandFailed(format!("Failed to run task undo: {}", e))
-        })?;
+        .map_err(|e| AikiError::JjCommandFailed(format!("Failed to run task undo: {}", e)))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -475,7 +472,12 @@ fn close_epic(cwd: &Path, epic_id: &str) -> Result<()> {
 }
 
 /// Output epic result (created or found) to stderr and stdout.
-fn output_epic_result(cwd: &Path, epic_id: &str, created: bool, output_format: Option<OutputFormat>) -> Result<()> {
+fn output_epic_result(
+    cwd: &Path,
+    epic_id: &str,
+    created: bool,
+    output_format: Option<OutputFormat>,
+) -> Result<()> {
     let events = read_events(cwd)?;
     let graph = materialize_graph(&events);
     let subtasks = get_subtasks(&graph, epic_id);
@@ -548,6 +550,7 @@ fn output_epic_show(epic: &Task, subtasks: &[&Task]) -> Result<()> {
 
         let status_str = match epic.status {
             TaskStatus::Open => "open",
+            TaskStatus::Reserved => "reserved",
             TaskStatus::InProgress => "in_progress",
             TaskStatus::Stopped => "stopped",
             TaskStatus::Closed => "closed",
@@ -577,6 +580,7 @@ fn output_epic_show(epic: &Task, subtasks: &[&Task]) -> Result<()> {
             for (i, subtask) in subtasks.iter().enumerate() {
                 let sub_status = match subtask.status {
                     TaskStatus::Open => "open",
+                    TaskStatus::Reserved => "reserved",
                     TaskStatus::InProgress => "in_progress",
                     TaskStatus::Stopped => "stopped",
                     TaskStatus::Closed => "closed",
@@ -590,7 +594,11 @@ fn output_epic_show(epic: &Task, subtasks: &[&Task]) -> Result<()> {
 
                 content.push_str(&format!(
                     "| {} | {} | {} | {} | {} |\n",
-                    i + 1, &subtask.id, sub_status, sub_outcome, &subtask.name
+                    i + 1,
+                    &subtask.id,
+                    sub_status,
+                    sub_outcome,
+                    &subtask.name
                 ));
             }
         }
@@ -636,7 +644,7 @@ mod tests {
             closed_outcome: None,
             summary: None,
             turn_started: None,
-                closed_at: None,
+            closed_at: None,
             turn_closed: None,
             turn_stopped: None,
             comments: Vec::new(),
@@ -651,10 +659,7 @@ mod tests {
         }
     }
 
-    fn find_epic_for_plan_via_graph<'a>(
-        graph: &'a TaskGraph,
-        plan_path: &str,
-    ) -> Option<&'a Task> {
+    fn find_epic_for_plan_via_graph<'a>(graph: &'a TaskGraph, plan_path: &str) -> Option<&'a Task> {
         let sg = PlanGraph::build(graph);
         sg.find_epic_for_plan(plan_path, graph)
     }
@@ -706,10 +711,7 @@ mod tests {
         let temp_dir = tempfile::TempDir::new().unwrap();
         let result = validate_plan_path(temp_dir.path(), "not-markdown.txt");
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("must be markdown"));
+        assert!(result.unwrap_err().to_string().contains("must be markdown"));
     }
 
     #[test]

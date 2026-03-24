@@ -8,7 +8,10 @@ pub const PREREQUISITES: &[(&str, &str)] = &[
 
 const INSTALL_LINKS: &[(&str, &str)] = &[
     ("git", "https://git-scm.com/downloads"),
-    ("jj", "https://martinvonz.github.io/jj/latest/install-and-setup/"),
+    (
+        "jj",
+        "https://martinvonz.github.io/jj/latest/install-and-setup/",
+    ),
 ];
 
 /// Check if a command exists and return its version
@@ -59,7 +62,9 @@ pub fn check_prerequisites(quiet: bool) -> Result<()> {
         return Ok(());
     }
 
-    let mut msg = String::from("Missing required prerequisites\n\nThe following tools are required but not found:");
+    let mut msg = String::from(
+        "Missing required prerequisites\n\nThe following tools are required but not found:",
+    );
     for (cmd, description) in &missing {
         msg.push_str(&format!("\n  \u{2717} {} ({})", description, cmd));
         if let Some(url) = install_link(cmd) {

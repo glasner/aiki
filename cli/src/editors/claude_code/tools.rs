@@ -140,7 +140,7 @@ pub enum ClaudeTool {
 
     // Other tools
     Internal, // Task, TodoRead, TodoWrite
-    Mcp, // MCP tools
+    Mcp,      // MCP tools
 
     // Unknown or failed parse
     Unknown(String), // Store tool name for error reporting

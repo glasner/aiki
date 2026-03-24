@@ -21,16 +21,16 @@ use crate::agents::AgentType;
 use crate::error::{AikiError, Result};
 use crate::output_utils;
 use crate::session::find_active_session;
+use crate::tasks::md::MdBuilder;
 use crate::tasks::runner::{task_run, TaskRunOptions};
 use crate::tasks::templates::{
     create_tasks_from_template, find_templates_dir, load_template, substitute_parent_id,
     VariableContext, PARENT_ID_PLACEHOLDER,
 };
-use crate::tasks::md::MdBuilder;
 use crate::tasks::{
-    generate_task_id, get_current_scope_set, get_in_progress,
-    get_ready_queue_for_scope_set, materialize_graph, read_events, reassign_task, start_task_core,
-    write_event, Task, TaskEvent, TaskPriority, TaskStatus,
+    generate_task_id, get_current_scope_set, get_in_progress, get_ready_queue_for_scope_set,
+    materialize_graph, read_events, reassign_task, start_task_core, write_event, Task, TaskEvent,
+    TaskPriority, TaskStatus,
 };
 
 /// Plan mode determined from input arguments
@@ -39,7 +39,11 @@ pub enum PlanMode {
     /// Edit an existing plan file
     Edit { path: PathBuf, text: String },
     /// Create a new plan at the specified path
-    CreateAtPath { path: PathBuf, initial_idea: String, text: String },
+    CreateAtPath {
+        path: PathBuf,
+        initial_idea: String,
+        text: String,
+    },
     /// Create a new plan with an auto-generated filename
     Autogen { description: String, slug: String },
 }
@@ -57,9 +61,8 @@ pub fn run(
     agent: Option<String>,
     output_format: Option<super::OutputFormat>,
 ) -> Result<()> {
-    let cwd = env::current_dir().map_err(|_| {
-        AikiError::InvalidArgument("Failed to get current directory".to_string())
-    })?;
+    let cwd = env::current_dir()
+        .map_err(|_| AikiError::InvalidArgument("Failed to get current directory".to_string()))?;
 
     let output_id = matches!(output_format, Some(super::OutputFormat::Id));
 
@@ -131,7 +134,11 @@ fn determine_mode(cwd: &Path, args: &[String]) -> Result<PlanMode> {
         } else {
             // Create at path mode - parse initial idea from filename
             let initial_idea = parse_idea_from_filename(&path);
-            Ok(PlanMode::CreateAtPath { path, initial_idea, text })
+            Ok(PlanMode::CreateAtPath {
+                path,
+                initial_idea,
+                text,
+            })
         }
     } else {
         // Autogen mode - join all args as description
@@ -159,7 +166,9 @@ fn validate_path_in_repo(cwd: &Path, path: &Path) -> Result<()> {
         path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
     } else if let Some(parent) = path.parent() {
         if parent.exists() {
-            parent.canonicalize().unwrap_or_else(|_| parent.to_path_buf())
+            parent
+                .canonicalize()
+                .unwrap_or_else(|_| parent.to_path_buf())
         } else {
             // Parent doesn't exist, use the path as-is
             path.to_path_buf()
@@ -254,9 +263,8 @@ fn prompt_multiline_input(header: &str) -> Result<Option<String>> {
     eprint!("> ");
     stderr.flush().ok();
 
-    enable_raw_mode().map_err(|e| {
-        AikiError::InvalidArgument(format!("Failed to enable raw mode: {}", e))
-    })?;
+    enable_raw_mode()
+        .map_err(|e| AikiError::InvalidArgument(format!("Failed to enable raw mode: {}", e)))?;
 
     let mut lines: Vec<String> = vec![String::new()];
 
@@ -331,7 +339,11 @@ fn prompt_multiline_input(header: &str) -> Result<Option<String>> {
 fn find_unique_path(base_dir: &Path, slug: &str) -> Result<PathBuf> {
     // Ensure base directory exists
     fs::create_dir_all(base_dir).map_err(|e| {
-        AikiError::InvalidArgument(format!("Cannot create directory {}: {}", base_dir.display(), e))
+        AikiError::InvalidArgument(format!(
+            "Cannot create directory {}: {}",
+            base_dir.display(),
+            e
+        ))
     })?;
 
     let base_path = base_dir.join(format!("{}.md", slug));
@@ -366,12 +378,12 @@ fn run_epic(
 
     // Determine plan file path, initial idea, and args-provided text
     let (plan_path, is_new, args_idea, args_text) = match &mode {
-        PlanMode::Edit { path, text } => {
-            (path.clone(), false, String::new(), text.clone())
-        }
-        PlanMode::CreateAtPath { path, initial_idea, text } => {
-            (path.clone(), true, initial_idea.clone(), text.clone())
-        }
+        PlanMode::Edit { path, text } => (path.clone(), false, String::new(), text.clone()),
+        PlanMode::CreateAtPath {
+            path,
+            initial_idea,
+            text,
+        } => (path.clone(), true, initial_idea.clone(), text.clone()),
         PlanMode::Autogen { description, slug } => {
             let path = cwd.join("ops/now").join(format!("{}.md", slug));
             (path, true, description.clone(), String::new())
@@ -393,9 +405,16 @@ fn run_epic(
     // Interactive prompt fires when no CLI text was provided (except autogen mode)
     if initial_idea_needs_input(&mode, has_cli_text, is_new) && io::stdin().is_terminal() {
         let header = if initial_idea.is_empty() {
-            format!("What would you like to accomplish with this plan?\nPlan file: {}", plan_path.display())
+            format!(
+                "What would you like to accomplish with this plan?\nPlan file: {}",
+                plan_path.display()
+            )
         } else {
-            format!("What would you like to accomplish with this plan?\nPlan file: {} ({})\n", plan_path.display(), initial_idea)
+            format!(
+                "What would you like to accomplish with this plan?\nPlan file: {} ({})\n",
+                plan_path.display(),
+                initial_idea
+            )
         };
         if let Some(text) = prompt_multiline_input(&header)? {
             if initial_idea.is_empty() {
@@ -467,11 +486,7 @@ fn run_epic(
 
         // Create file with draft frontmatter
         fs::write(&plan_path, "---\ndraft: true\n---\n\n").map_err(|e| {
-            AikiError::InvalidArgument(format!(
-                "Cannot write to {}: {}",
-                plan_path.display(),
-                e
-            ))
+            AikiError::InvalidArgument(format!("Cannot write to {}: {}", plan_path.display(), e))
         })?;
     }
 
@@ -710,9 +725,8 @@ fn run_fix(
 
     // Ensure plans directory exists
     let plans_dir = PathBuf::from("/tmp/aiki/plans");
-    fs::create_dir_all(&plans_dir).map_err(|e| {
-        AikiError::InvalidArgument(format!("Cannot create plans directory: {}", e))
-    })?;
+    fs::create_dir_all(&plans_dir)
+        .map_err(|e| AikiError::InvalidArgument(format!("Cannot create plans directory: {}", e)))?;
 
     let plan_path = plans_dir.join(format!("{}.md", task_id));
 
@@ -776,10 +790,7 @@ fn output_plan_completed(plan_id: &str, plan_path: &Path) -> Result<()> {
 
 /// Output plan error message
 fn output_plan_error(plan_id: &str, error: &str) -> Result<()> {
-    let content = format!(
-        "Plan task {}: {}",
-        plan_id, error
-    );
+    let content = format!("Plan task {}: {}", plan_id, error);
     let md = MdBuilder::new().build_error(&content);
     eprintln!("{}", md);
     Ok(())
@@ -799,10 +810,7 @@ mod tests {
             parse_idea_from_filename(Path::new("user-auth-v2.md")),
             "User Auth V2"
         );
-        assert_eq!(
-            parse_idea_from_filename(Path::new("simple.md")),
-            "Simple"
-        );
+        assert_eq!(parse_idea_from_filename(Path::new("simple.md")), "Simple");
         assert_eq!(
             parse_idea_from_filename(Path::new("add-user-authentication.md")),
             "Add User Authentication"
@@ -811,12 +819,18 @@ mod tests {
 
     #[test]
     fn test_generate_slug() {
-        assert_eq!(generate_slug("Add user authentication"), "add-user-authentication");
+        assert_eq!(
+            generate_slug("Add user authentication"),
+            "add-user-authentication"
+        );
         assert_eq!(generate_slug("Fix the login bug"), "fix-the-login-bug");
         assert_eq!(generate_slug("Add User Auth"), "add-user-auth");
         assert_eq!(generate_slug("Simple"), "simple");
         assert_eq!(generate_slug("  Multiple   Spaces  "), "multiple-spaces");
-        assert_eq!(generate_slug("Special! @#$ Characters"), "special-characters");
+        assert_eq!(
+            generate_slug("Special! @#$ Characters"),
+            "special-characters"
+        );
     }
 
     #[test]
@@ -875,7 +889,11 @@ mod tests {
         let mode = determine_mode(temp_dir.path(), &["new-feature.md".to_string()]).unwrap();
 
         match mode {
-            PlanMode::CreateAtPath { path, initial_idea, text } => {
+            PlanMode::CreateAtPath {
+                path,
+                initial_idea,
+                text,
+            } => {
                 assert_eq!(path, temp_dir.path().join("new-feature.md"));
                 assert_eq!(initial_idea, "New Feature");
                 assert_eq!(text, "");
@@ -904,7 +922,11 @@ mod tests {
         .unwrap();
 
         match mode {
-            PlanMode::CreateAtPath { path, initial_idea, text } => {
+            PlanMode::CreateAtPath {
+                path,
+                initial_idea,
+                text,
+            } => {
                 assert_eq!(path, temp_dir.path().join("jwt-auth.md"));
                 assert_eq!(initial_idea, "Jwt Auth");
                 assert_eq!(text, "JWT auth with refresh tokens");
@@ -923,8 +945,13 @@ mod tests {
 
         let mode = determine_mode(
             temp_dir.path(),
-            &["Add".to_string(), "user".to_string(), "authentication".to_string()],
-        ).unwrap();
+            &[
+                "Add".to_string(),
+                "user".to_string(),
+                "authentication".to_string(),
+            ],
+        )
+        .unwrap();
 
         match mode {
             PlanMode::Autogen { description, slug } => {

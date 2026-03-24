@@ -26,7 +26,11 @@ pub enum ConditionalError {
     /// Invalid condition syntax
     InvalidCondition { condition: String, line: usize },
     /// Mismatched delimiters
-    MismatchedDelimiters { expected: String, found: String, line: usize },
+    MismatchedDelimiters {
+        expected: String,
+        found: String,
+        line: usize,
+    },
     /// Single-brace syntax detected (migration needed)
     SingleBraceSyntax { variable: String, line: usize },
     /// Invalid loop syntax
@@ -62,7 +66,11 @@ impl std::fmt::Display for ConditionalError {
                     line, condition
                 )
             }
-            ConditionalError::MismatchedDelimiters { expected, found, line } => {
+            ConditionalError::MismatchedDelimiters {
+                expected,
+                found,
+                line,
+            } => {
                 write!(
                     f,
                     "Mismatched delimiters at line {}: expected '{}', found '{}'",
@@ -368,7 +376,12 @@ pub fn tokenize(input: &str) -> Result<Vec<Token>, ConditionalError> {
                     }
 
                     // Check if this looks like a single-brace variable (e.g., {data.foo})
-                    if found_single_close && !lookahead.is_empty() && lookahead.chars().all(|ch| ch.is_alphanumeric() || ch == '.' || ch == '_') {
+                    if found_single_close
+                        && !lookahead.is_empty()
+                        && lookahead
+                            .chars()
+                            .all(|ch| ch.is_alphanumeric() || ch == '.' || ch == '_')
+                    {
                         return Err(ConditionalError::SingleBraceSyntax {
                             variable: lookahead,
                             line,
@@ -484,7 +497,14 @@ pub fn parse(tokens: &[Token]) -> Result<Vec<TemplateNode>, ConditionalError> {
 fn parse_if_body<'a, I>(
     iter: &mut Peekable<I>,
     line: &mut usize,
-) -> Result<(Vec<TemplateNode>, Vec<(String, Vec<TemplateNode>)>, Option<Vec<TemplateNode>>), ConditionalError>
+) -> Result<
+    (
+        Vec<TemplateNode>,
+        Vec<(String, Vec<TemplateNode>)>,
+        Option<Vec<TemplateNode>>,
+    ),
+    ConditionalError,
+>
 where
     I: Iterator<Item = &'a Token>,
 {
@@ -494,7 +514,9 @@ where
     let start_line = *line;
 
     loop {
-        let token = iter.next().ok_or(ConditionalError::UnclosedBlock { line: start_line })?;
+        let token = iter
+            .next()
+            .ok_or(ConditionalError::UnclosedBlock { line: start_line })?;
 
         // Track line numbers
         if let Token::Text(t) = token {
@@ -504,9 +526,16 @@ where
         match token {
             Token::Text(t) => {
                 if else_branch.is_some() {
-                    else_branch.as_mut().unwrap().push(TemplateNode::Text(t.clone()));
+                    else_branch
+                        .as_mut()
+                        .unwrap()
+                        .push(TemplateNode::Text(t.clone()));
                 } else if !elif_branches.is_empty() {
-                    elif_branches.last_mut().unwrap().1.push(TemplateNode::Text(t.clone()));
+                    elif_branches
+                        .last_mut()
+                        .unwrap()
+                        .1
+                        .push(TemplateNode::Text(t.clone()));
                 } else {
                     if_content.push(TemplateNode::Text(t.clone()));
                 }
@@ -797,7 +826,10 @@ fn parse_subtask_ref(content: &str, line: usize) -> Result<TemplateNode, Conditi
                 return Err(ConditionalError::InvalidCondition {
                     condition: format!(
                         "Unexpected token '{}' in {{% subtask %}}. Expected key:value or 'if'",
-                        before_colon.split_whitespace().next().unwrap_or(before_colon)
+                        before_colon
+                            .split_whitespace()
+                            .next()
+                            .unwrap_or(before_colon)
                     ),
                     line,
                 });
@@ -868,7 +900,9 @@ fn parse_subtask_ref(content: &str, line: usize) -> Result<TemplateNode, Conditi
                     line,
                 });
             }
-            if !chars.iter().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '.' || *c == '_' || *c == '-') {
+            if !chars.iter().all(|c| {
+                c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '.' || *c == '_' || *c == '-'
+            }) {
                 return Err(ConditionalError::InvalidCondition {
                     condition: format!(
                         "Invalid template name segment '{}' in {{% subtask %}}. Segments may contain [a-z0-9._-]",
@@ -944,10 +978,15 @@ fn evaluate_condition_with(
     ctx: &EvalContext,
     evaluator: &mut crate::expressions::ExpressionEvaluator,
 ) -> bool {
-    let var_map: std::collections::BTreeMap<String, String> =
-        ctx.variables.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    let var_map: std::collections::BTreeMap<String, String> = ctx
+        .variables
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
     let mut scope = crate::expressions::build_scope_from_flat(&var_map);
-    evaluator.evaluate(condition_str, &mut scope).unwrap_or(false)
+    evaluator
+        .evaluate(condition_str, &mut scope)
+        .unwrap_or(false)
 }
 
 /// Render a parsed template with the given context
@@ -1004,7 +1043,12 @@ fn render_with_loops(
                     }
                     if !matched {
                         if let Some(else_content) = else_branch {
-                            result.push_str(&render_with_loops(else_content, ctx, loop_vars, evaluator));
+                            result.push_str(&render_with_loops(
+                                else_content,
+                                ctx,
+                                loop_vars,
+                                evaluator,
+                            ));
                         }
                     }
                 }
@@ -1018,7 +1062,9 @@ fn render_with_loops(
                 // Get the collection items - for now we just pass through
                 // The actual iteration is handled by the template resolver
                 // Here we just emit the loop as markers for later processing
-                result.push_str(&render_loop(variable, collection, body, else_body, ctx, loop_vars, evaluator));
+                result.push_str(&render_loop(
+                    variable, collection, body, else_body, ctx, loop_vars, evaluator,
+                ));
             }
             TemplateNode::SubtaskRef {
                 template_name,
@@ -1071,7 +1117,9 @@ fn render_with_loops(
                         .collect();
                     result.push_str(&format!(
                         "<!-- AIKI_SUBTASK_REF:{}:{}:{} -->",
-                        resolved_name, line, attrs_str.join(";")
+                        resolved_name,
+                        line,
+                        attrs_str.join(";")
                     ));
                 }
             }
@@ -1088,8 +1136,8 @@ pub struct LoopItem {
     /// The current item's data (field -> value)
     pub data: HashMap<String, String>,
     /// Loop metadata
-    pub iteration: usize,  // 1-based iteration
-    pub index: usize,       // 0-based iteration
+    pub iteration: usize, // 1-based iteration
+    pub index: usize, // 0-based iteration
 }
 
 /// Resolve a variable that might be a loop variable or loop metadata
@@ -1129,7 +1177,10 @@ fn resolve_loop_variable(var: &str, loop_vars: &HashMap<String, LoopItem>) -> Op
 }
 
 /// Create an EvalContext that includes loop variable values for condition evaluation
-fn make_loop_aware_context(ctx: &EvalContext, loop_vars: &HashMap<String, LoopItem>) -> EvalContext {
+fn make_loop_aware_context(
+    ctx: &EvalContext,
+    loop_vars: &HashMap<String, LoopItem>,
+) -> EvalContext {
     let mut new_ctx = ctx.clone();
 
     // Add loop metadata
@@ -1170,10 +1221,7 @@ fn render_loop(
     // Format: <!-- AIKI_LOOP:var:collection --> body <!-- AIKI_ENDLOOP --> [<!-- AIKI_LOOPELSE --> else <!-- AIKI_ENDLOOPELSE -->]
     let mut result = String::new();
 
-    result.push_str(&format!(
-        "<!-- AIKI_LOOP:{}:{} -->\n",
-        variable, collection
-    ));
+    result.push_str(&format!("<!-- AIKI_LOOP:{}:{} -->\n", variable, collection));
 
     // Serialize the body back to template syntax, preserving conditionals
     // for deferred evaluation during loop expansion
@@ -1229,10 +1277,7 @@ fn cleanup_whitespace(s: &str) -> String {
 ///
 /// This is the main entry point for conditional processing.
 /// Variables are left as `{{var}}` for later substitution.
-pub fn process_conditionals(
-    template: &str,
-    ctx: &EvalContext,
-) -> Result<String, ConditionalError> {
+pub fn process_conditionals(template: &str, ctx: &EvalContext) -> Result<String, ConditionalError> {
     let tokens = tokenize(template)?;
     let ast = parse(&tokens)?;
     Ok(render(&ast, ctx))
@@ -1313,7 +1358,11 @@ mod tests {
         let ast = parse(&tokens).unwrap();
         assert_eq!(ast.len(), 1);
         match &ast[0] {
-            TemplateNode::Conditional { if_branch, elif_branches, else_branch } => {
+            TemplateNode::Conditional {
+                if_branch,
+                elif_branches,
+                else_branch,
+            } => {
                 assert_eq!(if_branch.0, "x");
                 assert_eq!(if_branch.1.len(), 1);
                 assert!(elif_branches.is_empty());
@@ -1340,7 +1389,11 @@ mod tests {
         let tokens = tokenize("{% if a %}A{% elif b %}B{% else %}C{% endif %}").unwrap();
         let ast = parse(&tokens).unwrap();
         match &ast[0] {
-            TemplateNode::Conditional { elif_branches, else_branch, .. } => {
+            TemplateNode::Conditional {
+                elif_branches,
+                else_branch,
+                ..
+            } => {
                 assert_eq!(elif_branches.len(), 1);
                 assert!(else_branch.is_some());
             }
@@ -1433,10 +1486,7 @@ mod tests {
     fn test_process_if_else() {
         let ctx = EvalContext::new();
 
-        let result = process_conditionals(
-            "{% if show %}Yes{% else %}No{% endif %}",
-            &ctx,
-        ).unwrap();
+        let result = process_conditionals("{% if show %}Yes{% else %}No{% endif %}", &ctx).unwrap();
         assert_eq!(result.trim(), "No");
     }
 
@@ -1445,10 +1495,7 @@ mod tests {
         let mut ctx = EvalContext::new();
         ctx.set("show", "true");
 
-        let result = process_conditionals(
-            "{% if show %}Hello {{name}}{% endif %}",
-            &ctx,
-        ).unwrap();
+        let result = process_conditionals("{% if show %}Hello {{name}}{% endif %}", &ctx).unwrap();
         assert!(result.contains("{{name}}"));
     }
 
@@ -1460,7 +1507,8 @@ mod tests {
         let result = process_conditionals(
             "{% if data.type == \"file\" %}File review{% else %}Code review{% endif %}",
             &ctx,
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(result.trim(), "File review");
     }
 
@@ -1653,7 +1701,8 @@ Content under heading
 
     #[test]
     fn test_tokenize_for_loop() {
-        let tokens = tokenize("{% for item in source.comments %}{{item.text}}{% endfor %}").unwrap();
+        let tokens =
+            tokenize("{% for item in source.comments %}{{item.text}}{% endfor %}").unwrap();
         assert_eq!(
             tokens,
             vec![
@@ -1670,7 +1719,12 @@ Content under heading
         let ast = parse(&tokens).unwrap();
         assert_eq!(ast.len(), 1);
         match &ast[0] {
-            TemplateNode::Loop { variable, collection, body, else_body } => {
+            TemplateNode::Loop {
+                variable,
+                collection,
+                body,
+                else_body,
+            } => {
                 assert_eq!(variable, "item");
                 assert_eq!(collection, "source.comments");
                 assert_eq!(body.len(), 1);
@@ -1682,10 +1736,17 @@ Content under heading
 
     #[test]
     fn test_parse_for_loop_with_else() {
-        let tokens = tokenize("{% for item in source.comments %}content{% else %}empty{% endfor %}").unwrap();
+        let tokens =
+            tokenize("{% for item in source.comments %}content{% else %}empty{% endfor %}")
+                .unwrap();
         let ast = parse(&tokens).unwrap();
         match &ast[0] {
-            TemplateNode::Loop { variable, collection, body, else_body } => {
+            TemplateNode::Loop {
+                variable,
+                collection,
+                body,
+                else_body,
+            } => {
                 assert_eq!(variable, "item");
                 assert_eq!(collection, "source.comments");
                 assert!(!body.is_empty());
@@ -1699,14 +1760,17 @@ Content under heading
 
     #[test]
     fn test_parse_nested_for_loops() {
-        let tokens = tokenize("{% for a in x %}{% for b in y %}inner{% endfor %}{% endfor %}").unwrap();
+        let tokens =
+            tokenize("{% for a in x %}{% for b in y %}inner{% endfor %}{% endfor %}").unwrap();
         let ast = parse(&tokens).unwrap();
         assert_eq!(ast.len(), 1);
         match &ast[0] {
             TemplateNode::Loop { variable, body, .. } => {
                 assert_eq!(variable, "a");
                 // Inner loop should be in body
-                assert!(body.iter().any(|n| matches!(n, TemplateNode::Loop { variable, .. } if variable == "b")));
+                assert!(body
+                    .iter()
+                    .any(|n| matches!(n, TemplateNode::Loop { variable, .. } if variable == "b")));
             }
             _ => panic!("Expected Loop"),
         }
@@ -1714,11 +1778,14 @@ Content under heading
 
     #[test]
     fn test_parse_for_with_if_inside() {
-        let tokens = tokenize("{% for item in list %}{% if item.show %}yes{% endif %}{% endfor %}").unwrap();
+        let tokens =
+            tokenize("{% for item in list %}{% if item.show %}yes{% endif %}{% endfor %}").unwrap();
         let ast = parse(&tokens).unwrap();
         match &ast[0] {
             TemplateNode::Loop { body, .. } => {
-                assert!(body.iter().any(|n| matches!(n, TemplateNode::Conditional { .. })));
+                assert!(body
+                    .iter()
+                    .any(|n| matches!(n, TemplateNode::Conditional { .. })));
             }
             _ => panic!("Expected Loop"),
         }
@@ -1783,7 +1850,9 @@ Content under heading
         let result = parse(&tokens);
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(matches!(err, ConditionalError::UnexpectedToken { token, .. } if token == "endfor"));
+        assert!(
+            matches!(err, ConditionalError::UnexpectedToken { token, .. } if token == "endfor")
+        );
     }
 
     #[test]
@@ -1847,16 +1916,23 @@ Content under heading
         let result = process_conditionals(template, &ctx).unwrap();
 
         // Should have AIKI_LOOP markers
-        assert!(result.contains("AIKI_LOOP:item:source.comments"), "Missing loop markers");
+        assert!(
+            result.contains("AIKI_LOOP:item:source.comments"),
+            "Missing loop markers"
+        );
         assert!(result.contains("AIKI_ENDLOOP"), "Missing endloop marker");
 
         // CRITICAL: Conditional should be PRESERVED as {% if %} syntax, NOT evaluated
         // If evaluated with empty context, it would be gone (falsey)
         assert!(
             result.contains("{% if item.priority == \"high\" %}"),
-            "Conditional was evaluated instead of preserved! Got:\n{}", result
+            "Conditional was evaluated instead of preserved! Got:\n{}",
+            result
         );
-        assert!(result.contains("**HIGH PRIORITY**"), "Conditional body missing");
+        assert!(
+            result.contains("**HIGH PRIORITY**"),
+            "Conditional body missing"
+        );
         assert!(result.contains("{% endif %}"), "Conditional endif missing");
     }
 
@@ -1877,7 +1953,12 @@ Content under heading
         let ast = parse(&tokens).unwrap();
         assert_eq!(ast.len(), 1);
         match &ast[0] {
-            TemplateNode::SubtaskRef { template_name, attributes, condition, line } => {
+            TemplateNode::SubtaskRef {
+                template_name,
+                attributes,
+                condition,
+                line,
+            } => {
                 assert_eq!(template_name, "decompose");
                 assert!(attributes.is_empty());
                 assert!(condition.is_none());
@@ -1893,7 +1974,11 @@ Content under heading
         let ast = parse(&tokens).unwrap();
         assert_eq!(ast.len(), 1);
         match &ast[0] {
-            TemplateNode::SubtaskRef { template_name, condition, .. } => {
+            TemplateNode::SubtaskRef {
+                template_name,
+                condition,
+                ..
+            } => {
                 assert_eq!(template_name, "review/plan");
                 assert_eq!(condition.as_deref(), Some("data.file_type == \"plan\""));
             }
@@ -1903,7 +1988,8 @@ Content under heading
 
     #[test]
     fn test_parse_subtask_ref_inside_conditional() {
-        let tokens = tokenize("{% if data.needs_plan %}{% subtask decompose %}{% endif %}").unwrap();
+        let tokens =
+            tokenize("{% if data.needs_plan %}{% subtask decompose %}{% endif %}").unwrap();
         let ast = parse(&tokens).unwrap();
         assert_eq!(ast.len(), 1);
         match &ast[0] {
@@ -1974,11 +2060,8 @@ Content under heading
     fn test_process_subtask_ref_interpolated() {
         let mut ctx = EvalContext::new();
         ctx.set("data.scope.kind", "task");
-        let result = process_conditionals(
-            "{% subtask review/{{data.scope.kind}} %}",
-            &ctx,
-        )
-        .unwrap();
+        let result =
+            process_conditionals("{% subtask review/{{data.scope.kind}} %}", &ctx).unwrap();
         assert!(
             result.contains("AIKI_SUBTASK_REF:review/task:"),
             "Expected interpolated template name, got: {}",
@@ -1990,11 +2073,8 @@ Content under heading
     fn test_process_subtask_ref_interpolated_session() {
         let mut ctx = EvalContext::new();
         ctx.set("data.scope.kind", "session");
-        let result = process_conditionals(
-            "{% subtask review/{{data.scope.kind}} %}",
-            &ctx,
-        )
-        .unwrap();
+        let result =
+            process_conditionals("{% subtask review/{{data.scope.kind}} %}", &ctx).unwrap();
         assert!(
             result.contains("AIKI_SUBTASK_REF:review/session:"),
             "Expected interpolated template name, got: {}",
@@ -2039,7 +2119,8 @@ Content under heading
         let result = process_conditionals(
             "{% subtask review/plan if data.file_type == \"plan\" %}",
             &ctx,
-        ).unwrap();
+        )
+        .unwrap();
         assert!(result.contains("AIKI_SUBTASK_REF:review/plan:"));
     }
 
@@ -2050,7 +2131,8 @@ Content under heading
         let result = process_conditionals(
             "{% subtask review/plan if data.file_type == \"plan\" %}",
             &ctx,
-        ).unwrap();
+        )
+        .unwrap();
         assert!(!result.contains("AIKI_SUBTASK_REF"));
     }
 
@@ -2061,7 +2143,8 @@ Content under heading
         let result = process_conditionals(
             "{% if data.needs_plan %}{% subtask decompose %}{% endif %}",
             &ctx,
-        ).unwrap();
+        )
+        .unwrap();
         assert!(result.contains("AIKI_SUBTASK_REF:decompose:"));
 
         // False branch
@@ -2069,7 +2152,8 @@ Content under heading
         let result2 = process_conditionals(
             "{% if data.needs_plan %}{% subtask decompose %}{% endif %}",
             &ctx2,
-        ).unwrap();
+        )
+        .unwrap();
         assert!(!result2.contains("AIKI_SUBTASK_REF"));
     }
 
@@ -2079,9 +2163,17 @@ Content under heading
         let ast = parse(&tokens).unwrap();
         assert_eq!(ast.len(), 1);
         match &ast[0] {
-            TemplateNode::SubtaskRef { template_name, attributes, condition, .. } => {
+            TemplateNode::SubtaskRef {
+                template_name,
+                attributes,
+                condition,
+                ..
+            } => {
                 assert_eq!(template_name, "review");
-                assert_eq!(attributes.get("needs-context").map(|s| s.as_str()), Some("subtasks.explore"));
+                assert_eq!(
+                    attributes.get("needs-context").map(|s| s.as_str()),
+                    Some("subtasks.explore")
+                );
                 assert!(condition.is_none());
             }
             _ => panic!("Expected SubtaskRef"),
@@ -2094,9 +2186,17 @@ Content under heading
         let ast = parse(&tokens).unwrap();
         assert_eq!(ast.len(), 1);
         match &ast[0] {
-            TemplateNode::SubtaskRef { template_name, attributes, condition, .. } => {
+            TemplateNode::SubtaskRef {
+                template_name,
+                attributes,
+                condition,
+                ..
+            } => {
                 assert_eq!(template_name, "review");
-                assert_eq!(attributes.get("key").map(|s| s.as_str()), Some("quoted value"));
+                assert_eq!(
+                    attributes.get("key").map(|s| s.as_str()),
+                    Some("quoted value")
+                );
                 assert_eq!(condition.as_deref(), Some("data.ready"));
             }
             _ => panic!("Expected SubtaskRef"),
@@ -2105,14 +2205,25 @@ Content under heading
 
     #[test]
     fn test_parse_subtask_ref_with_multiple_attributes() {
-        let tokens = tokenize("{% subtask review needs-context:subtasks.explore priority:p0 if data.ready %}").unwrap();
+        let tokens = tokenize(
+            "{% subtask review needs-context:subtasks.explore priority:p0 if data.ready %}",
+        )
+        .unwrap();
         let ast = parse(&tokens).unwrap();
         assert_eq!(ast.len(), 1);
         match &ast[0] {
-            TemplateNode::SubtaskRef { template_name, attributes, condition, .. } => {
+            TemplateNode::SubtaskRef {
+                template_name,
+                attributes,
+                condition,
+                ..
+            } => {
                 assert_eq!(template_name, "review");
                 assert_eq!(attributes.len(), 2);
-                assert_eq!(attributes.get("needs-context").map(|s| s.as_str()), Some("subtasks.explore"));
+                assert_eq!(
+                    attributes.get("needs-context").map(|s| s.as_str()),
+                    Some("subtasks.explore")
+                );
                 assert_eq!(attributes.get("priority").map(|s| s.as_str()), Some("p0"));
                 assert_eq!(condition.as_deref(), Some("data.ready"));
             }
@@ -2155,10 +2266,9 @@ Content under heading
     #[test]
     fn test_process_subtask_ref_with_attributes_marker() {
         let ctx = EvalContext::new();
-        let result = process_conditionals(
-            "{% subtask review needs-context:subtasks.explore %}",
-            &ctx,
-        ).unwrap();
+        let result =
+            process_conditionals("{% subtask review needs-context:subtasks.explore %}", &ctx)
+                .unwrap();
         assert!(
             result.contains("AIKI_SUBTASK_REF:review:"),
             "Expected subtask ref marker, got: {}",
@@ -2174,10 +2284,8 @@ Content under heading
     #[test]
     fn test_process_subtask_ref_quoted_value_percent_encoded() {
         let ctx = EvalContext::new();
-        let result = process_conditionals(
-            "{% subtask review title:\"value with spaces\" %}",
-            &ctx,
-        ).unwrap();
+        let result =
+            process_conditionals("{% subtask review title:\"value with spaces\" %}", &ctx).unwrap();
         assert!(
             result.contains("title:value%20with%20spaces"),
             "Expected percent-encoded spaces in marker, got: {}",
@@ -2193,7 +2301,11 @@ Content under heading
         let err = result.unwrap_err();
         match err {
             ConditionalError::InvalidCondition { condition, .. } => {
-                assert!(condition.contains("without a condition expression"), "Expected error about missing condition, got: {}", condition);
+                assert!(
+                    condition.contains("without a condition expression"),
+                    "Expected error about missing condition, got: {}",
+                    condition
+                );
             }
             _ => panic!("Expected InvalidCondition error, got: {:?}", err),
         }
@@ -2230,8 +2342,7 @@ Run each plan subtask."#;
 
     #[test]
     fn test_parse_subtask_ref_three_attributes_no_condition() {
-        let tokens =
-            tokenize("{% subtask review a:1 b:2 c:3 %}").unwrap();
+        let tokens = tokenize("{% subtask review a:1 b:2 c:3 %}").unwrap();
         let ast = parse(&tokens).unwrap();
         assert_eq!(ast.len(), 1);
         match &ast[0] {
@@ -2254,8 +2365,7 @@ Run each plan subtask."#;
 
     #[test]
     fn test_parse_subtask_ref_quoted_value_strips_quotes() {
-        let tokens =
-            tokenize("{% subtask review key:\"value with spaces\" %}").unwrap();
+        let tokens = tokenize("{% subtask review key:\"value with spaces\" %}").unwrap();
         let ast = parse(&tokens).unwrap();
         assert_eq!(ast.len(), 1);
         match &ast[0] {
@@ -2287,9 +2397,6 @@ Run each plan subtask."#;
             line: 1,
         };
         // Keys are sorted alphabetically in serialization
-        assert_eq!(
-            node_to_template(&node),
-            "{% subtask review a:1 b:2 c:3 %}"
-        );
+        assert_eq!(node_to_template(&node), "{% subtask review a:1 b:2 c:3 %}");
     }
 }

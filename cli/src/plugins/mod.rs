@@ -186,7 +186,9 @@ mod tests {
     fn test_reject_explicit_host() {
         // Two-segment with dot in namespace
         let err = "github.com/repo".parse::<PluginRef>().unwrap_err();
-        assert!(err.to_string().contains("Only GitHub plugins are supported"));
+        assert!(err
+            .to_string()
+            .contains("Only GitHub plugins are supported"));
 
         // Three-segment also rejected (wrong format)
         assert!("github.com/user/repo".parse::<PluginRef>().is_err());
@@ -213,10 +215,7 @@ mod tests {
     #[test]
     fn test_github_url_other_namespace() {
         let r: PluginRef = "somecorp/security".parse().unwrap();
-        assert_eq!(
-            r.github_url(),
-            "https://github.com/somecorp/security.git"
-        );
+        assert_eq!(r.github_url(), "https://github.com/somecorp/security.git");
     }
 
     #[test]

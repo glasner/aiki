@@ -26,7 +26,6 @@
 //! ## Utility Functions
 //! - [`get_git_user`] - Get the git user (name + email) from git config
 
-use crate::provenance::authors::{AuthorScope, AuthorsCommand, OutputFormat};
 use crate::cache::debug_log;
 use crate::error::{AikiError, Result};
 use crate::events::{
@@ -34,6 +33,7 @@ use crate::events::{
     ChangeOperation,
 };
 use crate::flows::state::ActionResult;
+use crate::provenance::authors::{AuthorScope, AuthorsCommand, OutputFormat};
 use crate::provenance::record::ProvenanceRecord;
 use crate::tasks::{manager, storage};
 use anyhow::Context;
@@ -917,7 +917,10 @@ pub fn generate_coauthors(event: &AikiCommitMessageStartedPayload) -> Result<Act
 /// Returns the number of open, unblocked tasks visible to the given agent,
 /// filtered by the current scope (same as `aiki task list`).
 /// This is used for context injection in flows.
-pub fn task_list_size_for_agent(cwd: &Path, agent: &crate::agents::AgentType) -> Result<ActionResult> {
+pub fn task_list_size_for_agent(
+    cwd: &Path,
+    agent: &crate::agents::AgentType,
+) -> Result<ActionResult> {
     let events = crate::tasks::storage::read_events(cwd)?;
     let graph = crate::tasks::graph::materialize_graph(&events);
     let scope_set = crate::tasks::manager::get_current_scope_set(&graph);
@@ -972,7 +975,13 @@ pub fn workspace_ensure_isolated(
 
     match isolation::create_isolated_workspace(&repo_root, session.uuid()) {
         Ok(ws) => {
-            debug_log(|| format!("[workspace] Workspace '{}' ready at {}", ws.name, ws.path.display()));
+            debug_log(|| {
+                format!(
+                    "[workspace] Workspace '{}' ready at {}",
+                    ws.name,
+                    ws.path.display()
+                )
+            });
             Ok(ActionResult {
                 success: true,
                 exit_code: Some(0),
@@ -981,7 +990,10 @@ pub fn workspace_ensure_isolated(
             })
         }
         Err(e) => {
-            eprintln!("[aiki] Warning: workspace creation failed, continuing in main workspace: {}", e);
+            eprintln!(
+                "[aiki] Warning: workspace creation failed, continuing in main workspace: {}",
+                e
+            );
             Ok(ActionResult {
                 success: true,
                 exit_code: Some(0),
@@ -1000,9 +1012,7 @@ pub fn workspace_ensure_isolated(
 ///
 /// # Returns
 /// ActionResult with stdout being the count of absorbed workspaces
-pub fn workspace_absorb_all(
-    session: &crate::session::AikiSession,
-) -> Result<ActionResult> {
+pub fn workspace_absorb_all(session: &crate::session::AikiSession) -> Result<ActionResult> {
     use crate::session::isolation;
 
     let session_uuid = session.uuid();
@@ -1077,11 +1087,7 @@ pub fn workspace_absorb_all(
             path: session_ws_dir,
         };
 
-        match isolation::absorb_workspace(
-            &repo_root,
-            &workspace,
-            parent_session_uuid.as_deref(),
-        ) {
+        match isolation::absorb_workspace(&repo_root, &workspace, parent_session_uuid.as_deref()) {
             Ok(isolation::AbsorbResult::Absorbed) => {
                 absorbed += 1;
 
@@ -1089,11 +1095,9 @@ pub fn workspace_absorb_all(
                 // Compute target_dir same as absorb_workspace: parent workspace if
                 // it exists, otherwise repo root.
                 let target_dir = if let Some(ref parent_uuid) = parent_session_uuid {
-                    let repo_id = crate::repos::ensure_repo_id(&repo_root)
-                        .unwrap_or_default();
-                    let parent_ws_path = isolation::workspaces_dir()
-                        .join(&repo_id)
-                        .join(parent_uuid);
+                    let repo_id = crate::repos::ensure_repo_id(&repo_root).unwrap_or_default();
+                    let parent_ws_path =
+                        isolation::workspaces_dir().join(&repo_id).join(parent_uuid);
                     if parent_ws_path.exists() {
                         parent_ws_path
                     } else {
@@ -1108,8 +1112,12 @@ pub fn workspace_absorb_all(
                 let conflict_check = crate::jj::jj_cmd()
                     .current_dir(&target_dir)
                     .args([
-                        "log", "-r", "conflicts() & @", "--no-graph",
-                        "-T", r#"change_id ++ "\n""#,
+                        "log",
+                        "-r",
+                        "conflicts() & @",
+                        "--no-graph",
+                        "-T",
+                        r#"change_id ++ "\n""#,
                         "--ignore-working-copy",
                     ])
                     .output();
@@ -1150,7 +1158,9 @@ pub fn workspace_absorb_all(
                             String::from_utf8_lossy(&output.stderr).trim()
                         );
                         has_conflicts = true;
-                        last_conflicted_files = "(conflict check failed — run `jj log -r 'conflicts() & @'` to verify)".to_string();
+                        last_conflicted_files =
+                            "(conflict check failed — run `jj log -r 'conflicts() & @'` to verify)"
+                                .to_string();
                     }
                     Err(e) => {
                         // jj command failed to spawn — conflict state unknown, treat as conflicted.
@@ -1201,8 +1211,10 @@ pub fn workspace_absorb_all(
                 .tasks
                 .iter()
                 .filter(|(_, task)| {
-                    matches!(task.status, crate::tasks::TaskStatus::Closed | crate::tasks::TaskStatus::Stopped)
-                        && task.last_session_id.as_deref() == Some(&session_uuid_str)
+                    matches!(
+                        task.status,
+                        crate::tasks::TaskStatus::Closed | crate::tasks::TaskStatus::Stopped
+                    ) && task.last_session_id.as_deref() == Some(&session_uuid_str)
                 })
                 .map(|(id, _)| id.clone())
                 .collect();
@@ -1261,7 +1273,8 @@ mod tests {
             AgentType::ClaudeCode,
             "test".to_string(),
             None::<&str>,
-            crate::provenance::DetectionMethod::Hook, SessionMode::Interactive,
+            crate::provenance::DetectionMethod::Hook,
+            SessionMode::Interactive,
         );
         AikiChangeCompletedPayload {
             session,
@@ -1287,7 +1300,8 @@ mod tests {
             AgentType::ClaudeCode,
             "test-session-123".to_string(),
             None::<&str>,
-            crate::provenance::DetectionMethod::Hook, SessionMode::Interactive,
+            crate::provenance::DetectionMethod::Hook,
+            SessionMode::Interactive,
         );
         let event = AikiChangeCompletedPayload {
             session,
@@ -1339,7 +1353,8 @@ mod tests {
             AgentType::Cursor,
             "cursor-session".to_string(),
             None::<&str>,
-            crate::provenance::DetectionMethod::Hook, SessionMode::Interactive,
+            crate::provenance::DetectionMethod::Hook,
+            SessionMode::Interactive,
         );
         let event = AikiChangeCompletedPayload {
             session,
@@ -1452,5 +1467,4 @@ mod tests {
         // No edit details → assume AI-only
         assert_eq!(result.stdout, "ExactMatch");
     }
-
 }

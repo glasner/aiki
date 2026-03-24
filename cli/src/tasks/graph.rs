@@ -214,7 +214,8 @@ impl EdgeStore {
         }
 
         // Clean up metadata
-        self.link_meta.remove(&(from.to_string(), to.to_string(), kind.to_string()));
+        self.link_meta
+            .remove(&(from.to_string(), to.to_string(), kind.to_string()));
     }
 
     /// Forward lookup: given a `from` node and kind, return all targets.
@@ -253,15 +254,14 @@ impl EdgeStore {
 
     /// Set metadata for a specific link.
     pub fn set_meta(&mut self, from: &str, to: &str, kind: &str, meta: LinkMeta) {
-        self.link_meta.insert(
-            (from.to_string(), to.to_string(), kind.to_string()),
-            meta,
-        );
+        self.link_meta
+            .insert((from.to_string(), to.to_string(), kind.to_string()), meta);
     }
 
     /// Get metadata for a specific link.
     pub fn get_meta(&self, from: &str, to: &str, kind: &str) -> Option<&LinkMeta> {
-        self.link_meta.get(&(from.to_string(), to.to_string(), kind.to_string()))
+        self.link_meta
+            .get(&(from.to_string(), to.to_string(), kind.to_string()))
     }
 }
 
@@ -300,7 +300,8 @@ impl TaskGraph {
         // "follows-up" kept for backward compat with existing links (renamed to "remediates")
         const TERMINAL_UNBLOCK: &[&str] = &["validates", "remediates", "follows-up"];
         // Link types that only unblock on Closed(Done)
-        const DONE_ONLY_UNBLOCK: &[&str] = &["blocked-by", "depends-on", "needs-context", "populated-by"];
+        const DONE_ONLY_UNBLOCK: &[&str] =
+            &["blocked-by", "depends-on", "needs-context", "populated-by"];
 
         let terminal_blocked = TERMINAL_UNBLOCK.iter().any(|link_type| {
             self.edges
@@ -393,7 +394,14 @@ impl TaskGraph {
     ///
     /// Returns task IDs that should be auto-started.
     pub fn find_autorun_candidates(&self, closed_task_id: &str) -> Vec<String> {
-        const BLOCKING_KINDS: &[&str] = &["validates", "remediates", "follows-up", "depends-on", "blocked-by", "needs-context"];
+        const BLOCKING_KINDS: &[&str] = &[
+            "validates",
+            "remediates",
+            "follows-up",
+            "depends-on",
+            "blocked-by",
+            "needs-context",
+        ];
 
         let mut candidates = std::collections::HashSet::new();
 
@@ -492,7 +500,11 @@ pub fn materialize_graph(events: &[TaskEvent]) -> TaskGraph {
         process_event(event, &mut tasks, &mut edges, &mut slug_index);
     }
 
-    TaskGraph { tasks, edges, slug_index }
+    TaskGraph {
+        tasks,
+        edges,
+        slug_index,
+    }
 }
 
 /// Materialize a task graph from an event stream with change IDs.
@@ -544,7 +556,11 @@ fn materialize_graph_refs(events: &[&TaskEvent]) -> TaskGraph {
         process_event(event, &mut tasks, &mut edges, &mut slug_index);
     }
 
-    TaskGraph { tasks, edges, slug_index }
+    TaskGraph {
+        tasks,
+        edges,
+        slug_index,
+    }
 }
 
 /// Process a single event into the tasks map, edge store, and slug index.
@@ -591,7 +607,10 @@ fn process_event(
             //   data.plan for epic task IDs)
             if let Some(plan) = data.get("plan") {
                 let plan_raw = plan.strip_prefix("file:").unwrap_or(plan);
-                if !data.contains_key("epic") && !data.contains_key("target") && plan_raw.contains('/') {
+                if !data.contains_key("epic")
+                    && !data.contains_key("target")
+                    && plan_raw.contains('/')
+                {
                     let target = if plan.starts_with("file:") {
                         plan.clone()
                     } else {
@@ -787,7 +806,13 @@ fn process_event(
                 }
             }
         }
-        TaskEvent::LinkAdded { from, to, kind, autorun, .. } => {
+        TaskEvent::LinkAdded {
+            from,
+            to,
+            kind,
+            autorun,
+            ..
+        } => {
             // Map renamed link kinds for backward compatibility
             let effective_kind = match kind.as_str() {
                 "implements" => "implements-plan",
@@ -826,8 +851,53 @@ fn process_event(
                 }
             }
         }
+        TaskEvent::Reserved { task_ids, .. } => {
+            for task_id in task_ids {
+                if let Some(task) = tasks.get_mut(task_id) {
+                    if task.status != TaskStatus::Open {
+                        eprintln!(
+                            "warn: Reserved event for task {} in status {}, expected Open — skipping",
+                            &task_id[..6],
+                            task.status
+                        );
+                        continue;
+                    }
+                    task.status = TaskStatus::Reserved;
+                }
+            }
+        }
+        TaskEvent::Released { task_ids, .. } => {
+            for task_id in task_ids {
+                if let Some(task) = tasks.get_mut(task_id) {
+                    if task.status != TaskStatus::Reserved {
+                        eprintln!(
+                            "warn: Released event for task {} in status {}, expected Reserved — skipping",
+                            &task_id[..6],
+                            task.status
+                        );
+                        continue;
+                    }
+                    task.status = TaskStatus::Open;
+                }
+            }
+        }
         TaskEvent::Absorbed { .. } => {
             // Absorbed events are informational; they don't change task state.
+        }
+        TaskEvent::Reserved { task_ids, .. } => {
+            for task_id in task_ids {
+                if let Some(task) = tasks.get_mut(task_id) {
+                    task.status = TaskStatus::Reserved;
+                }
+            }
+        }
+        TaskEvent::Released { task_ids, .. } => {
+            for task_id in task_ids {
+                if let Some(task) = tasks.get_mut(task_id) {
+                    // Release returns the task to Open status
+                    task.status = TaskStatus::Open;
+                }
+            }
         }
     }
 }
@@ -2115,7 +2185,10 @@ mod tests {
 
         let graph = materialize_graph(&events);
         assert_eq!(graph.slug_index.len(), 2);
-        assert_eq!(graph.find_by_slug("parent", "build").unwrap().id, "parent.1");
+        assert_eq!(
+            graph.find_by_slug("parent", "build").unwrap().id,
+            "parent.1"
+        );
         assert_eq!(graph.find_by_slug("parent", "test").unwrap().id, "parent.2");
     }
 
@@ -2184,8 +2257,14 @@ mod tests {
         // Same slug under same parent should fail
         let err = validate_slug_unique(&graph, "parent", "build").unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("build"), "Error should mention the slug: {msg}");
-        assert!(msg.contains("parent"), "Error should mention the parent: {msg}");
+        assert!(
+            msg.contains("build"),
+            "Error should mention the slug: {msg}"
+        );
+        assert!(
+            msg.contains("parent"),
+            "Error should mention the parent: {msg}"
+        );
     }
 
     #[test]
@@ -2504,7 +2583,10 @@ mod tests {
         ];
         let graph = materialize_graph(&events);
         let candidates = graph.find_autorun_candidates("A");
-        assert!(candidates.is_empty(), "Already-closed tasks should not auto-start");
+        assert!(
+            candidates.is_empty(),
+            "Already-closed tasks should not auto-start"
+        );
     }
 
     #[test]
@@ -2525,7 +2607,10 @@ mod tests {
         ];
         let graph = materialize_graph(&events);
         let candidates = graph.find_autorun_candidates("A");
-        assert!(candidates.is_empty(), "In-progress tasks should not auto-start");
+        assert!(
+            candidates.is_empty(),
+            "In-progress tasks should not auto-start"
+        );
     }
 
     #[test]
@@ -2581,7 +2666,10 @@ mod tests {
         ];
         let graph = materialize_graph(&events);
         let candidates = graph.find_autorun_candidates("A");
-        assert!(candidates.is_empty(), "Non-blocking kinds should not trigger autorun");
+        assert!(
+            candidates.is_empty(),
+            "Non-blocking kinds should not trigger autorun"
+        );
     }
 
     #[test]
@@ -2644,7 +2732,10 @@ mod tests {
         ];
         let graph = materialize_graph(&events);
         let candidates = graph.find_autorun_candidates("A");
-        assert!(candidates.is_empty(), "Removed link should not trigger autorun");
+        assert!(
+            candidates.is_empty(),
+            "Removed link should not trigger autorun"
+        );
     }
 
     // --- needs-context link tests ---
@@ -2683,7 +2774,10 @@ mod tests {
             make_closed("A"),
         ];
         let graph = materialize_graph(&events);
-        assert!(!graph.is_blocked("B"), "B should unblock when A is Closed(Done)");
+        assert!(
+            !graph.is_blocked("B"),
+            "B should unblock when A is Closed(Done)"
+        );
     }
 
     #[test]
@@ -2768,7 +2862,10 @@ mod tests {
             make_link("C", "B", "needs-context"),
         ];
         let graph = materialize_graph(&events);
-        assert!(graph.is_needs_context_head("A"), "A should be head of chain");
+        assert!(
+            graph.is_needs_context_head("A"),
+            "A should be head of chain"
+        );
     }
 
     #[test]
@@ -2816,5 +2913,135 @@ mod tests {
         let candidates = graph.find_autorun_candidates("A");
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0], "B");
+    }
+
+    // --- Reserved / Released lifecycle tests ---
+
+    fn make_reserved(ids: &[&str]) -> TaskEvent {
+        TaskEvent::Reserved {
+            task_ids: ids.iter().map(|s| s.to_string()).collect(),
+            agent_type: "claude-code".to_string(),
+            timestamp: Utc::now(),
+        }
+    }
+
+    fn make_released(ids: &[&str], reason: Option<&str>) -> TaskEvent {
+        TaskEvent::Released {
+            task_ids: ids.iter().map(|s| s.to_string()).collect(),
+            reason: reason.map(|s| s.to_string()),
+            timestamp: Utc::now(),
+        }
+    }
+
+    fn make_started(id: &str) -> TaskEvent {
+        TaskEvent::Started {
+            task_ids: vec![id.to_string()],
+            agent_type: "claude-code".to_string(),
+            session_id: None,
+            turn_id: None,
+            timestamp: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn test_reserved_event_transitions_open_to_reserved() {
+        let events = vec![
+            make_created("A", "Task A"),
+            make_reserved(&["A"]),
+        ];
+        let graph = materialize_graph(&events);
+        let task = graph.tasks.get("A").unwrap();
+        assert_eq!(task.status, TaskStatus::Reserved);
+    }
+
+    #[test]
+    fn test_released_event_transitions_reserved_to_open() {
+        let events = vec![
+            make_created("A", "Task A"),
+            make_reserved(&["A"]),
+            make_released(&["A"], None),
+        ];
+        let graph = materialize_graph(&events);
+        let task = graph.tasks.get("A").unwrap();
+        assert_eq!(task.status, TaskStatus::Open);
+    }
+
+    #[test]
+    fn test_started_event_transitions_reserved_to_in_progress() {
+        let events = vec![
+            make_created("A", "Task A"),
+            make_reserved(&["A"]),
+            make_started("A"),
+        ];
+        let graph = materialize_graph(&events);
+        let task = graph.tasks.get("A").unwrap();
+        assert_eq!(task.status, TaskStatus::InProgress);
+    }
+
+    #[test]
+    fn test_reserved_event_on_non_open_task_is_skipped() {
+        // Task is InProgress — Reserved event should be skipped (guard warns)
+        // Use 6+ char IDs because the guard does &task_id[..6]
+        let events = vec![
+            make_created("task_alpha", "Task Alpha"),
+            make_started("task_alpha"),
+            make_reserved(&["task_alpha"]),
+        ];
+        let graph = materialize_graph(&events);
+        let task = graph.tasks.get("task_alpha").unwrap();
+        // Should remain InProgress (Reserved was skipped)
+        assert_eq!(task.status, TaskStatus::InProgress);
+    }
+
+    #[test]
+    fn test_released_event_on_non_reserved_task_is_skipped() {
+        // Task is Open — Released event should be skipped (guard warns)
+        // Use 6+ char IDs because the guard does &task_id[..6]
+        let events = vec![
+            make_created("task_beta", "Task Beta"),
+            make_released(&["task_beta"], Some("spurious release")),
+        ];
+        let graph = materialize_graph(&events);
+        let task = graph.tasks.get("task_beta").unwrap();
+        // Should remain Open (Released was skipped)
+        assert_eq!(task.status, TaskStatus::Open);
+    }
+
+    #[test]
+    fn test_reserved_batch_multiple_tasks() {
+        let events = vec![
+            make_created("A", "Task A"),
+            make_created("B", "Task B"),
+            make_reserved(&["A", "B"]),
+        ];
+        let graph = materialize_graph(&events);
+        assert_eq!(graph.tasks.get("A").unwrap().status, TaskStatus::Reserved);
+        assert_eq!(graph.tasks.get("B").unwrap().status, TaskStatus::Reserved);
+    }
+
+    #[test]
+    fn test_released_with_reason_transitions_reserved_to_open() {
+        let events = vec![
+            make_created("A", "Task A"),
+            make_reserved(&["A"]),
+            make_released(&["A"], Some("Spawn failed, rolling back claim")),
+        ];
+        let graph = materialize_graph(&events);
+        let task = graph.tasks.get("A").unwrap();
+        assert_eq!(task.status, TaskStatus::Open);
+    }
+
+    #[test]
+    fn test_reserve_release_reserve_cycle() {
+        // Full cycle: Open → Reserved → Open → Reserved
+        let events = vec![
+            make_created("A", "Task A"),
+            make_reserved(&["A"]),
+            make_released(&["A"], None),
+            make_reserved(&["A"]),
+        ];
+        let graph = materialize_graph(&events);
+        let task = graph.tasks.get("A").unwrap();
+        assert_eq!(task.status, TaskStatus::Reserved);
     }
 }

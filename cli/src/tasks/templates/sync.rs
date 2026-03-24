@@ -621,10 +621,7 @@ mod tests {
             parse_frontmatter_version(b"---\nversion: \"2.5.0\"\n---\n# Hi"),
             Some("2.5.0".to_string())
         );
-        assert_eq!(
-            parse_frontmatter_version(b"# No frontmatter"),
-            None
-        );
+        assert_eq!(parse_frontmatter_version(b"# No frontmatter"), None);
         assert_eq!(
             parse_frontmatter_version(b"---\ntype: review\n---\n# No version"),
             None
@@ -660,10 +657,7 @@ mod tests {
         ensure_manifest_gitignored(dir.path(), true).unwrap();
         let content = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
         // Should not duplicate
-        assert_eq!(
-            content.matches(".aiki/.manifest.json").count(),
-            1
-        );
+        assert_eq!(content.matches(".aiki/.manifest.json").count(), 1);
     }
 
     #[test]

@@ -42,7 +42,9 @@ pub enum ChildStyle {
     Active,   // yellow (heartbeat, loading step)
     Done,     // ✓ prefix, dim
     Error,    // ✗ prefix, red
+    Warning,  // ⚠ prefix, yellow
     Normal,   // dim (target line, counts)
+    Bold,     // bold fg (summary total line)
 }
 
 /// Subtask table between --- separators.
@@ -105,6 +107,8 @@ The renderer iterates lines and applies styles based on `LineStyle`:
 | `ChildActive` | indent, `⎿` dim, space, text yellow |
 | `ChildDone` | indent, `⎿` dim, space, `✓` green, space, text dim |
 | `ChildError` | indent, `⎿` dim, space, `✗` red, space, text red |
+| `ChildWarning` | indent, `⎿` dim, space, `⚠` yellow, space, text bold |
+| `ChildBold` | indent, `⎿` dim, space, text bold fg |
 | `Subtask { status }` | indent, status icon (colored), space, name, right-aligned elapsed dim |
 | `Separator` | `---` dim |
 | `SectionHeader` | text bold fg |

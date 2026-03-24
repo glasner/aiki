@@ -922,7 +922,7 @@ pub fn handle_session_end(
         turn: crate::events::Turn::unknown(), // Set by handle_turn_completed
         response: response_text.to_string(),
         modified_files: Vec::new(), // Files tracked separately via change.done events
-        tasks: Default::default(), // Populated by handle_turn_completed
+        tasks: Default::default(),  // Populated by handle_turn_completed
     });
 
     let response = event_bus::dispatch(event)?;

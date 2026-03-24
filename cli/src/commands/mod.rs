@@ -16,28 +16,28 @@ pub enum OutputFormat {
 }
 
 pub mod acp;
-pub mod async_spawn;
 pub mod agents_template;
+pub mod async_spawn;
 pub mod authors;
 pub mod benchmark;
 pub mod blame;
 pub mod build;
-pub mod explore;
-pub mod session;
+pub mod decompose;
 pub mod doctor;
+pub mod epic;
 pub mod event;
+pub mod explore;
 pub mod fix;
 pub mod hooks;
-pub mod output;
-pub mod decompose;
-pub mod epic;
-pub mod plugin;
 pub mod init;
 pub mod loop_cmd;
 pub mod otel_receive;
-pub mod review;
+pub mod output;
 pub mod plan;
+pub mod plugin;
 pub mod resolve;
+pub mod review;
+pub mod session;
 
 pub mod task;
 pub mod zed_detection;

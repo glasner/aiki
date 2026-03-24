@@ -207,7 +207,11 @@ fn run_list(active: bool, background: bool, interactive: bool, limit: Option<usi
                 let (pid, mode, status) = if let Some(session_info) = active_session {
                     (session_info.parent_pid, session_info.mode, "active")
                 } else {
-                    (None, conv.session_mode.unwrap_or(SessionMode::Interactive), "ended")
+                    (
+                        None,
+                        conv.session_mode.unwrap_or(SessionMode::Interactive),
+                        "ended",
+                    )
                 };
 
                 SessionRow {

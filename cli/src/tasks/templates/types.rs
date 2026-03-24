@@ -314,10 +314,7 @@ needs-context: subtasks.explore
 "#;
         let fm: SubtaskFrontmatter = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(fm.slug, Some("plan".to_string()));
-        assert_eq!(
-            fm.needs_context,
-            Some("subtasks.explore".to_string())
-        );
+        assert_eq!(fm.needs_context, Some("subtasks.explore".to_string()));
     }
 
     #[test]

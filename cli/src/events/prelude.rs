@@ -59,8 +59,7 @@ pub fn execute_hook(
 
             // Execute user's hooks.yml
             debug_log(|| "Executing user's .aiki/hooks.yml");
-            let user_result =
-                composer.compose_hook_from_path(&hookfile_path, event_type, state)?;
+            let user_result = composer.compose_hook_from_path(&hookfile_path, event_type, state)?;
 
             // Combine results: if either failed, return the failure
             match (core_result, user_result) {

@@ -156,8 +156,8 @@ fn handle_turn_complete(payload_json: Option<&str>) -> Result<()> {
 
     // If no turn recorded yet, emit turn.started first
     if current_turn == 0 {
-        let prompt = extract_prompt_from_input_messages(payload.input_messages.as_ref())
-            .unwrap_or_default();
+        let prompt =
+            extract_prompt_from_input_messages(payload.input_messages.as_ref()).unwrap_or_default();
         let turn_started = AikiEvent::TurnStarted(AikiTurnStartedPayload {
             session: session.clone(),
             cwd: cwd.clone(),
@@ -189,7 +189,7 @@ fn handle_turn_complete(payload_json: Option<&str>) -> Result<()> {
             "user".to_string(),
         ),
         response: payload.last_assistant_message.unwrap_or_default(),
-        modified_files: vec![], // Files come from JJ
+        modified_files: vec![],    // Files come from JJ
         tasks: Default::default(), // Populated by handle_turn_completed
     });
     if let Err(e) = event_bus::dispatch(turn_completed) {

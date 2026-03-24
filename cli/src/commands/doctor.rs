@@ -1,9 +1,9 @@
 use crate::commands::agents_template::AIKI_BLOCK_VERSION;
-use crate::instructions;
 use crate::commands::zed_detection;
 use crate::config;
 use crate::editors::zed as ide_config;
 use crate::error::Result;
+use crate::instructions;
 use crate::prerequisites::{check_command_version, PREREQUISITES};
 use crate::repos::RepoDetector;
 use crate::tasks::templates::builtin::default_plugin_templates;
@@ -102,7 +102,10 @@ pub fn run(fix: bool) -> Result<()> {
     if missing_claude_hooks.is_empty() {
         println!("  ✓ Claude Code hooks configured");
     } else {
-        println!("  ✗ Claude Code hooks: missing {}", missing_claude_hooks.join(", "));
+        println!(
+            "  ✗ Claude Code hooks: missing {}",
+            missing_claude_hooks.join(", ")
+        );
         if fix {
             println!("    Installing Claude Code hooks...");
             match config::install_claude_code_hooks_global() {
@@ -173,7 +176,10 @@ pub fn run(fix: bool) -> Result<()> {
     if otel_receiver_ok && !fix {
         println!("  ✓ OTel receiver listening on 127.0.0.1:19876");
     } else if fix {
-        println!("  {} OTel receiver", if otel_receiver_ok { "✓" } else { "✗" });
+        println!(
+            "  {} OTel receiver",
+            if otel_receiver_ok { "✓" } else { "✗" }
+        );
         println!("    Restarting OTel receiver...");
         match config::restart_otel_receiver() {
             Ok(()) => {
@@ -325,7 +331,9 @@ pub fn run(fix: bool) -> Result<()> {
                     println!("  ✗ Failed to ensure <aiki> block: {}", e);
                     issues_found += 1;
                 }
-                if let Err(e) = instructions::ensure_symlink(&project_root, canonical, link_name, false) {
+                if let Err(e) =
+                    instructions::ensure_symlink(&project_root, canonical, link_name, false)
+                {
                     println!("  ✗ Failed to ensure symlink: {}", e);
                     issues_found += 1;
                 }
@@ -352,10 +360,17 @@ pub fn run(fix: bool) -> Result<()> {
 
                 // Check symlink status
                 let link_path = project_root.join(link_name);
-                if link_path.symlink_metadata().map(|m| m.file_type().is_symlink()).unwrap_or(false) {
+                if link_path
+                    .symlink_metadata()
+                    .map(|m| m.file_type().is_symlink())
+                    .unwrap_or(false)
+                {
                     println!("  ✓ {} symlinked to {}", link_name, canonical);
                 } else if link_path.exists() {
-                    println!("  ⚠ {} exists as a separate file (not symlinked)", link_name);
+                    println!(
+                        "  ⚠ {} exists as a separate file (not symlinked)",
+                        link_name
+                    );
                 } else {
                     println!("  ⚠ {} not found (no symlink)", link_name);
                     println!("    → Run: aiki doctor --fix (to create symlink)");
@@ -424,9 +439,8 @@ pub fn run(fix: bool) -> Result<()> {
                                             validate_event_keys(block, &format!("{}:", block_key));
 
                                         // Check for aiki/core in composition block includes
-                                        if let Some(block_includes) = block
-                                            .get("include")
-                                            .and_then(|v| v.as_sequence())
+                                        if let Some(block_includes) =
+                                            block.get("include").and_then(|v| v.as_sequence())
                                         {
                                             for include in block_includes {
                                                 if include.as_str() == Some("aiki/core") {
@@ -453,14 +467,9 @@ pub fn run(fix: bool) -> Result<()> {
             println!("  ⚠ No hookfile found");
             println!("    Co-author trailers and workflow automation are disabled.");
             if fix {
-                match fs::write(
-                    &hooks_yml_path,
-                    super::init::HOOKS_YML_TEMPLATE,
-                ) {
+                match fs::write(&hooks_yml_path, super::init::HOOKS_YML_TEMPLATE) {
                     Ok(()) => {
-                        println!(
-                            "    ✓ Created .aiki/hooks.yml with default workflow automation"
-                        );
+                        println!("    ✓ Created .aiki/hooks.yml with default workflow automation");
                     }
                     Err(e) => {
                         println!("    ✗ Failed to create hookfile: {}", e);
@@ -717,8 +726,9 @@ fn check_templates(project_root: &std::path::Path, fix: bool) -> usize {
             if fix {
                 // Re-install missing templates via sync
                 if plugin_ref == "aiki/default" {
-                    let mut fix_manifest =
-                        RepoManifest::load(project_root).unwrap().unwrap_or_else(RepoManifest::new);
+                    let mut fix_manifest = RepoManifest::load(project_root)
+                        .unwrap()
+                        .unwrap_or_else(RepoManifest::new);
                     match std::fs::create_dir_all(&templates_dir) {
                         Ok(_) => {
                             match sync_plugin_templates(
@@ -778,7 +788,10 @@ fn check_templates(project_root: &std::path::Path, fix: bool) -> usize {
     // (e) Check for stale legacy directory
     let legacy_dir = templates_dir.join("aiki");
     if legacy_dir.is_dir() {
-        println!("  ⚠ Legacy template directory found: .aiki/{}/aiki/", TASKS_DIR_NAME);
+        println!(
+            "  ⚠ Legacy template directory found: .aiki/{}/aiki/",
+            TASKS_DIR_NAME
+        );
         println!("    Run 'aiki init' to migrate, or remove manually if empty");
         issues += 1;
     }
@@ -941,19 +954,18 @@ fn check_cursor_hooks(hooks_path: &std::path::Path) -> bool {
     };
 
     // Helper to check if an array contains an aiki hooks stdin command with specific agent/event
-    let has_aiki_hook_with_params =
-        |arr: &serde_json::Value, agent: &str, event: &str| -> bool {
-            arr.as_array()
-                .map(|arr| {
-                    arr.iter().any(|hook| {
-                        hook.get("command")
-                            .and_then(|c| c.as_str())
-                            .map(|c| is_aiki_hooks_command_with_params(c, Some(agent), Some(event)))
-                            .unwrap_or(false)
-                    })
+    let has_aiki_hook_with_params = |arr: &serde_json::Value, agent: &str, event: &str| -> bool {
+        arr.as_array()
+            .map(|arr| {
+                arr.iter().any(|hook| {
+                    hook.get("command")
+                        .and_then(|c| c.as_str())
+                        .map(|c| is_aiki_hooks_command_with_params(c, Some(agent), Some(event)))
+                        .unwrap_or(false)
                 })
-                .unwrap_or(false)
-        };
+            })
+            .unwrap_or(false)
+    };
 
     // Required Cursor hooks
     let required_hooks = [
@@ -1114,9 +1126,7 @@ fn validate_event_keys(mapping: &serde_yaml::Mapping, prefix: &str) -> usize {
             }
 
             // Check if it's a known event or a valid sugar pattern
-            if !KNOWN_EVENTS.contains(&key_str)
-                && !crate::flows::sugar::is_sugar_pattern(key_str)
-            {
+            if !KNOWN_EVENTS.contains(&key_str) && !crate::flows::sugar::is_sugar_pattern(key_str) {
                 let location = if prefix.is_empty() {
                     String::new()
                 } else {
