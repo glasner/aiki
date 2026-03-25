@@ -103,6 +103,7 @@ impl AgentRuntime for ClaudeCodeRuntime {
         match child {
             Ok(_child) => Ok(BackgroundHandle {
                 task_id: options.task_id.clone(),
+                session_id: None,
             }),
             Err(e) => Err(AikiError::AgentSpawnFailed(format!(
                 "Failed to spawn claude in background: {}",

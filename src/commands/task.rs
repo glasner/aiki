@@ -10,7 +10,6 @@
 use clap::Subcommand;
 use std::path::Path;
 
-use crate::agents::AgentType;
 use crate::error::{AikiError, Result};
 
 /// Output format for task commands that support summary output.
@@ -48,7 +47,6 @@ use crate::tasks::{
         format_task_list, short_id,
     },
     reopen_if_closed,
-    runner::{run_task_with_output, TaskRunOptions},
     storage::{
         read_events, read_events_with_ids, write_event, write_events_batch, write_link_event,
         write_link_event_with_autorun,
@@ -134,7 +132,7 @@ fn resolve_prompt_sources(cwd: &Path, mut sources: Vec<String>) -> Result<Vec<St
 ///
 /// If `coerce` is true, values are type-coerced (booleans/numbers normalized).
 /// If `coerce` is false, values are stored verbatim.
-fn parse_data_flags(
+pub(crate) fn parse_data_flags(
     args: &[String],
     coerce: bool,
 ) -> Result<std::collections::HashMap<String, String>> {
@@ -697,45 +695,6 @@ pub enum TaskCommands {
         command: TaskCommentSubcommands,
     },
 
-    /// Run a task by spawning an agent session
-    ///
-    /// Spawns an agent session to work on the specified task. The agent will:
-    /// 1. Claim the task via `aiki task start`
-    /// 2. Execute the task (following instructions/subtasks)
-    /// 3. Close the task when complete
-    Run {
-        /// Task ID to run (required unless --template is provided)
-        id: Option<String>,
-
-        /// Create task from template before running
-        #[arg(long, conflicts_with = "id")]
-        template: Option<String>,
-
-        /// Key=value pairs for template variables (requires --template)
-        #[arg(long, requires = "template")]
-        data: Option<Vec<String>>,
-
-        /// Override assignee agent (claude-code, codex)
-        #[arg(long)]
-        agent: Option<String>,
-
-        /// Run asynchronously (spawn agent and return immediately)
-        #[arg(long = "async")]
-        run_async: bool,
-
-        /// [DEPRECATED] Use --next-session instead
-        #[arg(long, hide = true)]
-        next_subtask: bool,
-
-        /// Pick next ready session (needs-context chain or standalone task)
-        #[arg(long)]
-        next_session: bool,
-
-        /// Scope --next-session to a specific lane (head task ID, prefix matching)
-        #[arg(long, requires = "next_session")]
-        lane: Option<String>,
-    },
-
     /// Wait for task(s) to complete
     ///
     /// Polls task status until all specified tasks reach a terminal state
@@ -1216,26 +1175,6 @@ pub fn run(command: Option<TaskCommands>) -> Result<()> {
             }
             TaskCommentSubcommands::List { id } => run_comment_list(&cwd, &id),
         },
-        TaskCommands::Run {
-            id,
-            template,
-            data,
-            agent,
-            run_async,
-            next_subtask,
-            next_session,
-            lane,
-        } => run_run(
-            &cwd,
-            id,
-            template,
-            data,
-            agent,
-            run_async,
-            next_subtask,
-            next_session,
-            lane,
-        ),
         TaskCommands::Wait { ids, any, output } => run_wait(&cwd, ids, any, output),
         TaskCommands::Lane { id, all } => run_lane(&cwd, id, all),
         TaskCommands::Undo {
@@ -3373,15 +3312,29 @@ fn run_close(
     for parent_id in &unique_parent_ids {
         // Check if all subtasks are now closed
         if all_subtasks_closed(&graph, parent_id) {
-            if let Some(parent) = graph.tasks.get_mut(parent_id) {
-                // Guard: skip if already closed or in-progress
-                if parent.status == TaskStatus::Closed {
-                    continue;
-                }
-                if parent.status == TaskStatus::InProgress {
-                    continue;
-                }
+            // Guard: skip if already closed, in-progress, or has an active orchestrator
+            let should_skip = if let Some(parent) = graph.tasks.get(parent_id) {
+                parent.status == TaskStatus::Closed || parent.status == TaskStatus::InProgress
+            } else {
+                true
+            };
+            if should_skip {
+                continue;
+            }
 
+            // Skip autostart if parent has an active orchestrator
+            let orchestrators = graph.edges.referrers(parent_id, "orchestrates");
+            let has_active_orchestrator = orchestrators.iter().any(|orch_id| {
+                graph
+                    .tasks
+                    .get(orch_id.as_str())
+                    .map_or(false, |t| t.status != TaskStatus::Closed)
+            });
+            if has_active_orchestrator {
+                continue;
+            }
+
+            if let Some(parent) = graph.tasks.get_mut(parent_id) {
                 // Auto-start the parent for review/finalization
                 let auto_start_timestamp = chrono::Utc::now();
                 let agent_type_str = session_match
@@ -3445,6 +3398,18 @@ fn run_close(
         };
 
         if !parent_claimed_by_us {
+            continue;
+        }
+
+        // Skip next-subtask autostart if parent is orchestrated
+        let orchestrators = graph.edges.referrers(parent_id, "orchestrates");
+        let has_active_orchestrator = orchestrators.iter().any(|orch_id| {
+            graph
+                .tasks
+                .get(orch_id.as_str())
+                .map_or(false, |t| t.status != TaskStatus::Closed)
+        });
+        if has_active_orchestrator {
             continue;
         }
 
@@ -5361,233 +5326,8 @@ pub(crate) fn comment_on_task(
     Ok(())
 }
 
-/// Run a task by spawning an agent session
-fn run_run(
-    cwd: &Path,
-    id: Option<String>,
-    template: Option<String>,
-    data: Option<Vec<String>>,
-    agent: Option<String>,
-    run_async: bool,
-    next_subtask: bool,
-    next_session: bool,
-    lane: Option<String>,
-) -> Result<()> {
-    use crate::tasks::runner::{
-        resolve_next_session, resolve_next_session_in_lane, run_task_async_with_output,
-        SessionResolution,
-    };
-
-    // --next-subtask is deprecated
-    if next_subtask {
-        return Err(AikiError::Other(anyhow::anyhow!(
-            "--next-subtask has been replaced by --next-session"
-        )));
-    }
-
-    // Parse and validate agent override early, before claiming any subtask.
-    // This prevents stranding a subtask InProgress when the agent string is invalid.
-    let agent_override = if let Some(ref agent_str) = agent {
-        match AgentType::from_str(agent_str) {
-            Some(agent_type) => Some(agent_type),
-            None => return Err(AikiError::UnknownAgentType(agent_str.clone())),
-        }
-    } else {
-        None
-    };
-
-    // Handle template creation if --template provided
-    let id = if let Some(template_name) = template {
-        // Template mode: create task from template, then run it
-        use crate::commands::task::create_from_template;
-
-        // Parse data key=value pairs (with coercion, matching task add/start --template)
-        let data_map = parse_data_flags(&data.unwrap_or_default(), true)?;
-
-        // Create task from template
-        let params = crate::commands::task::TemplateTaskParams {
-            template_name: template_name.clone(),
-            data: data_map,
-            sources: vec![],
-            assignee: None,
-            priority: None,
-            parent_id: None,
-            parent_name: None,
-            source_data: std::collections::HashMap::new(),
-            builtins: std::collections::HashMap::new(),
-            task_id: None,
-        };
-
-        let task_id = create_from_template(cwd, params)?;
-        eprintln!(
-            "Added: {} — (created from template {})",
-            task_id, template_name
-        );
-
-        Some(task_id)
-    } else if let Some(id_val) = id {
-        // Direct ID mode
-        Some(id_val)
-    } else {
-        // Neither id nor template provided
-        return Err(AikiError::Other(anyhow::anyhow!(
-            "Either task ID or --template must be provided"
-        )));
-    };
-
-    // Track whether we claimed a subtask (for rollback on failure)
-    let mut claimed_id: Option<String> = None;
-    // Track chain IDs for chain session execution
-    let mut chain_ids: Option<Vec<String>> = None;
-
-    // Unwrap id - guaranteed to be Some by validation above
-    let id = id.expect("id must be Some after validation");
-
-    let actual_id = if next_session {
-        // Resolve the next ready session of the parent
-        let events = read_events(cwd)?;
-        let graph = materialize_graph(&events);
-
-        // Resolve parent ID (supports prefix matching)
-        let parent_id = resolve_task_id_in_graph(&graph, &id)?;
-
-        // Validate parent exists and is not closed
-        let parent = find_task(&graph.tasks, &parent_id)?;
-        if parent.status == TaskStatus::Closed {
-            return Err(AikiError::TaskAlreadyClosed(parent_id));
-        }
-
-        // Resolve next session — with optional lane filter
-        let resolution = if let Some(ref lane_prefix) = lane {
-            resolve_next_session_in_lane(&graph, &parent_id, lane_prefix)?
-        } else {
-            resolve_next_session(&graph, &parent_id)
-        };
-
-        match resolution {
-            SessionResolution::Standalone(task) => {
-                eprintln!("Running subtask {} ({})...", short_id(&task.id), task.name);
-
-                // Claim the subtask: emit Reserved to prevent double-pick
-                let reserved_event = TaskEvent::Reserved {
-                    task_ids: vec![task.id.clone()],
-                    agent_type: agent.clone().unwrap_or_default(),
-                    timestamp: chrono::Utc::now(),
-                };
-                write_event(cwd, &reserved_event)?;
-                claimed_id = Some(task.id.clone());
-
-                task.id.clone()
-            }
-            SessionResolution::Chain(chain) => {
-                let head_id = chain[0].clone();
-                let head_name = graph
-                    .tasks
-                    .get(&head_id)
-                    .map(|t| t.name.as_str())
-                    .unwrap_or("?");
-                eprintln!(
-                    "Running needs-context chain ({} tasks, head: {} ({}))...",
-                    chain.len(),
-                    short_id(&head_id),
-                    head_name,
-                );
-
-                // Claim the head task: emit Reserved to prevent double-pick
-                let reserved_event = TaskEvent::Reserved {
-                    task_ids: vec![head_id.clone()],
-                    agent_type: agent.clone().unwrap_or_default(),
-                    timestamp: chrono::Utc::now(),
-                };
-                write_event(cwd, &reserved_event)?;
-                claimed_id = Some(head_id.clone());
-                chain_ids = Some(chain);
-
-                head_id
-            }
-            SessionResolution::AllComplete => {
-                let md = MdBuilder::new().build(&format!(
-                    "All subtasks complete for {}\n",
-                    short_id(&parent_id)
-                ));
-                println!("{}", md);
-                return Ok(());
-            }
-            SessionResolution::Blocked(unclosed) => {
-                let mut msg = format!(
-                    "No ready subtasks for {} ({} subtasks blocked)\n",
-                    short_id(&parent_id),
-                    unclosed.len()
-                );
-                for t in &unclosed {
-                    let blocker_ids = get_blocker_short_ids(&graph, &t.id);
-                    let status_str = match t.status {
-                        TaskStatus::InProgress => "in progress".to_string(),
-                        TaskStatus::Reserved => "reserved".to_string(),
-                        _ if !blocker_ids.is_empty() => {
-                            format!("blocked by: {}", blocker_ids.join(", "))
-                        }
-                        _ => format!("{}", t.status),
-                    };
-                    msg.push_str(&format!(
-                        "  {} ({}) — {}\n",
-                        short_id(&t.id),
-                        t.name,
-                        status_str,
-                    ));
-                }
-                let md = MdBuilder::new().build_error(&msg);
-                println!("{}", md);
-                return Err(AikiError::InvalidArgument(format!(
-                    "No ready subtasks for {}",
-                    short_id(&parent_id),
-                )));
-            }
-            SessionResolution::NoSubtasks => {
-                let msg = format!("Task {} has no subtasks", short_id(&parent_id));
-                let md = MdBuilder::new().build_error(&msg);
-                println!("{}", md);
-                return Err(AikiError::InvalidArgument(msg));
-            }
-        }
-    } else {
-        id
-    };
-
-    // Build options
-    let mut options = TaskRunOptions::new();
-    if let Some(agent_type) = agent_override {
-        options = options.with_agent(agent_type);
-    }
-    // Pass chain IDs for needs-context session scoping
-    if let Some(chain) = chain_ids {
-        options = options.with_chain(chain);
-    }
-
-    // Run the task with output - async or blocking
-    let result = if run_async {
-        run_task_async_with_output(cwd, &actual_id, options)
-    } else {
-        run_task_with_output(cwd, &actual_id, options)
-    };
-
-    // Rollback claim on spawn failure so the subtask isn't stuck Reserved
-    if result.is_err() {
-        if let Some(ref cid) = claimed_id {
-            let rollback_event = TaskEvent::Released {
-                task_ids: vec![cid.clone()],
-                reason: Some("Spawn failed, rolling back claim".to_string()),
-                timestamp: chrono::Utc::now(),
-            };
-            let _ = write_event(cwd, &rollback_event);
-        }
-    }
-
-    result
-}
-
 /// Get short IDs of all open blockers for a task (for diagnostics)
-fn get_blocker_short_ids(graph: &TaskGraph, task_id: &str) -> Vec<String> {
+pub(crate) fn get_blocker_short_ids(graph: &TaskGraph, task_id: &str) -> Vec<String> {
     const BLOCKING_LINK_TYPES: &[&str] = &[
         "blocked-by",
         "validates",
@@ -5638,7 +5378,7 @@ fn run_lane(cwd: &Path, id: String, all: bool) -> Result<()> {
         content.push_str(&format!("Lanes for {}:\n\n", short_id(&parent_id)));
 
         for lane in &decomp.lanes {
-            let status = lane_status(lane, &graph);
+            let status = lane_status(lane, &graph, &decomp.lanes);
             let status_icon = match status {
                 LaneStatus::Complete => "✓ complete",
                 LaneStatus::Failed => "✗ failed",

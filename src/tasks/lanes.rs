@@ -300,14 +300,14 @@ pub fn derive_lanes(graph: &TaskGraph, parent_id: &str) -> LaneDecomposition {
 }
 
 /// Determine the status of a lane.
-pub fn lane_status(lane: &Lane, graph: &TaskGraph) -> LaneStatus {
+pub fn lane_status(lane: &Lane, graph: &TaskGraph, all_lanes: &[Lane]) -> LaneStatus {
     if is_lane_failed(lane, graph) {
         return LaneStatus::Failed;
     }
     if is_lane_complete(lane, graph) {
         return LaneStatus::Complete;
     }
-    if is_lane_ready(lane, graph) {
+    if is_lane_ready_with_decomposition(lane, graph, all_lanes) {
         return LaneStatus::Ready;
     }
     LaneStatus::Blocked
@@ -334,15 +334,9 @@ pub fn is_lane_failed(lane: &Lane, graph: &TaskGraph) -> bool {
 
 /// A lane is ready when:
 /// 1. All predecessor lanes are complete, AND
-/// 2. No task in the lane's next uncompleted session is blocked.
+/// 2. No task in the lane's next uncompleted session is blocked or in-progress.
 ///
 /// `all_lanes` must be the full decomposition so we can check predecessors.
-pub fn is_lane_ready(lane: &Lane, graph: &TaskGraph) -> bool {
-    is_lane_ready_with_decomposition(lane, graph, &[])
-}
-
-/// Lane readiness check with access to the full decomposition for
-/// predecessor lane checks.
 pub fn is_lane_ready_with_decomposition(
     lane: &Lane,
     graph: &TaskGraph,
@@ -378,6 +372,16 @@ pub fn is_lane_ready_with_decomposition(
 
     match next_session {
         Some(session) => {
+            // A session with InProgress tasks is already running, not "ready"
+            let any_in_progress = session.task_ids.iter().any(|tid| {
+                graph
+                    .tasks
+                    .get(tid)
+                    .map_or(false, |t| t.status == TaskStatus::InProgress)
+            });
+            if any_in_progress {
+                return false;
+            }
             // No task in the next session should be blocked
             !session.task_ids.iter().any(|tid| graph.is_blocked(tid))
         }
@@ -509,6 +513,16 @@ mod tests {
             task_ids: vec![id.to_string()],
             outcome: TaskOutcome::WontDo,
             summary: None,
+            turn_id: None,
+            timestamp: Utc::now(),
+        }
+    }
+
+    fn make_started(id: &str) -> TaskEvent {
+        TaskEvent::Started {
+            task_ids: vec![id.to_string()],
+            agent_type: "test".to_string(),
+            session_id: None,
             turn_id: None,
             timestamp: Utc::now(),
         }
@@ -704,7 +718,7 @@ mod tests {
         let decomp = derive_lanes(&graph, "P");
         assert!(is_lane_complete(&decomp.lanes[0], &graph));
         assert!(!is_lane_failed(&decomp.lanes[0], &graph));
-        assert_eq!(lane_status(&decomp.lanes[0], &graph), LaneStatus::Complete);
+        assert_eq!(lane_status(&decomp.lanes[0], &graph, &decomp.lanes), LaneStatus::Complete);
     }
 
     #[test]
@@ -718,7 +732,7 @@ mod tests {
         let graph = materialize_graph(&events);
         let decomp = derive_lanes(&graph, "P");
         assert!(is_lane_failed(&decomp.lanes[0], &graph));
-        assert_eq!(lane_status(&decomp.lanes[0], &graph), LaneStatus::Failed);
+        assert_eq!(lane_status(&decomp.lanes[0], &graph, &decomp.lanes), LaneStatus::Failed);
     }
 
     #[test]
@@ -732,7 +746,7 @@ mod tests {
         let graph = materialize_graph(&events);
         let decomp = derive_lanes(&graph, "P");
         assert!(is_lane_failed(&decomp.lanes[0], &graph));
-        assert_eq!(lane_status(&decomp.lanes[0], &graph), LaneStatus::Failed);
+        assert_eq!(lane_status(&decomp.lanes[0], &graph, &decomp.lanes), LaneStatus::Failed);
     }
 
     #[test]
@@ -749,7 +763,7 @@ mod tests {
             &graph,
             &decomp.lanes
         ));
-        assert_eq!(lane_status(&decomp.lanes[0], &graph), LaneStatus::Ready);
+        assert_eq!(lane_status(&decomp.lanes[0], &graph, &decomp.lanes), LaneStatus::Ready);
     }
 
     #[test]
@@ -1011,7 +1025,7 @@ mod tests {
             .iter()
             .find(|l| l.head_task_id == "TS")
             .unwrap();
-        assert_eq!(lane_status(ts_lane, &graph), LaneStatus::Blocked);
+        assert_eq!(lane_status(ts_lane, &graph, &decomp.lanes), LaneStatus::Blocked);
 
         // Orchestrator runs both FE and BE — complete them
         events.push(make_closed("FE"));
@@ -1045,7 +1059,7 @@ mod tests {
 
         // All lanes should be complete
         for lane in &decomp.lanes {
-            assert_eq!(lane_status(lane, &graph), LaneStatus::Complete);
+            assert_eq!(lane_status(lane, &graph, &decomp.lanes), LaneStatus::Complete);
         }
     }
 
@@ -1183,7 +1197,7 @@ mod tests {
 
         // Lane A should be Failed
         let a_lane = decomp.lanes.iter().find(|l| l.head_task_id == "A").unwrap();
-        assert_eq!(lane_status(a_lane, &graph), LaneStatus::Failed);
+        assert_eq!(lane_status(a_lane, &graph, &decomp.lanes), LaneStatus::Failed);
 
         // Lane B should still be Ready (independent)
         let b_lane = decomp.lanes.iter().find(|l| l.head_task_id == "B").unwrap();
@@ -1207,7 +1221,7 @@ mod tests {
         let decomp = derive_lanes(&graph, "P");
 
         let b_lane = decomp.lanes.iter().find(|l| l.head_task_id == "B").unwrap();
-        assert_eq!(lane_status(b_lane, &graph), LaneStatus::Complete);
+        assert_eq!(lane_status(b_lane, &graph, &decomp.lanes), LaneStatus::Complete);
 
         // C remains blocked (A is failed)
         let c_lane = decomp.lanes.iter().find(|l| l.head_task_id == "C").unwrap();
@@ -1280,7 +1294,7 @@ mod tests {
         let decomp = derive_lanes(&graph, "P");
         let lane = &decomp.lanes[0];
         assert!(is_lane_complete(lane, &graph));
-        assert_eq!(lane_status(lane, &graph), LaneStatus::Complete);
+        assert_eq!(lane_status(lane, &graph, &decomp.lanes), LaneStatus::Complete);
 
         // No more ready lanes
         let ready: Vec<_> = decomp
@@ -1289,5 +1303,101 @@ mod tests {
             .filter(|l| is_lane_ready_with_decomposition(l, &graph, &decomp.lanes))
             .collect();
         assert_eq!(ready.len(), 0);
+    }
+
+    #[test]
+    fn test_lane_ready_in_progress_not_ready() {
+        let events = vec![
+            make_created("P", "Parent"),
+            make_created("A", "Task A"),
+            make_link("A", "P", "subtask-of"),
+            make_started("A"),
+        ];
+        let graph = materialize_graph(&events);
+        let decomp = derive_lanes(&graph, "P");
+        assert!(!is_lane_ready_with_decomposition(
+            &decomp.lanes[0],
+            &graph,
+            &decomp.lanes
+        ));
+    }
+
+    #[test]
+    fn test_lane_ready_in_progress_chain() {
+        // A needs-context chain where the head task is InProgress
+        let events = vec![
+            make_created("P", "Parent"),
+            make_created("A", "Head"),
+            make_created("B", "Follower"),
+            make_link("A", "P", "subtask-of"),
+            make_link("B", "P", "subtask-of"),
+            make_link("B", "A", "needs-context"),
+            make_started("A"),
+        ];
+        let graph = materialize_graph(&events);
+        let decomp = derive_lanes(&graph, "P");
+        // The lane with A as head should not be ready since A is InProgress
+        let lane_a = decomp
+            .lanes
+            .iter()
+            .find(|l| l.head_task_id == "A")
+            .unwrap();
+        assert!(!is_lane_ready_with_decomposition(
+            lane_a,
+            &graph,
+            &decomp.lanes
+        ));
+    }
+
+    #[test]
+    fn test_lane_status_blocked_by_predecessor() {
+        // Fan-out: A is root, B and C depend on A.
+        // A not complete → B and C should be Blocked.
+        let events = vec![
+            make_created("P", "Parent"),
+            make_created("A", "Root"),
+            make_created("B", "Branch 1"),
+            make_created("C", "Branch 2"),
+            make_link("A", "P", "subtask-of"),
+            make_link("B", "P", "subtask-of"),
+            make_link("C", "P", "subtask-of"),
+            make_link("B", "A", "depends-on"),
+            make_link("C", "A", "depends-on"),
+        ];
+        let graph = materialize_graph(&events);
+        let decomp = derive_lanes(&graph, "P");
+
+        // Lane A should be Ready (no predecessors)
+        let a_lane = decomp
+            .lanes
+            .iter()
+            .find(|l| l.head_task_id == "A")
+            .unwrap();
+        assert_eq!(
+            lane_status(a_lane, &graph, &decomp.lanes),
+            LaneStatus::Ready
+        );
+
+        // Lane B should be Blocked (A not complete)
+        let b_lane = decomp
+            .lanes
+            .iter()
+            .find(|l| l.head_task_id == "B")
+            .unwrap();
+        assert_eq!(
+            lane_status(b_lane, &graph, &decomp.lanes),
+            LaneStatus::Blocked
+        );
+
+        // Lane C should be Blocked (A not complete)
+        let c_lane = decomp
+            .lanes
+            .iter()
+            .find(|l| l.head_task_id == "C")
+            .unwrap();
+        assert_eq!(
+            lane_status(c_lane, &graph, &decomp.lanes),
+            LaneStatus::Blocked
+        );
     }
 }

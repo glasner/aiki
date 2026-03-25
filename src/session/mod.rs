@@ -14,7 +14,7 @@ use sysinfo::{Pid, ProcessesToUpdate, System};
 /// Session mode - background vs interactive
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum SessionMode {
-    /// Background session created by `aiki task run`
+    /// Background session created by `aiki run`
     Background,
     /// Interactive session (user working directly in agent)
     Interactive,
@@ -98,7 +98,7 @@ impl AikiSessionFile {
             metadata.push_str(&format!("parent_pid={}\n", pid));
         }
 
-        // Add task if this is a task-driven session (spawned by aiki plan or aiki task run --async)
+        // Add task if this is a task-driven session (spawned by aiki plan or aiki run --async)
         if let Some(task_id) = self.session.task() {
             metadata.push_str(&format!("task={}\n", task_id));
         }
@@ -359,7 +359,7 @@ pub struct AikiSession {
     /// Task ID driving this session (if any)
     ///
     /// Set from AIKI_TASK environment variable.
-    /// Used for task-driven sessions spawned by `aiki plan` or `aiki task run --async`.
+    /// Used for task-driven sessions spawned by `aiki plan` or `aiki run --async`.
     /// When the driving task closes, interactive sessions auto-end.
     task: Option<String>,
 }
@@ -469,7 +469,7 @@ impl AikiSession {
     /// Convenience constructor that automatically sets `DetectionMethod::Hook`
     /// and captures the parent process ID for PID-based session detection.
     /// Mode is determined by `AIKI_SESSION_MODE` env var:
-    /// - "background" → Background mode (for `aiki task run --async`)
+    /// - "background" → Background mode (for `aiki run --async`)
     /// - anything else → Interactive mode (default, for `aiki plan` and normal sessions)
     ///
     /// # Examples
@@ -585,7 +585,7 @@ impl AikiSession {
 
     /// Set the task ID driving this session
     ///
-    /// Used for sessions spawned by `aiki plan` or `aiki task run --async`.
+    /// Used for sessions spawned by `aiki plan` or `aiki run --async`.
     #[must_use]
     pub fn with_task(mut self, task_id: Option<String>) -> Self {
         self.task = task_id;
@@ -595,7 +595,7 @@ impl AikiSession {
     /// Capture task ID from AIKI_TASK environment variable
     ///
     /// This should be called when creating sessions to check if this session
-    /// was spawned by a workflow command (e.g., `aiki plan`, `aiki task run --async`).
+    /// was spawned by a workflow command (e.g., `aiki plan`, `aiki run --async`).
     #[must_use]
     pub fn with_task_from_env(self) -> Self {
         let task_id = std::env::var("AIKI_TASK").ok();
@@ -979,7 +979,7 @@ pub fn find_session_by_ancestor_pid(jj_cwd: impl AsRef<Path>) -> Option<SessionM
     best_match.map(|(m, _)| m)
 }
 
-/// Info about a task-driven session (spawned by `aiki plan` or `aiki task run --async`)
+/// Info about a task-driven session (spawned by `aiki plan` or `aiki run --async`)
 #[derive(Debug, Clone)]
 pub struct TaskSessionInfo {
     /// Task ID driving this session

@@ -60,6 +60,7 @@ For Humans:
 For Agents:
   epic        Manage epics (create from plan files, show status, list)
   task        Manage tasks
+  run         Spawn an agent session for a task
   explore     Explore a scope (plan, code, task, or session)
   decompose   Decompose a plan into subtasks under a target task
   loop        Orchestrate a parent task's subtasks via lanes
@@ -127,6 +128,32 @@ enum Commands {
         /// Number of edits to simulate (default: 50)
         #[arg(short, long, default_value = "50")]
         edits: usize,
+    },
+    /// Spawn an agent session for a task
+    Run {
+        /// Task ID to run (or parent ID with --next-session)
+        id: Option<String>,
+        /// Return after spawn instead of blocking until session ends
+        #[arg(long = "async")]
+        run_async: bool,
+        /// Pick next ready session (needs-context chain or standalone task)
+        #[arg(long)]
+        next_session: bool,
+        /// Scope --next-session to a specific lane (head task ID, prefix matching)
+        #[arg(long, requires = "next_session")]
+        lane: Option<String>,
+        /// Override assignee agent (claude-code, codex)
+        #[arg(long)]
+        agent: Option<String>,
+        /// Create task from template before running
+        #[arg(long, conflicts_with_all = ["id", "next_session"])]
+        template: Option<String>,
+        /// Key=value pairs for template variables
+        #[arg(long, requires = "template")]
+        data: Option<Vec<String>>,
+        /// Output format (e.g., `id` for bare session UUID on stdout)
+        #[arg(long, short = 'o')]
+        output: Option<commands::OutputFormat>,
     },
     /// Manage sessions
     Session {
@@ -307,6 +334,16 @@ fn run() -> Result<()> {
         Commands::Blame { file, agent } => commands::blame::run(file, agent),
         Commands::Authors { changes, format } => commands::authors::run(changes, format),
         Commands::Benchmark { edits } => commands::benchmark::run("aiki/core".to_string(), edits),
+        Commands::Run {
+            id,
+            run_async,
+            next_session,
+            lane,
+            agent,
+            template,
+            data,
+            output,
+        } => commands::run::run(id, run_async, next_session, lane, agent, template, data, output),
         Commands::Session { command } => commands::session::run(command),
         Commands::Task { command } => commands::task::run(command),
         Commands::Event { command } => match command {

@@ -37,6 +37,7 @@ pub mod plan;
 pub mod plugin;
 pub mod resolve;
 pub mod review;
+pub mod run;
 pub mod session;
 
 pub mod task;

@@ -379,6 +379,9 @@ pub fn task_run(cwd: &Path, task_id: &str, options: TaskRunOptions) -> Result<()
                 task_id: task_id.to_string(),
             },
             window: WindowState::new(width),
+            entries: Vec::new(),
+            finished: false,
+            detached: false,
         };
 
         let effect = crate::tui::app::run(model, cwd)?;
@@ -421,6 +424,9 @@ pub fn task_run_on_session(
                 task_id: task_id.to_string(),
             },
             window: WindowState::new(width),
+            entries: Vec::new(),
+            finished: false,
+            detached: false,
         };
 
         let effect = crate::tui::app::run(model, cwd)?;
