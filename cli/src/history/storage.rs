@@ -473,6 +473,20 @@ pub fn list_conversations(cwd: &Path, limit: Option<usize>) -> Result<Vec<Conver
     Ok(summaries)
 }
 
+/// Find the most recent session started for a specific `aiki run` task.
+pub fn find_session_started_for_run_task(cwd: &Path, task_id: &str) -> Result<Option<String>> {
+    let events = read_events(cwd)?;
+
+    Ok(events.iter().rev().find_map(|event| match event {
+        ConversationEvent::SessionStart {
+            session_id,
+            run_task_id: Some(run_task_id),
+            ..
+        } if run_task_id == task_id => Some(session_id.clone()),
+        _ => None,
+    }))
+}
+
 /// Escape a string value for metadata storage
 /// Encodes characters that would break key=value parsing: %, =, \n, \r
 fn escape_metadata_value(value: &str) -> String {
@@ -598,6 +612,7 @@ fn event_to_metadata_block(event: &ConversationEvent) -> String {
             session_id,
             agent_type,
             timestamp,
+            run_task_id,
             repo_id,
             cwd,
             session_mode,
@@ -605,6 +620,9 @@ fn event_to_metadata_block(event: &ConversationEvent) -> String {
             add_metadata("event", "session_start", &mut lines);
             add_metadata("session", session_id, &mut lines);
             add_metadata("agent_type", agent_type, &mut lines);
+            if let Some(task_id) = run_task_id {
+                add_metadata("run_task", task_id, &mut lines);
+            }
             if let Some(mode) = session_mode {
                 add_metadata("session_mode", mode.to_string(), &mut lines);
             }
@@ -772,6 +790,10 @@ fn parse_metadata_block(block: &str) -> Option<ConversationEvent> {
                 .and_then(|v| v.first())
                 .and_then(|s| AgentType::from_str(s))
                 .unwrap_or(AgentType::Unknown);
+            let run_task_id = fields
+                .get("run_task")
+                .and_then(|v| v.first())
+                .map(|s| s.to_string());
             let session_mode = fields
                 .get("session_mode")
                 .and_then(|v| v.first())
@@ -781,6 +803,7 @@ fn parse_metadata_block(block: &str) -> Option<ConversationEvent> {
                 session_id,
                 agent_type,
                 timestamp,
+                run_task_id,
                 repo_id,
                 cwd,
                 session_mode,

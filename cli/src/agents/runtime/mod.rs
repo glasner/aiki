@@ -10,7 +10,6 @@ pub use claude_code::ClaudeCodeRuntime;
 pub use codex::CodexRuntime;
 
 use crate::error::Result;
-use crate::tasks::types::TaskEvent;
 use std::io::Read;
 use std::path::Path;
 use std::process::{Child, ChildStderr, ChildStdout, ExitStatus};
@@ -293,36 +292,25 @@ pub fn get_runtime(agent_type: AgentType) -> Option<Box<dyn AgentRuntime>> {
     }
 }
 
-/// Poll task events for a Started event containing a session_id.
+/// Poll session state until a task-bound session is registered.
 ///
-/// After spawning a background agent, the agent's hook emits a `Started` event
-/// with a `session_id`. This function polls the event log until that event
-/// appears, using exponential backoff (100ms → 500ms, 5s total timeout).
+/// After spawning an agent, `session.started` is recorded in conversation
+/// history with the run task ID and session UUID. This function polls that log using
+/// exponential backoff (100ms → 500ms, 30s total timeout).
 pub fn discover_session_id(cwd: &Path, task_id: &str) -> Result<String> {
-    use crate::tasks::storage::read_events;
+    use crate::history::storage::find_session_started_for_run_task;
     use std::thread;
     use std::time::{Duration, Instant};
 
-    let timeout = Duration::from_secs(5);
+    // Session startup can take longer than the original 5s budget.
+    let timeout = Duration::from_secs(30);
     let start = Instant::now();
     let mut delay = Duration::from_millis(100);
     let max_delay = Duration::from_millis(500);
 
     loop {
-        let events = read_events(cwd)?;
-
-        // Scan for a Started event that contains our task_id and has a session_id
-        for event in events.iter().rev() {
-            if let TaskEvent::Started {
-                task_ids,
-                session_id: Some(sid),
-                ..
-            } = event
-            {
-                if task_ids.iter().any(|id| id == task_id) {
-                    return Ok(sid.clone());
-                }
-            }
+        if let Some(session_id) = find_session_started_for_run_task(cwd, task_id)? {
+            return Ok(session_id);
         }
 
         if start.elapsed() >= timeout {
