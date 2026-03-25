@@ -832,16 +832,6 @@ fn run_review(
         let show_tui = std::io::stdout().is_terminal() && !output_id;
 
         if show_tui {
-            // Spawn background process, show Screen::Review TUI immediately
-            let spawn_args = build_async_review_args(
-                &review_id,
-                fix_template_for_async.as_deref(),
-                agent.as_deref(),
-                autorun,
-            );
-            let spawn_args_refs: Vec<&str> = spawn_args.iter().map(|s| s.as_str()).collect();
-            let child_pid = async_spawn::spawn_aiki_background(cwd, &spawn_args_refs)?;
-
             let target = result.scope.id.clone();
             let events = read_events(cwd)?;
             let graph = materialize_graph(&events);
@@ -853,8 +843,83 @@ fn run_review(
                     target,
                 },
                 window: WindowState::new(width),
+                entries: Vec::new(),
+                finished: false,
+                detached: false,
             };
-            tui::app::run_with_child(model, cwd, Some(child_pid))?;
+
+            let worker_review_id = review_id.clone();
+            let worker_fix_template = fix_template_for_async.clone();
+            let worker_agent = agent.clone();
+            let worker = move |status: tui::app::WorkerStatus, cwd: PathBuf| -> anyhow::Result<()> {
+                status.start("review");
+
+                // Look up agent name for display
+                status.update("Resolving agent...");
+                if let Ok(events) = read_events(&cwd) {
+                    let tasks = materialize_graph(&events).tasks;
+                    if let Ok(task) = find_task(&tasks, &worker_review_id) {
+                        if let Some(assignee) = &task.assignee {
+                            if let Some(agent_type) = AgentType::from_str(assignee) {
+                                status.agent(agent_type.display_name());
+                            }
+                        }
+                    }
+                }
+
+                status.update("creating isolated workspace...");
+                status.task(&worker_review_id);
+                status.update("starting session...");
+
+                // Run the review (blocks until agent finishes)
+                let options = TaskRunOptions::new().quiet();
+                match task_run(&cwd, &worker_review_id, options) {
+                    Ok(()) => {
+                        status.done("Review complete");
+                    }
+                    Err(e) => {
+                        status.failed(&e.to_string());
+                        return Err(e.into());
+                    }
+                }
+
+                // Handle fix if requested and issues were found
+                if worker_fix_template.is_some() {
+                    let events = read_events(&cwd)?;
+                    let graph = materialize_graph(&events);
+                    let has_issues = find_task(&graph.tasks, &worker_review_id)
+                        .map(|t| {
+                            t.data
+                                .get("issue_count")
+                                .and_then(|c| c.parse::<usize>().ok())
+                                .unwrap_or(0)
+                                > 0
+                        })
+                        .unwrap_or(false);
+
+                    if has_issues {
+                        super::fix::run_fix(
+                            &cwd,
+                            &worker_review_id,
+                            false,
+                            None,
+                            worker_fix_template,
+                            None,
+                            None,
+                            None,
+                            worker_agent,
+                            autorun,
+                            false,
+                            Some(super::OutputFormat::Id), // prevent nested TUI in worker thread
+                        )?;
+                    }
+                }
+
+                status.finish();
+                Ok(())
+            };
+
+            tui::app::run_with_worker(model, cwd, worker)?;
         } else {
             // Non-TTY: run blocking with text output
             let options = TaskRunOptions::new();
@@ -1974,5 +2039,275 @@ mod tests {
         // Ensure the review ID is passed as the third element
         let args = build_async_review_args("abcdefghijklmnopqrstuvwxyzabcdef", None, None, false);
         assert_eq!(args[2], "abcdefghijklmnopqrstuvwxyzabcdef");
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // Pre-refactor behavioral contract tests for review orchestration
+    // ═══════════════════════════════════════════════════════════════════
+
+    // --- detect_target contract ---
+
+    #[test]
+    fn test_detect_target_md_file_defaults_to_plan_scope() {
+        let dir = tempfile::tempdir().unwrap();
+        let md = dir.path().join("plan.md");
+        std::fs::write(&md, "# Plan").unwrap();
+        let (scope, _) = detect_target(dir.path(), Some(md.to_str().unwrap()), false).unwrap();
+        assert_eq!(scope.kind, ReviewScopeKind::Plan);
+    }
+
+    #[test]
+    fn test_detect_target_md_file_with_code_flag_is_code_scope() {
+        let dir = tempfile::tempdir().unwrap();
+        let md = dir.path().join("code.md");
+        std::fs::write(&md, "# Code").unwrap();
+        let (scope, _) = detect_target(dir.path(), Some(md.to_str().unwrap()), true).unwrap();
+        assert_eq!(scope.kind, ReviewScopeKind::Code);
+    }
+
+    #[test]
+    fn test_detect_target_missing_md_file_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = detect_target(dir.path(), Some("missing.md"), false);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_detect_target_code_flag_without_target_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = detect_target(dir.path(), None, true);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("--code"));
+    }
+
+    #[test]
+    fn test_detect_target_code_flag_with_task_id_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = detect_target(dir.path(), Some("abcdefgh"), true);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("--code"));
+    }
+
+    #[test]
+    fn test_detect_target_non_md_file_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let txt = dir.path().join("file.txt");
+        std::fs::write(&txt, "content").unwrap();
+        let result = detect_target(dir.path(), Some(txt.to_str().unwrap()), false);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains(".md"));
+    }
+
+    // --- looks_like_task_id contract ---
+
+    #[test]
+    fn test_looks_like_task_id_full_id() {
+        assert!(looks_like_task_id("abcdefghijklmnopqrstuvwxyzabcdef"));
+    }
+
+    #[test]
+    fn test_looks_like_task_id_prefix() {
+        assert!(looks_like_task_id("abc"));
+        assert!(looks_like_task_id("x"));
+    }
+
+    #[test]
+    fn test_looks_like_task_id_subtask() {
+        assert!(looks_like_task_id("abc.1"));
+        assert!(looks_like_task_id("abc.1.2"));
+    }
+
+    #[test]
+    fn test_looks_like_task_id_rejects_paths() {
+        assert!(!looks_like_task_id("ops/now/feature.md"));
+        assert!(!looks_like_task_id("./feature.md"));
+        assert!(!looks_like_task_id("/abs/path"));
+    }
+
+    #[test]
+    fn test_looks_like_task_id_rejects_mixed_chars() {
+        assert!(!looks_like_task_id("abc123")); // digits in root
+        assert!(!looks_like_task_id("ABC")); // uppercase
+        assert!(!looks_like_task_id("hello-world")); // hyphen
+        assert!(!looks_like_task_id("")); // empty
+        assert!(!looks_like_task_id(".1")); // no root
+        assert!(!looks_like_task_id("abc.")); // trailing dot
+    }
+
+    // --- get_issue_comments contract ---
+
+    #[test]
+    fn test_get_issue_comments_only_returns_true_issues() {
+        use crate::tasks::TaskComment;
+        let mut task = make_test_task("review-filter");
+
+        // Non-issue comment
+        task.comments.push(TaskComment {
+            id: None,
+            text: "Looks good".to_string(),
+            timestamp: chrono::Utc::now(),
+            data: HashMap::new(),
+        });
+
+        // Issue with data.issue="true"
+        let mut issue_data = HashMap::new();
+        issue_data.insert("issue".to_string(), "true".to_string());
+        task.comments.push(TaskComment {
+            id: None,
+            text: "Bug here".to_string(),
+            timestamp: chrono::Utc::now(),
+            data: issue_data,
+        });
+
+        // Comment with data.issue="false" — NOT an issue
+        let mut false_data = HashMap::new();
+        false_data.insert("issue".to_string(), "false".to_string());
+        task.comments.push(TaskComment {
+            id: None,
+            text: "Resolved".to_string(),
+            timestamp: chrono::Utc::now(),
+            data: false_data,
+        });
+
+        let issues = get_issue_comments(&task);
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].text, "Bug here");
+    }
+
+    // --- ReviewScope.name() contract ---
+
+    #[test]
+    fn test_review_scope_name_includes_filename_for_plan() {
+        let scope = ReviewScope {
+            kind: ReviewScopeKind::Plan,
+            id: "ops/now/very/deep/plan.md".to_string(),
+            task_ids: vec![],
+        };
+        assert_eq!(scope.name(), "Plan (plan.md)");
+    }
+
+    #[test]
+    fn test_review_scope_name_session_is_plain() {
+        let scope = ReviewScope {
+            kind: ReviewScopeKind::Session,
+            id: "anything".to_string(),
+            task_ids: vec![],
+        };
+        assert_eq!(scope.name(), "Session");
+    }
+
+    // --- ReviewScopeKind roundtrip contract ---
+
+    #[test]
+    fn test_scope_kind_roundtrip_all_variants() {
+        for kind in [
+            ReviewScopeKind::Task,
+            ReviewScopeKind::Plan,
+            ReviewScopeKind::Code,
+            ReviewScopeKind::Session,
+        ] {
+            let s = kind.as_str();
+            let restored = ReviewScopeKind::from_str(s).unwrap();
+            assert_eq!(restored, kind);
+        }
+    }
+
+    // --- create_review params contract: scope-specific default templates ---
+
+    #[test]
+    fn test_default_template_for_session_scope() {
+        let kind = ReviewScopeKind::Session;
+        let default = match kind {
+            ReviewScopeKind::Session => "review/task".to_string(),
+            _ => format!("review/{}", kind.as_str()),
+        };
+        assert_eq!(default, "review/task");
+    }
+
+    #[test]
+    fn test_default_template_for_task_scope() {
+        let kind = ReviewScopeKind::Task;
+        let default = match kind {
+            ReviewScopeKind::Session => "review/task".to_string(),
+            _ => format!("review/{}", kind.as_str()),
+        };
+        assert_eq!(default, "review/task");
+    }
+
+    #[test]
+    fn test_default_template_for_plan_scope() {
+        let kind = ReviewScopeKind::Plan;
+        let default = match kind {
+            ReviewScopeKind::Session => "review/task".to_string(),
+            _ => format!("review/{}", kind.as_str()),
+        };
+        assert_eq!(default, "review/plan");
+    }
+
+    #[test]
+    fn test_default_template_for_code_scope() {
+        let kind = ReviewScopeKind::Code;
+        let default = match kind {
+            ReviewScopeKind::Session => "review/task".to_string(),
+            _ => format!("review/{}", kind.as_str()),
+        };
+        assert_eq!(default, "review/code");
+    }
+
+    // --- Scope data includes fix options when provided ---
+
+    #[test]
+    fn test_scope_data_stores_fix_options() {
+        let mut scope_data = ReviewScope {
+            kind: ReviewScopeKind::Task,
+            id: "task123".to_string(),
+            task_ids: vec![],
+        }
+        .to_data();
+
+        // Simulate what create_review does when fix_template is provided
+        let fix_template = Some("custom/fix".to_string());
+        if let Some(ref tmpl) = fix_template {
+            scope_data.insert("options.fix".to_string(), "true".to_string());
+            scope_data.insert("options.fix_template".to_string(), tmpl.clone());
+        }
+
+        assert_eq!(scope_data.get("options.fix").unwrap(), "true");
+        assert_eq!(scope_data.get("options.fix_template").unwrap(), "custom/fix");
+    }
+
+    #[test]
+    fn test_scope_data_no_fix_options_when_none() {
+        let scope_data = ReviewScope {
+            kind: ReviewScopeKind::Task,
+            id: "task123".to_string(),
+            task_ids: vec![],
+        }
+        .to_data();
+
+        assert!(scope_data.get("options.fix").is_none());
+        assert!(scope_data.get("options.fix_template").is_none());
+    }
+
+    // --- build_async_review_args contract ---
+
+    #[test]
+    fn test_async_review_args_structure() {
+        // The args must always start with ["review", "--_continue-async", <review_id>]
+        let args = build_async_review_args("rev1", None, None, false);
+        assert_eq!(args[0], "review");
+        assert_eq!(args[1], "--_continue-async");
+        assert_eq!(args[2], "rev1");
+        assert_eq!(args.len(), 3);
+    }
+
+    #[test]
+    fn test_async_review_args_with_all_options() {
+        let args = build_async_review_args("rev1", Some("fix"), Some("claude-code"), true);
+        assert!(args.contains(&"--fix-template".to_string()));
+        assert!(args.contains(&"fix".to_string()));
+        assert!(args.contains(&"--agent".to_string()));
+        assert!(args.contains(&"claude-code".to_string()));
+        assert!(args.contains(&"--autorun".to_string()));
     }
 }

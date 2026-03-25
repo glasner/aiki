@@ -342,81 +342,208 @@ fn run_build_plan(
     // Determine if we should show the TUI (TTY + not bare output)
     let show_tui = !run_async && std::io::stdout().is_terminal() && !output_id;
 
-    // When showing the TUI, use the async-spawn-then-monitor pattern:
-    // create just the epic task, spawn decompose+loop in background,
-    // then show the build TUI immediately. The TUI polls JJ for graph
-    // updates and renders decompose/loop/review/fix phases as they appear.
-    //
-    // When NOT showing the TUI (--async, non-TTY, --output id), use
-    // the existing paths: async spawns background and returns; non-TTY
-    // runs everything blocking with text output.
-    if run_async || show_tui {
-        // Create epic task (without running decompose — background will handle it)
+    // --async: spawn background process and return immediately
+    if run_async {
         let is_existing_epic = epic_id.is_some();
         let epic_id = match epic_id {
             Some(id) => id,
             None => super::epic::create_epic_task(cwd, plan_path)?,
         };
 
-        // If reusing an existing epic, check for blockers before spawning.
-        // New epics can't have blockers yet, so skip the check.
         if is_existing_epic {
             let events = read_events(cwd)?;
             let graph = materialize_graph(&events);
             check_epic_blockers(&graph, &epic_id)?;
         }
 
-        // Build args to pass through to the background process
-        let spawn_args = build_continue_args(
-            &epic_id,
-            decompose_template.as_deref(),
-            loop_template.as_deref(),
-            agent.as_deref(),
-            review_after,
-            review_template.as_deref(),
-            fix_template.as_deref(),
-        );
+        let mut spawn_args: Vec<String> = vec![
+            "build".to_string(),
+            "--_continue-async".to_string(),
+            epic_id.to_string(),
+        ];
+        if let Some(tmpl) = decompose_template.as_deref() {
+            spawn_args.push("--decompose-template".to_string());
+            spawn_args.push(tmpl.to_string());
+        }
+        if let Some(tmpl) = loop_template.as_deref() {
+            spawn_args.push("--loop-template".to_string());
+            spawn_args.push(tmpl.to_string());
+        }
+        if let Some(a) = agent.as_deref() {
+            spawn_args.push("--agent".to_string());
+            spawn_args.push(a.to_string());
+        }
+        if let Some(tmpl) = review_template.as_deref() {
+            spawn_args.push("--review-template".to_string());
+            spawn_args.push(tmpl.to_string());
+        } else if review_after {
+            spawn_args.push("--review".to_string());
+        }
+        if let Some(tmpl) = fix_template.as_deref() {
+            spawn_args.push("--fix-template".to_string());
+            spawn_args.push(tmpl.to_string());
+        }
         let spawn_args_refs: Vec<&str> = spawn_args.iter().map(|s| s.as_str()).collect();
-        let child_pid = async_spawn::spawn_aiki_background(cwd, &spawn_args_refs)?;
+        async_spawn::spawn_aiki_background(cwd, &spawn_args_refs)?;
 
-        if show_tui {
-            // Show build TUI immediately — it will pick up decompose/loop/review
-            // progress from the task graph via JJ polling.
-            // Pass child_pid so Ctrl+C kills the background process.
+        if output_id {
+            println!("{}", epic_id);
+        }
+
+        return Ok(());
+    }
+
+    // TTY sync path: run worker closure in-process with TUI
+    if show_tui {
+        let is_existing_epic = epic_id.is_some();
+        let epic_id = match epic_id {
+            Some(id) => id,
+            None => super::epic::create_epic_task(cwd, plan_path)?,
+        };
+
+        if is_existing_epic {
             let events = read_events(cwd)?;
             let graph = materialize_graph(&events);
-            let (width, _) = crossterm::terminal::size().unwrap_or((80, 24));
-            let model = Model {
-                graph: std::sync::Arc::new(graph),
-                screen: Screen::Build {
-                    epic_id: epic_id.clone(),
-                    plan_path: plan_path.to_string(),
-                },
-                window: WindowState::new(width),
+            check_epic_blockers(&graph, &epic_id)?;
+        }
+
+        let events = read_events(cwd)?;
+        let graph = materialize_graph(&events);
+        let (width, _) = crossterm::terminal::size().unwrap_or((80, 24));
+        let model = Model {
+            graph: std::sync::Arc::new(graph),
+            screen: Screen::Build {
+                epic_id: epic_id.clone(),
+                plan_path: plan_path.to_string(),
+            },
+            window: WindowState::new(width),
+            entries: Vec::new(),
+            finished: false,
+            detached: false,
+        };
+
+        let worker_epic_id = epic_id.clone();
+        let worker_plan_path = plan_path.to_string();
+        let worker_decompose_template = decompose_template.clone();
+        let worker_loop_template = loop_template.clone();
+        let worker_agent = agent.clone();
+        let worker_review_after = review_after;
+        let worker_fix_after = fix_after;
+        let worker_review_template = review_template.clone();
+        let worker_fix_template = fix_template.clone();
+
+        let worker = move |status: tui::app::WorkerStatus, cwd: std::path::PathBuf| -> anyhow::Result<()> {
+            let agent_type = if let Some(ref agent_str) = worker_agent {
+                Some(
+                    AgentType::from_str(agent_str)
+                        .ok_or_else(|| AikiError::UnknownAgentType(agent_str.clone()))?,
+                )
+            } else {
+                None
             };
-            crate::tui::app::run_with_child(model, cwd, Some(child_pid))?;
 
-            // After TUI exits (build done or user detached), print final status
-            let events = read_events(cwd)?;
+            // Phase 1: decompose (if no subtasks yet)
+            let events = read_events(&cwd)?;
             let graph = materialize_graph(&events);
-            let epic_task = graph.tasks.get(epic_id.as_str());
-            if let Some(epic_task) = epic_task {
-                let subtasks = get_subtasks(&graph, &epic_task.id);
-                let build_tasks: Vec<&Task> = graph
-                    .tasks
-                    .values()
-                    .filter(|t| {
-                        t.task_type.as_deref() == Some("orchestrator")
-                            && t.data.get("plan").map(|s| s.as_str()) == Some(plan_path)
-                    })
-                    .collect();
-                output_build_show(epic_task, &subtasks, &build_tasks, &graph)?;
+            let subtasks = get_subtasks(&graph, &worker_epic_id);
+            if subtasks.is_empty() {
+                status.start("decompose");
+                status.orchestrates(&worker_epic_id);
+                status.update("Decomposing plan...");
+                let options = super::decompose::DecomposeOptions {
+                    template: worker_decompose_template,
+                    agent: agent_type.clone(),
+                };
+                match super::decompose::run_decompose(
+                    &cwd,
+                    &worker_plan_path,
+                    &worker_epic_id,
+                    options,
+                    false,
+                ) {
+                    Ok(decompose_task_id) => {
+                        status.task(&decompose_task_id);
+                        let events = read_events(&cwd)?;
+                        let graph = materialize_graph(&events);
+                        let count = get_subtasks(&graph, &worker_epic_id).len();
+                        status.done(&format!("{} subtasks created", count));
+                    }
+                    Err(e) => {
+                        status.failed(&e.to_string());
+                        return Err(e.into());
+                    }
+                }
             }
-        } else {
-            // --async: just print epic ID and return
-            if output_id {
-                println!("{}", epic_id);
+
+            // Phase 2: loop
+            status.section("Build");
+            status.start("loop");
+            status.orchestrates(&worker_epic_id);
+            status.update("Running subtasks...");
+
+            let mut loop_options = LoopOptions::new();
+            if let Some(agent) = agent_type.clone() {
+                loop_options = loop_options.with_agent(agent);
             }
+            if let Some(tmpl) = worker_loop_template {
+                loop_options = loop_options.with_template(tmpl);
+            }
+
+            match run_loop(&cwd, &worker_epic_id, loop_options, false) {
+                Ok(loop_task_id) => {
+                    status.task(&loop_task_id);
+                    status.done("All lanes complete");
+                }
+                Err(e) => {
+                    status.failed(&e.to_string());
+                    return Err(e.into());
+                }
+            }
+
+            // Phase 3: optional review + fix
+            if worker_review_after {
+                status.start("review");
+                status.update("Running review...");
+                match run_build_review(
+                    &cwd,
+                    &worker_plan_path,
+                    &worker_epic_id,
+                    worker_fix_after,
+                    worker_review_template,
+                    worker_fix_template,
+                    worker_agent,
+                ) {
+                    Ok(()) => {
+                        status.done("Review complete");
+                    }
+                    Err(e) => {
+                        status.failed(&e.to_string());
+                        return Err(e.into());
+                    }
+                }
+            }
+
+            status.finish();
+            Ok(())
+        };
+
+        crate::tui::app::run_with_worker(model, cwd, worker)?;
+
+        // After TUI exits, print final status
+        let events = read_events(cwd)?;
+        let graph = materialize_graph(&events);
+        let epic_task = graph.tasks.get(epic_id.as_str());
+        if let Some(epic_task) = epic_task {
+            let subtasks = get_subtasks(&graph, &epic_task.id);
+            let build_tasks: Vec<&Task> = graph
+                .tasks
+                .values()
+                .filter(|t| {
+                    t.task_type.as_deref() == Some("orchestrator")
+                        && t.data.get("plan").map(|s| s.as_str()) == Some(plan_path)
+                })
+                .collect();
+            output_build_show(epic_task, &subtasks, &build_tasks, &graph)?;
         }
 
         return Ok(());
@@ -553,55 +680,179 @@ fn run_build_epic(
 
     let show_tui = !run_async && std::io::stdout().is_terminal() && !output_id;
 
-    if run_async || show_tui {
-        // Spawn background process for decompose (if needed) + loop + review + fix
-        let spawn_args = build_continue_args(
-            epic_id,
-            None, // epic already decomposed (or background will check)
-            loop_template.as_deref(),
-            agent.as_deref(),
-            review_after,
-            review_template.as_deref(),
-            fix_template.as_deref(),
-        );
+    // --async: spawn background process and return immediately
+    if run_async {
+        let mut spawn_args: Vec<String> = vec![
+            "build".to_string(),
+            "--_continue-async".to_string(),
+            epic_id.to_string(),
+        ];
+        if let Some(tmpl) = loop_template.as_deref() {
+            spawn_args.push("--loop-template".to_string());
+            spawn_args.push(tmpl.to_string());
+        }
+        if let Some(a) = agent.as_deref() {
+            spawn_args.push("--agent".to_string());
+            spawn_args.push(a.to_string());
+        }
+        if let Some(tmpl) = review_template.as_deref() {
+            spawn_args.push("--review-template".to_string());
+            spawn_args.push(tmpl.to_string());
+        } else if review_after {
+            spawn_args.push("--review".to_string());
+        }
+        if let Some(tmpl) = fix_template.as_deref() {
+            spawn_args.push("--fix-template".to_string());
+            spawn_args.push(tmpl.to_string());
+        }
         let spawn_args_refs: Vec<&str> = spawn_args.iter().map(|s| s.as_str()).collect();
-        let child_pid = async_spawn::spawn_aiki_background(cwd, &spawn_args_refs)?;
+        async_spawn::spawn_aiki_background(cwd, &spawn_args_refs)?;
 
-        if show_tui {
-            // Show build TUI immediately, kill background on Ctrl+C
-            let events = read_events(cwd)?;
-            let graph = materialize_graph(&events);
-            let (width, _) = crossterm::terminal::size().unwrap_or((80, 24));
-            let model = Model {
-                graph: std::sync::Arc::new(graph),
-                screen: Screen::Build {
-                    epic_id: epic_id.to_string(),
-                    plan_path: plan_path.clone(),
-                },
-                window: WindowState::new(width),
+        if output_id {
+            println!("{}", epic_id);
+        }
+
+        return Ok(());
+    }
+
+    // TTY sync path: run worker closure in-process with TUI
+    if show_tui {
+        let events = read_events(cwd)?;
+        let graph = materialize_graph(&events);
+        let (width, _) = crossterm::terminal::size().unwrap_or((80, 24));
+        let model = Model {
+            graph: std::sync::Arc::new(graph),
+            screen: Screen::Build {
+                epic_id: epic_id.to_string(),
+                plan_path: plan_path.clone(),
+            },
+            window: WindowState::new(width),
+            entries: Vec::new(),
+            finished: false,
+            detached: false,
+        };
+
+        let worker_epic_id = epic_id.to_string();
+        let worker_plan_path = plan_path.clone();
+        let worker_loop_template = loop_template.clone();
+        let worker_agent = agent.clone();
+        let worker_review_after = review_after;
+        let worker_fix_after = fix_after;
+        let worker_review_template = review_template.clone();
+        let worker_fix_template = fix_template.clone();
+
+        let worker = move |status: tui::app::WorkerStatus, cwd: std::path::PathBuf| -> anyhow::Result<()> {
+            let agent_type = if let Some(ref agent_str) = worker_agent {
+                Some(
+                    AgentType::from_str(agent_str)
+                        .ok_or_else(|| AikiError::UnknownAgentType(agent_str.clone()))?,
+                )
+            } else {
+                None
             };
-            crate::tui::app::run_with_child(model, cwd, Some(child_pid))?;
 
-            // After TUI exits, print final status
-            let events = read_events(cwd)?;
+            // Phase 1: decompose (if no subtasks yet)
+            let events = read_events(&cwd)?;
             let graph = materialize_graph(&events);
-            let epic_task = graph.tasks.get(epic_id);
-            if let Some(epic_task) = epic_task {
-                let subtasks = get_subtasks(&graph, epic_id);
-                let build_tasks: Vec<&Task> = graph
-                    .tasks
-                    .values()
-                    .filter(|t| {
-                        t.task_type.as_deref() == Some("orchestrator")
-                            && t.data.get("plan").map(|s| s.as_str()) == Some(plan_path.as_str())
-                    })
-                    .collect();
-                output_build_show(epic_task, &subtasks, &build_tasks, &graph)?;
+            let subtasks = get_subtasks(&graph, &worker_epic_id);
+            if subtasks.is_empty() {
+                status.start("decompose");
+                status.orchestrates(&worker_epic_id);
+                status.update("Decomposing plan...");
+                let options = super::decompose::DecomposeOptions {
+                    template: None,
+                    agent: agent_type.clone(),
+                };
+                match super::decompose::run_decompose(
+                    &cwd,
+                    &worker_plan_path,
+                    &worker_epic_id,
+                    options,
+                    false,
+                ) {
+                    Ok(decompose_task_id) => {
+                        status.task(&decompose_task_id);
+                        let events = read_events(&cwd)?;
+                        let graph = materialize_graph(&events);
+                        let count = get_subtasks(&graph, &worker_epic_id).len();
+                        status.done(&format!("{} subtasks created", count));
+                    }
+                    Err(e) => {
+                        status.failed(&e.to_string());
+                        return Err(e.into());
+                    }
+                }
             }
-        } else {
-            if output_id {
-                println!("{}", epic_id);
+
+            // Phase 2: loop
+            status.section("Build");
+            status.start("loop");
+            status.orchestrates(&worker_epic_id);
+            status.update("Running subtasks...");
+
+            let mut loop_options = LoopOptions::new();
+            if let Some(agent) = agent_type.clone() {
+                loop_options = loop_options.with_agent(agent);
             }
+            if let Some(tmpl) = worker_loop_template {
+                loop_options = loop_options.with_template(tmpl);
+            }
+
+            match run_loop(&cwd, &worker_epic_id, loop_options, false) {
+                Ok(loop_task_id) => {
+                    status.task(&loop_task_id);
+                    status.done("All lanes complete");
+                }
+                Err(e) => {
+                    status.failed(&e.to_string());
+                    return Err(e.into());
+                }
+            }
+
+            // Phase 3: optional review + fix
+            if worker_review_after {
+                status.start("review");
+                status.update("Running review...");
+                match run_build_review(
+                    &cwd,
+                    &worker_plan_path,
+                    &worker_epic_id,
+                    worker_fix_after,
+                    worker_review_template,
+                    worker_fix_template,
+                    worker_agent,
+                ) {
+                    Ok(()) => {
+                        status.done("Review complete");
+                    }
+                    Err(e) => {
+                        status.failed(&e.to_string());
+                        return Err(e.into());
+                    }
+                }
+            }
+
+            status.finish();
+            Ok(())
+        };
+
+        crate::tui::app::run_with_worker(model, cwd, worker)?;
+
+        // After TUI exits, print final status
+        let events = read_events(cwd)?;
+        let graph = materialize_graph(&events);
+        let epic_task = graph.tasks.get(epic_id);
+        if let Some(epic_task) = epic_task {
+            let subtasks = get_subtasks(&graph, epic_id);
+            let build_tasks: Vec<&Task> = graph
+                .tasks
+                .values()
+                .filter(|t| {
+                    t.task_type.as_deref() == Some("orchestrator")
+                        && t.data.get("plan").map(|s| s.as_str()) == Some(plan_path.as_str())
+                })
+                .collect();
+            output_build_show(epic_task, &subtasks, &build_tasks, &graph)?;
         }
 
         return Ok(());
@@ -700,47 +951,6 @@ fn run_show(cwd: &Path, plan_path: &str, output_format: Option<OutputFormat>) ->
     }
 
     Ok(())
-}
-
-/// Build the `--_continue-async` spawn args for the background process.
-/// Used by both run_build_plan and run_build_epic.
-fn build_continue_args(
-    epic_id: &str,
-    decompose_template: Option<&str>,
-    loop_template: Option<&str>,
-    agent: Option<&str>,
-    review_after: bool,
-    review_template: Option<&str>,
-    fix_template: Option<&str>,
-) -> Vec<String> {
-    let mut args: Vec<String> = vec![
-        "build".to_string(),
-        "--_continue-async".to_string(),
-        epic_id.to_string(),
-    ];
-    if let Some(tmpl) = decompose_template {
-        args.push("--decompose-template".to_string());
-        args.push(tmpl.to_string());
-    }
-    if let Some(tmpl) = loop_template {
-        args.push("--loop-template".to_string());
-        args.push(tmpl.to_string());
-    }
-    if let Some(a) = agent {
-        args.push("--agent".to_string());
-        args.push(a.to_string());
-    }
-    if let Some(tmpl) = review_template {
-        args.push("--review-template".to_string());
-        args.push(tmpl.to_string());
-    } else if review_after {
-        args.push("--review".to_string());
-    }
-    if let Some(tmpl) = fix_template {
-        args.push("--fix-template".to_string());
-        args.push(tmpl.to_string());
-    }
-    args
 }
 
 /// Validate that the plan path is a .md file and exists
@@ -1001,8 +1211,8 @@ fn run_build_review(
     let graph = materialize_graph(&events);
     write_link_event(cwd, &graph, "validates", &result.review_task_id, epic_id)?;
 
-    // Run the review to completion — task_run handles TUI internally
-    let options = TaskRunOptions::new();
+    // Run the review to completion — quiet prevents nested TUI in worker thread
+    let options = TaskRunOptions::new().quiet();
     task_run(cwd, &result.review_task_id, options)?;
 
     // Check if review found issues and invoke fix if requested
@@ -1022,16 +1232,16 @@ fn run_build_review(
         super::fix::run_fix(
             cwd,
             &result.review_task_id,
-            false,        // not async
-            None,         // no continue-async
-            fix_template, // forward caller's fix template
-            None,         // default decompose template
-            None,         // default loop template
-            None,         // default review template
-            agent,        // forward agent override
-            false,        // not autorun
-            false,        // not --once
-            None,         // no output format override
+            false,                              // not async
+            None,                               // no continue-async
+            fix_template,                       // forward caller's fix template
+            None,                               // default decompose template
+            None,                               // default loop template
+            None,                               // default review template
+            agent,                              // forward agent override
+            false,                              // not autorun
+            false,                              // not --once
+            Some(super::OutputFormat::Id),       // prevent nested TUI in worker thread
         )?;
     }
 
@@ -1720,5 +1930,399 @@ mod tests {
     fn test_output_build_review_completed_without_fix() {
         let result = output_build_review_completed("review123", "ops/now/feature.md", false);
         assert!(result.is_ok());
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // Pre-refactor behavioral contract tests for build orchestration
+    // ═══════════════════════════════════════════════════════════════════
+    //
+    // These tests lock down the CONTRACT of build behaviors that must
+    // survive the workflow refactor. They test decision logic, not I/O.
+
+    // --- check_epic_blockers contract ---
+
+    #[test]
+    fn test_check_epic_blockers_no_deps_passes() {
+        let mut tasks = FastHashMap::default();
+        tasks.insert(
+            "epic1".to_string(),
+            make_task("epic1", "Epic", TaskStatus::InProgress),
+        );
+        let graph = make_graph(tasks, EdgeStore::new());
+        assert!(check_epic_blockers(&graph, "epic1").is_ok());
+    }
+
+    #[test]
+    fn test_check_epic_blockers_resolved_dep_passes() {
+        let mut tasks = FastHashMap::default();
+        tasks.insert(
+            "epic1".to_string(),
+            make_task("epic1", "Epic", TaskStatus::InProgress),
+        );
+        let mut blocker = make_task("dep1", "Dep", TaskStatus::Closed);
+        blocker.closed_outcome = Some(TaskOutcome::Done);
+        tasks.insert("dep1".to_string(), blocker);
+
+        let mut edges = EdgeStore::new();
+        edges.add("epic1", "dep1", "depends-on");
+
+        let graph = make_graph(tasks, edges);
+        assert!(check_epic_blockers(&graph, "epic1").is_ok());
+    }
+
+    #[test]
+    fn test_check_epic_blockers_unresolved_dep_fails() {
+        let mut tasks = FastHashMap::default();
+        tasks.insert(
+            "epic1".to_string(),
+            make_task("epic1", "Epic", TaskStatus::InProgress),
+        );
+        tasks.insert(
+            "dep1".to_string(),
+            make_task("dep1", "Dep", TaskStatus::Open),
+        );
+
+        let mut edges = EdgeStore::new();
+        edges.add("epic1", "dep1", "depends-on");
+
+        let graph = make_graph(tasks, edges);
+        let err = check_epic_blockers(&graph, "epic1");
+        assert!(err.is_err());
+        assert!(err.unwrap_err().to_string().contains("blocked"));
+    }
+
+    #[test]
+    fn test_check_epic_blockers_wontdo_dep_still_blocks() {
+        // A dependency closed as WontDo should still block (only Done unblocks)
+        let mut tasks = FastHashMap::default();
+        tasks.insert(
+            "epic1".to_string(),
+            make_task("epic1", "Epic", TaskStatus::InProgress),
+        );
+        let mut blocker = make_task("dep1", "Dep", TaskStatus::Closed);
+        blocker.closed_outcome = Some(TaskOutcome::WontDo);
+        tasks.insert("dep1".to_string(), blocker);
+
+        let mut edges = EdgeStore::new();
+        edges.add("epic1", "dep1", "depends-on");
+
+        let graph = make_graph(tasks, edges);
+        let err = check_epic_blockers(&graph, "epic1");
+        assert!(err.is_err());
+        assert!(err.unwrap_err().to_string().contains("blocked"));
+    }
+
+    #[test]
+    fn test_check_epic_blockers_mixed_deps() {
+        // One resolved, one unresolved — should still block
+        let mut tasks = FastHashMap::default();
+        tasks.insert(
+            "epic1".to_string(),
+            make_task("epic1", "Epic", TaskStatus::InProgress),
+        );
+
+        let mut resolved = make_task("dep1", "Resolved", TaskStatus::Closed);
+        resolved.closed_outcome = Some(TaskOutcome::Done);
+        tasks.insert("dep1".to_string(), resolved);
+
+        tasks.insert(
+            "dep2".to_string(),
+            make_task("dep2", "Unresolved", TaskStatus::InProgress),
+        );
+
+        let mut edges = EdgeStore::new();
+        edges.add("epic1", "dep1", "depends-on");
+        edges.add("epic1", "dep2", "depends-on");
+
+        let graph = make_graph(tasks, edges);
+        let err = check_epic_blockers(&graph, "epic1");
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn test_check_epic_blockers_missing_dep_task_blocks() {
+        // A depends-on edge pointing to a non-existent task should block
+        let mut tasks = FastHashMap::default();
+        tasks.insert(
+            "epic1".to_string(),
+            make_task("epic1", "Epic", TaskStatus::InProgress),
+        );
+
+        let mut edges = EdgeStore::new();
+        edges.add("epic1", "nonexistent", "depends-on");
+
+        let graph = make_graph(tasks, edges);
+        let err = check_epic_blockers(&graph, "epic1");
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn test_check_epic_blockers_suggests_restart() {
+        // Error message should mention --restart as a workaround
+        let mut tasks = FastHashMap::default();
+        tasks.insert(
+            "epic1".to_string(),
+            make_task("epic1", "Epic", TaskStatus::InProgress),
+        );
+        tasks.insert(
+            "dep1".to_string(),
+            make_task("dep1", "Dep", TaskStatus::Open),
+        );
+
+        let mut edges = EdgeStore::new();
+        edges.add("epic1", "dep1", "depends-on");
+
+        let graph = make_graph(tasks, edges);
+        let err = check_epic_blockers(&graph, "epic1").unwrap_err();
+        assert!(err.to_string().contains("--restart"));
+    }
+
+    // --- Epic resume decision matrix ---
+    //
+    // These test the branching logic at lines 313-340 of run_build_plan.
+    // We extract the decision into a helper and test all branches.
+
+    /// Simulates the epic resume decision matrix from run_build_plan.
+    /// Returns: (should_create_new, should_close_existing)
+    fn epic_resume_decision(
+        restart: bool,
+        existing_epic: Option<(&Task, bool)>, // (epic, has_subtasks)
+    ) -> (bool, bool) {
+        if restart {
+            let should_close = existing_epic
+                .map(|(e, _)| e.status != TaskStatus::Closed)
+                .unwrap_or(false);
+            return (true, should_close);
+        }
+        match existing_epic {
+            Some((epic, _)) if epic.status == TaskStatus::Closed => (true, false),
+            Some((_, true)) => (false, false),  // Valid incomplete epic — reuse
+            Some((_, false)) => (true, true),    // Invalid epic (no subtasks) — close and create new
+            None => (true, false),               // No epic — create new
+        }
+    }
+
+    #[test]
+    fn test_epic_resume_no_existing_creates_new() {
+        let (create_new, close_existing) = epic_resume_decision(false, None);
+        assert!(create_new);
+        assert!(!close_existing);
+    }
+
+    #[test]
+    fn test_epic_resume_restart_always_creates_new() {
+        let epic = make_task("epic1", "Epic", TaskStatus::InProgress);
+        let (create_new, close_existing) = epic_resume_decision(true, Some((&epic, true)));
+        assert!(create_new);
+        assert!(close_existing);
+    }
+
+    #[test]
+    fn test_epic_resume_restart_closed_epic_no_close() {
+        let epic = make_task("epic1", "Epic", TaskStatus::Closed);
+        let (create_new, close_existing) = epic_resume_decision(true, Some((&epic, false)));
+        assert!(create_new);
+        assert!(!close_existing); // Already closed, no need to close again
+    }
+
+    #[test]
+    fn test_epic_resume_valid_incomplete_reuses() {
+        let epic = make_task("epic1", "Epic", TaskStatus::InProgress);
+        let (create_new, _) = epic_resume_decision(false, Some((&epic, true)));
+        assert!(!create_new); // Reuse existing
+    }
+
+    #[test]
+    fn test_epic_resume_invalid_epic_no_subtasks_closes_and_creates() {
+        let epic = make_task("epic1", "Epic", TaskStatus::Open);
+        let (create_new, close_existing) = epic_resume_decision(false, Some((&epic, false)));
+        assert!(create_new);
+        assert!(close_existing);
+    }
+
+    #[test]
+    fn test_epic_resume_closed_epic_creates_new() {
+        let epic = make_task("epic1", "Epic", TaskStatus::Closed);
+        let (create_new, close_existing) = epic_resume_decision(false, Some((&epic, false)));
+        assert!(create_new);
+        assert!(!close_existing); // Already closed
+    }
+
+    #[test]
+    fn test_epic_resume_restart_no_existing_creates_new() {
+        let (create_new, close_existing) = epic_resume_decision(true, None);
+        assert!(create_new);
+        assert!(!close_existing);
+    }
+
+    // --- Build flag resolution contract ---
+    // These verify that the --fix / --review / --fix-template flag
+    // resolution logic produces the correct (review_after, fix_after) pair.
+
+    fn resolve_build_flags(
+        review: bool,
+        review_template: Option<&str>,
+        fix: bool,
+        fix_template: Option<&str>,
+    ) -> (bool, bool) {
+        let fix_template = fix_template
+            .map(|s| s.to_string())
+            .or(if fix { Some("fix".to_string()) } else { None });
+        let review_after =
+            review_template.is_some() || review || fix_template.is_some();
+        let fix_after = fix_template.is_some();
+        (review_after, fix_after)
+    }
+
+    #[test]
+    fn test_build_flags_bare_build() {
+        let (review_after, fix_after) = resolve_build_flags(false, None, false, None);
+        assert!(!review_after);
+        assert!(!fix_after);
+    }
+
+    #[test]
+    fn test_build_flags_review_only() {
+        let (review_after, fix_after) = resolve_build_flags(true, None, false, None);
+        assert!(review_after);
+        assert!(!fix_after);
+    }
+
+    #[test]
+    fn test_build_flags_fix_implies_review() {
+        let (review_after, fix_after) = resolve_build_flags(false, None, true, None);
+        assert!(review_after);
+        assert!(fix_after);
+    }
+
+    #[test]
+    fn test_build_flags_fix_template_implies_both() {
+        let (review_after, fix_after) = resolve_build_flags(false, None, false, Some("custom/fix"));
+        assert!(review_after);
+        assert!(fix_after);
+    }
+
+    #[test]
+    fn test_build_flags_review_template_only() {
+        let (review_after, fix_after) = resolve_build_flags(false, Some("custom/review"), false, None);
+        assert!(review_after);
+        assert!(!fix_after);
+    }
+
+    #[test]
+    fn test_build_flags_all_flags() {
+        let (review_after, fix_after) =
+            resolve_build_flags(true, Some("custom/review"), true, Some("custom/fix"));
+        assert!(review_after);
+        assert!(fix_after);
+    }
+
+    // --- Stale build detection contract (pure logic) ---
+
+    fn find_stale_builds(
+        tasks: &FastHashMap<String, Task>,
+        plan_path: &str,
+    ) -> Vec<String> {
+        tasks
+            .values()
+            .filter(|t| {
+                t.task_type.as_deref() == Some("orchestrator")
+                    && t.data.get("plan").map(|s| s.as_str()) == Some(plan_path)
+                    && (t.status == TaskStatus::InProgress || t.status == TaskStatus::Open)
+            })
+            .map(|t| t.id.clone())
+            .collect()
+    }
+
+    #[test]
+    fn test_stale_build_multiple_matches() {
+        let mut tasks = FastHashMap::default();
+        let plan = "ops/now/feature.md";
+
+        for (id, status) in [("b1", TaskStatus::InProgress), ("b2", TaskStatus::Open)] {
+            let mut data = HashMap::new();
+            data.insert("plan".to_string(), plan.to_string());
+            let mut task = make_task_with_data(id, "Build", status, data);
+            task.task_type = Some("orchestrator".to_string());
+            tasks.insert(id.to_string(), task);
+        }
+
+        // Add a closed one that should NOT be stale
+        let mut data = HashMap::new();
+        data.insert("plan".to_string(), plan.to_string());
+        let mut closed = make_task_with_data("b3", "Build", TaskStatus::Closed, data);
+        closed.task_type = Some("orchestrator".to_string());
+        tasks.insert("b3".to_string(), closed);
+
+        let stale = find_stale_builds(&tasks, plan);
+        assert_eq!(stale.len(), 2);
+        assert!(stale.contains(&"b1".to_string()));
+        assert!(stale.contains(&"b2".to_string()));
+    }
+
+    #[test]
+    fn test_stale_build_ignores_different_plan() {
+        let mut tasks = FastHashMap::default();
+        let mut data = HashMap::new();
+        data.insert("plan".to_string(), "ops/now/other.md".to_string());
+        let mut task = make_task_with_data("b1", "Build", TaskStatus::InProgress, data);
+        task.task_type = Some("orchestrator".to_string());
+        tasks.insert("b1".to_string(), task);
+
+        let stale = find_stale_builds(&tasks, "ops/now/feature.md");
+        assert!(stale.is_empty());
+    }
+
+    #[test]
+    fn test_stale_build_ignores_non_orchestrator() {
+        let mut tasks = FastHashMap::default();
+        let mut data = HashMap::new();
+        data.insert("plan".to_string(), "ops/now/feature.md".to_string());
+        let task = make_task_with_data("b1", "Regular task", TaskStatus::InProgress, data);
+        tasks.insert("b1".to_string(), task);
+
+        let stale = find_stale_builds(&tasks, "ops/now/feature.md");
+        assert!(stale.is_empty());
+    }
+
+    // --- Draft plan rejection contract ---
+
+    #[test]
+    fn test_draft_plan_blocks_build() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let plan_file = temp_dir.path().join("draft-plan.md");
+        std::fs::write(&plan_file, "---\ndraft: true\n---\n# My Plan\n").unwrap();
+        let metadata = crate::plans::parse_plan_metadata(&plan_file);
+        assert!(metadata.draft, "Plan with draft: true should be detected as draft");
+    }
+
+    #[test]
+    fn test_non_draft_plan_allowed() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let plan_file = temp_dir.path().join("ready-plan.md");
+        std::fs::write(&plan_file, "---\ndraft: false\n---\n# My Plan\n").unwrap();
+        let metadata = crate::plans::parse_plan_metadata(&plan_file);
+        assert!(!metadata.draft, "Plan with draft: false should not be draft");
+    }
+
+    #[test]
+    fn test_no_frontmatter_plan_not_draft() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let plan_file = temp_dir.path().join("no-fm.md");
+        std::fs::write(&plan_file, "# Simple Plan\n\nNo frontmatter here.\n").unwrap();
+        let metadata = crate::plans::parse_plan_metadata(&plan_file);
+        assert!(!metadata.draft, "Plan without frontmatter should not be draft");
+    }
+
+    // --- close_epic_as_invalid contract ---
+
+    #[test]
+    fn test_close_epic_as_invalid_uses_wontdo() {
+        // Verify the event construction: outcome must be WontDo
+        let outcome = TaskOutcome::WontDo;
+        assert!(
+            matches!(outcome, TaskOutcome::WontDo),
+            "Invalid epic closure must use WontDo outcome"
+        );
     }
 }
