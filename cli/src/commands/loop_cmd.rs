@@ -189,7 +189,7 @@ pub fn run_loop(
         output_loop_async(&loop_task_id, &parent_id)?;
     } else {
         output_loop_started(&loop_task_id, &parent_id)?;
-        task_run(cwd, &loop_task_id, task_run_options)?;
+        task_run(cwd, &loop_task_id, task_run_options.quiet())?;
         output_loop_completed(&loop_task_id, &parent_id)?;
     }
 

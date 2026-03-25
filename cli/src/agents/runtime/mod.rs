@@ -10,6 +10,7 @@ pub use claude_code::ClaudeCodeRuntime;
 pub use codex::CodexRuntime;
 
 use crate::error::Result;
+use crate::tasks::types::TaskEvent;
 use std::io::Read;
 use std::path::Path;
 use std::process::{Child, ChildStderr, ChildStdout, ExitStatus};
@@ -24,6 +25,8 @@ use super::AgentType;
 pub struct BackgroundHandle {
     /// Task ID being worked on
     pub task_id: String,
+    /// Session UUID, resolved after spawn via event polling
+    pub session_id: Option<String>,
 }
 
 /// Handle for a monitored child process
@@ -287,6 +290,50 @@ pub fn get_runtime(agent_type: AgentType) -> Option<Box<dyn AgentRuntime>> {
         AgentType::Codex => Some(Box::new(CodexRuntime::new())),
         // Other agent types not yet supported for task execution
         AgentType::Cursor | AgentType::Gemini | AgentType::Unknown => None,
+    }
+}
+
+/// Poll task events for a Started event containing a session_id.
+///
+/// After spawning a background agent, the agent's hook emits a `Started` event
+/// with a `session_id`. This function polls the event log until that event
+/// appears, using exponential backoff (100ms → 500ms, 5s total timeout).
+pub fn discover_session_id(cwd: &Path, task_id: &str) -> Result<String> {
+    use crate::tasks::storage::read_events;
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    let timeout = Duration::from_secs(5);
+    let start = Instant::now();
+    let mut delay = Duration::from_millis(100);
+    let max_delay = Duration::from_millis(500);
+
+    loop {
+        let events = read_events(cwd)?;
+
+        // Scan for a Started event that contains our task_id and has a session_id
+        for event in events.iter().rev() {
+            if let TaskEvent::Started {
+                task_ids,
+                session_id: Some(sid),
+                ..
+            } = event
+            {
+                if task_ids.iter().any(|id| id == task_id) {
+                    return Ok(sid.clone());
+                }
+            }
+        }
+
+        if start.elapsed() >= timeout {
+            return Err(anyhow::anyhow!(
+                "Session UUID not discovered within timeout"
+            )
+            .into());
+        }
+
+        thread::sleep(delay);
+        delay = (delay * 2).min(max_delay);
     }
 }
 

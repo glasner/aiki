@@ -1,9 +1,15 @@
 //! Shared graph query and rendering helpers used by all view functions.
 
+use std::time::Instant;
+
+use crate::tasks::lanes::{derive_lanes, lane_status, Lane, LaneStatus};
 use crate::tasks::types::TaskStatus;
 use crate::tasks::{Task, TaskGraph};
-use crate::tui::app::{Line, LineStyle, SubtaskStatus};
-use crate::tui::components::{self, ChildLine, SubtaskData};
+use crate::tui::app::{
+    Entry, Line, LineStyle, Model, PhaseLifecycle, PhaseState, Screen, SubtaskStatus, WindowState,
+};
+use crate::tui::components::{self, ChildLine, LaneData, SubtaskData};
+use crate::tui::theme;
 
 // ── Graph query helpers ────────────────────────────────────────────
 
@@ -256,6 +262,273 @@ pub fn subtask_data_from_task(task: &Task, in_active_lane: bool) -> SubtaskData 
 impl From<&&Task> for SubtaskData {
     fn from(task: &&Task) -> Self {
         subtask_data_from_task(task, false)
+    }
+}
+
+// ── Entry-based rendering helpers ─────────────────────────────────
+
+/// Render a single phase entry as header + status child lines.
+///
+/// **Heartbeat handoff**: when `phase.task_id` is set and the graph has a
+/// heartbeat for that task, the view switches from `worker_status` to
+/// the heartbeat text.
+pub fn render_phase_line(
+    phase: &PhaseState,
+    graph: &TaskGraph,
+    _window: &WindowState,
+) -> Vec<Line> {
+    let elapsed = Some(format_instant_elapsed(phase.started_at));
+
+    let (active, children) = match &phase.state {
+        PhaseLifecycle::Active => {
+            let child = if let Some(ref task_id) = phase.task_id {
+                // Has task_id — prefer graph heartbeat over worker_status
+                let heartbeat = graph
+                    .tasks
+                    .get(task_id.as_str())
+                    .map(|t| t.latest_heartbeat())
+                    .unwrap_or("");
+                if !heartbeat.is_empty() {
+                    ChildLine::active_with_elapsed(heartbeat, elapsed)
+                } else {
+                    ChildLine::normal(
+                        phase.worker_status.as_deref().unwrap_or(""),
+                        elapsed,
+                    )
+                }
+            } else {
+                // No task_id — use worker_status
+                ChildLine::normal(
+                    phase.worker_status.as_deref().unwrap_or(""),
+                    elapsed,
+                )
+            };
+            (true, vec![child])
+        }
+        PhaseLifecycle::Done { result } => {
+            let child = ChildLine::done(
+                &format!("{} {}", theme::SYM_CHECK, result),
+                elapsed,
+            );
+            (false, vec![child])
+        }
+        PhaseLifecycle::Failed { error } => {
+            let child = ChildLine::error(
+                &format!("{} {}", theme::SYM_FAILED, error),
+                elapsed,
+            );
+            (false, vec![child])
+        }
+    };
+
+    components::phase(0, phase.name, phase.agent.as_deref(), active, children)
+}
+
+/// Render a bordered subtask table for the orchestrated parent task.
+pub fn render_subtask_table(
+    graph: &TaskGraph,
+    orchestrates_id: &str,
+    _window: &WindowState,
+) -> Vec<Line> {
+    let parent = match graph.tasks.get(orchestrates_id) {
+        Some(t) => t,
+        None => return vec![],
+    };
+    let subtasks = get_subtasks(graph, orchestrates_id);
+    if subtasks.is_empty() {
+        return vec![];
+    }
+    let data: Vec<SubtaskData> = subtasks.iter().map(|s| s.into()).collect();
+    components::subtask_table(0, parent.short_id(), &parent.name, &data, false)
+}
+
+/// Render per-lane progress blocks.
+///
+/// Groups children of `orchestrates_id` by lane, then renders each lane
+/// with heartbeat, completion counts, and agent type.
+pub fn render_lane_blocks(
+    graph: &TaskGraph,
+    orchestrates_id: &str,
+    _window: &WindowState,
+) -> Vec<Line> {
+    let decomposition = derive_lanes(graph, orchestrates_id);
+    if decomposition.lanes.is_empty() {
+        return vec![];
+    }
+    let lane_data: Vec<LaneData> = decomposition
+        .lanes
+        .iter()
+        .enumerate()
+        .map(|(i, lane)| lane_to_render_data(i + 1, lane, graph, &decomposition.lanes))
+        .collect();
+    components::loop_block(0, &lane_data)
+}
+
+/// Render numbered issue list for a review task.
+pub fn render_issue_list(
+    graph: &TaskGraph,
+    task_id: &str,
+    _window: &WindowState,
+) -> Vec<Line> {
+    let task = match graph.tasks.get(task_id) {
+        Some(t) => t,
+        None => return vec![],
+    };
+    let issues = extract_issues(task);
+    if issues.is_empty() {
+        return vec![];
+    }
+    let issue_texts: Vec<String> = issues.iter().map(|i| i.title.clone()).collect();
+    components::issues(0, &issue_texts)
+}
+
+/// Render final stats line (sessions, tokens, elapsed) when finished.
+pub fn render_summary_line(model: &Model) -> Vec<Line> {
+    if !model.finished {
+        return vec![];
+    }
+
+    // Extract root task ID from screen
+    let root_id = match &model.screen {
+        Screen::TaskRun { task_id } => task_id.as_str(),
+        Screen::Build { epic_id, .. } => epic_id.as_str(),
+        Screen::Review { review_id, .. } => review_id.as_str(),
+        Screen::Fix { fix_parent_id, .. } => fix_parent_id.as_str(),
+        Screen::EpicShow { epic_id } => epic_id.as_str(),
+        Screen::ReviewShow { review_id } => review_id.as_str(),
+    };
+
+    let children = model.graph.children_of(root_id);
+    let sessions = if children.is_empty() { 1 } else { children.len() };
+
+    // Sum tokens from graph children
+    let mut total_tokens: u64 = 0;
+    for child in &children {
+        if let Some(tok_str) = child.data.get("tokens") {
+            if let Ok(tok) = tok_str.parse::<u64>() {
+                total_tokens += tok;
+            }
+        }
+    }
+
+    // Elapsed from earliest entry
+    let elapsed = model
+        .entries
+        .iter()
+        .filter_map(|e| match e {
+            Entry::Phase(p) => Some(p.started_at),
+            _ => None,
+        })
+        .min()
+        .map(format_instant_elapsed)
+        .unwrap_or_else(|| "0s".to_string());
+
+    let tokens_str = format_tokens_compact(total_tokens);
+
+    vec![Line {
+        indent: 0,
+        text: format!(
+            "{} session{} \u{2014} {} \u{2014} {} tokens",
+            sessions,
+            if sessions == 1 { "" } else { "s" },
+            elapsed,
+            tokens_str,
+        ),
+        meta: None,
+        style: LineStyle::Dim,
+        group: 0,
+        dimmed: false,
+    }]
+}
+
+// ── Shared lane conversion ────────────────────────────────────────
+
+/// Convert a `Lane` into rendering `LaneData`.
+pub fn lane_to_render_data(
+    number: usize,
+    lane: &Lane,
+    graph: &TaskGraph,
+    all_lanes: &[Lane],
+) -> LaneData {
+    let all_task_ids: Vec<&str> = lane
+        .sessions
+        .iter()
+        .flat_map(|s| s.task_ids.iter())
+        .map(|s| s.as_str())
+        .collect();
+
+    let total = all_task_ids.len();
+    let mut completed = 0;
+    let mut failed = 0;
+    let mut heartbeat = None;
+    let mut elapsed = None;
+    let mut agent = String::new();
+
+    for tid in &all_task_ids {
+        if let Some(task) = graph.tasks.get(*tid) {
+            match task.status {
+                TaskStatus::Closed => completed += 1,
+                TaskStatus::Stopped => failed += 1,
+                TaskStatus::InProgress => {
+                    let hb = task.latest_heartbeat();
+                    if !hb.is_empty() {
+                        heartbeat = Some(hb.to_string());
+                    }
+                    elapsed = task.elapsed_str();
+                }
+                _ => {}
+            }
+            if agent.is_empty() {
+                if let Some(label) = task.agent_label() {
+                    agent = label.to_string();
+                }
+            }
+        }
+    }
+
+    let status = lane_status(lane, graph, all_lanes);
+    let shutdown = matches!(status, LaneStatus::Complete | LaneStatus::Failed);
+
+    if agent.is_empty() {
+        agent = "agent".to_string();
+    }
+
+    LaneData {
+        number,
+        agent,
+        completed,
+        total,
+        failed,
+        heartbeat,
+        elapsed,
+        shutdown,
+    }
+}
+
+// ── Private format helpers ────────────────────────────────────────
+
+/// Format elapsed time from an `Instant`.
+fn format_instant_elapsed(started_at: Instant) -> String {
+    let secs = started_at.elapsed().as_secs();
+    if secs < 60 {
+        format!("{}s", secs)
+    } else if secs < 3600 {
+        format!("{}m {}s", secs / 60, secs % 60)
+    } else {
+        let h = secs / 3600;
+        let m = (secs % 3600) / 60;
+        format!("{}h{:02}m", h, m)
+    }
+}
+
+/// Format token count compactly.
+fn format_tokens_compact(tokens: u64) -> String {
+    if tokens >= 1_000_000 {
+        format!("{:.1}M", tokens as f64 / 1_000_000.0)
+    } else if tokens >= 1_000 {
+        format!("{:.1}K", tokens as f64 / 1_000.0)
+    } else {
+        format!("{}", tokens)
     }
 }
 

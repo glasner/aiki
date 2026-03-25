@@ -1,4 +1,4 @@
-use crate::error::Result;
+use crate::error::{AikiError, Result};
 use crate::global;
 use crate::history;
 use crate::history::types::ConversationEvent;
@@ -15,7 +15,7 @@ pub enum SessionCommands {
         /// Show only active sessions (with running agent process)
         #[arg(long)]
         active: bool,
-        /// Show only background sessions (created by `aiki task run`)
+        /// Show only background sessions (created by `aiki run`)
         #[arg(long, conflicts_with = "interactive")]
         background: bool,
         /// Show only interactive sessions (user-driven)
@@ -30,6 +30,17 @@ pub enum SessionCommands {
         /// Session ID (or unique prefix)
         id: String,
     },
+    /// Wait for session(s) to complete
+    Wait {
+        /// Session IDs to wait for
+        ids: Vec<String>,
+        /// Return when any session completes (instead of waiting for all)
+        #[arg(long)]
+        any: bool,
+        /// Output format (e.g., `id` for bare session IDs on stdout)
+        #[arg(long, short = 'o')]
+        output: Option<super::OutputFormat>,
+    },
 }
 
 pub fn run(command: SessionCommands) -> Result<()> {
@@ -41,6 +52,7 @@ pub fn run(command: SessionCommands) -> Result<()> {
             limit,
         } => run_list(active, background, interactive, limit),
         SessionCommands::Show { id } => run_show(&id),
+        SessionCommands::Wait { ids, any, output } => run_wait(ids, any, output),
     }
 }
 
@@ -402,4 +414,207 @@ fn run_show(id: &str) -> Result<()> {
     println!("\n{}", "\u{2500}".repeat(SEPARATOR_WIDTH));
 
     Ok(())
+}
+
+const WAIT_INITIAL_DELAY_MS: u64 = 500;
+const WAIT_MAX_DELAY_MS: u64 = 5000;
+const WAIT_BACKOFF_MULTIPLIER: u64 = 2;
+const WAIT_ABSORPTION_TIMEOUT_SECS: u64 = 60;
+
+/// Resolve a session ID prefix to the full session ID from conversation events.
+/// Returns an error if the prefix is ambiguous or not found.
+fn resolve_session_id(events: &[ConversationEvent], prefix: &str) -> Result<String> {
+    use std::collections::HashSet;
+
+    let matching: HashSet<&str> = events
+        .iter()
+        .map(|e| event_session_id(e))
+        .filter(|sid| sid.starts_with(prefix))
+        .collect();
+
+    match matching.len() {
+        0 => Err(AikiError::InvalidArgument(format!(
+            "No session found matching '{}'",
+            prefix
+        ))),
+        1 => Ok(matching.into_iter().next().unwrap().to_string()),
+        _ => {
+            let mut ids: Vec<&str> = matching.into_iter().collect();
+            ids.sort();
+            Err(AikiError::InvalidArgument(format!(
+                "Ambiguous session ID '{}', matches: {}",
+                prefix,
+                ids.join(", ")
+            )))
+        }
+    }
+}
+
+/// Check if a session has ended by looking for a SessionEnd event.
+fn has_session_ended(events: &[ConversationEvent], session_id: &str) -> bool {
+    events.iter().any(|e| {
+        matches!(e, ConversationEvent::SessionEnd { session_id: sid, .. } if sid == session_id)
+    })
+}
+
+fn run_wait(
+    ids: Vec<String>,
+    any: bool,
+    output_format: Option<super::OutputFormat>,
+) -> Result<()> {
+    use std::collections::HashSet;
+    use std::time::{Duration, Instant};
+
+    let aiki_dir = global::global_aiki_dir();
+
+    if ids.is_empty() {
+        return Err(AikiError::InvalidArgument(
+            "At least one session ID is required".to_string(),
+        ));
+    }
+
+    // Resolve all session IDs up front (prefix -> full)
+    let events = history::storage::read_events(&aiki_dir)?;
+    let mut resolved_ids = Vec::new();
+    for id in &ids {
+        resolved_ids.push(resolve_session_id(&events, id)?);
+    }
+    let ids = resolved_ids;
+
+    let mut delay_ms = WAIT_INITIAL_DELAY_MS;
+
+    // Poll until condition is met
+    loop {
+        let events = history::storage::read_events(&aiki_dir)?;
+
+        let done = if any {
+            ids.iter().any(|id| has_session_ended(&events, id))
+        } else {
+            ids.iter().all(|id| has_session_ended(&events, id))
+        };
+
+        if done {
+            // Collect which sessions completed
+            let completed: HashSet<&str> = ids
+                .iter()
+                .filter(|id| has_session_ended(&events, id))
+                .map(|s| s.as_str())
+                .collect();
+
+            // Wait for workspace absorption
+            {
+                let repo_root = crate::jj::get_repo_root(&std::env::current_dir().map_err(
+                    |e| AikiError::Other(anyhow::anyhow!("Failed to get cwd: {}", e)),
+                )?)?;
+
+                let absorption_start = Instant::now();
+                let mut absorption_delay_ms = WAIT_INITIAL_DELAY_MS;
+
+                let repo_id = crate::repos::ensure_repo_id(&repo_root)?;
+
+                for session_id in &completed {
+                    let workspace_name = format!("aiki-{}", session_id);
+
+                    loop {
+                        // Check if workspace still exists
+                        let ws_exists = crate::session::isolation::find_workspace_change_id(
+                            &repo_root,
+                            &workspace_name,
+                        )?
+                        .is_some();
+
+                        if !ws_exists {
+                            break;
+                        }
+
+                        // Try to absorb the workspace
+                        let workspace = crate::session::isolation::IsolatedWorkspace {
+                            name: workspace_name.clone(),
+                            path: crate::session::isolation::workspaces_dir()
+                                .join(&repo_id)
+                                .join(session_id),
+                        };
+                        match crate::session::isolation::absorb_workspace(
+                            &repo_root,
+                            &workspace,
+                            None,
+                        ) {
+                            Ok(_) => break,
+                            Err(_) => {
+                                if absorption_start.elapsed()
+                                    > Duration::from_secs(WAIT_ABSORPTION_TIMEOUT_SECS)
+                                {
+                                    eprintln!(
+                                        "Warning: Workspace '{}' not absorbed after {}s. Run `jj workspace list` to check.",
+                                        workspace_name, WAIT_ABSORPTION_TIMEOUT_SECS
+                                    );
+                                    break;
+                                }
+                                std::thread::sleep(Duration::from_millis(absorption_delay_ms));
+                                absorption_delay_ms = (absorption_delay_ms
+                                    * WAIT_BACKOFF_MULTIPLIER)
+                                    .min(WAIT_MAX_DELAY_MS);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Output
+            let output_id = matches!(output_format, Some(super::OutputFormat::Id));
+
+            if output_id {
+                for id in &ids {
+                    if any && !has_session_ended(&events, id) {
+                        continue;
+                    }
+                    println!("{}", id);
+                }
+            } else {
+                // Re-read events for accurate output after absorption
+                let events = history::storage::read_events(&aiki_dir)?;
+                let conversations =
+                    history::storage::list_conversations(&aiki_dir, None)?;
+                let conv_map: HashMap<&str, &history::types::ConversationSummary> = conversations
+                    .iter()
+                    .map(|c| (c.session_id.as_str(), c))
+                    .collect();
+
+                let rows: Vec<SessionRow> = ids
+                    .iter()
+                    .filter(|id| !any || has_session_ended(&events, id))
+                    .map(|id| {
+                        let conv = conv_map.get(id.as_str());
+                        SessionRow {
+                            session_id: id.clone(),
+                            agent_type: conv
+                                .map(|c| c.agent_type)
+                                .unwrap_or(AgentType::Unknown),
+                            mode: conv
+                                .and_then(|c| c.session_mode)
+                                .unwrap_or(SessionMode::Interactive),
+                            pid: None,
+                            turns: conv
+                                .map(|c| c.turn_count.to_string())
+                                .unwrap_or_else(|| "-".to_string()),
+                            started: conv
+                                .map(|c| format_timestamp(&c.started_at))
+                                .unwrap_or_else(|| "-".to_string()),
+                            last_activity: conv
+                                .map(|c| format_timestamp(&c.last_activity))
+                                .unwrap_or_else(|| "-".to_string()),
+                            status: "ended",
+                        }
+                    })
+                    .collect();
+
+                print_session_table(&rows);
+            }
+
+            return Ok(());
+        }
+
+        std::thread::sleep(Duration::from_millis(delay_ms));
+        delay_ms = (delay_ms * WAIT_BACKOFF_MULTIPLIER).min(WAIT_MAX_DELAY_MS);
+    }
 }

@@ -184,7 +184,7 @@ fn derive_lanes(graph: &TaskGraph, parent_id: &str) -> Option<Vec<LaneData>> {
                 }
             }
 
-            let status = lane_status(lane, graph);
+            let status = lane_status(lane, graph, &decomposition.lanes);
             let shutdown = matches!(status, LaneStatus::Complete | LaneStatus::Failed);
 
             if agent.is_empty() {

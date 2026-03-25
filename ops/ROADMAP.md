@@ -1,5 +1,6 @@
 Bugs:
 - add reserved status
+- worker theread
 - session run command
 - output on run
 - fix loop

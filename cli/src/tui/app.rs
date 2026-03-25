@@ -1,8 +1,8 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
@@ -63,6 +63,121 @@ impl WindowState {
     }
 }
 
+// ── Worker thread types ──────────────────────────────────────────────
+
+/// Messages sent from the worker thread to the TUI event loop.
+pub enum WorkerStatusMsg {
+    /// New phase row. Appended to model's entry list.
+    PhaseStarted { name: &'static str },
+    /// Update current (last) phase's status line.
+    Update(String),
+    /// Set current phase's agent display (e.g., "claude").
+    AgentResolved(String),
+    /// Bind current phase to a task ID.
+    TaskBound(String),
+    /// Bind current phase to a parent task it orchestrates.
+    Orchestrates(String),
+    /// Mark current phase completed.
+    PhaseDone { result: String },
+    /// Mark current phase failed.
+    PhaseFailed { error: String },
+    /// Insert a section header.
+    Section(String),
+    /// Signal pipeline completion.
+    Done,
+}
+
+/// Thin wrapper around the channel sender. Eliminates
+/// `tx.send(WorkerStatusMsg::...)` boilerplate from worker closures.
+pub struct WorkerStatus {
+    tx: mpsc::Sender<WorkerStatusMsg>,
+}
+
+impl WorkerStatus {
+    pub fn new(tx: mpsc::Sender<WorkerStatusMsg>) -> Self {
+        Self { tx }
+    }
+
+    /// Start a new phase. Appends a phase row to the display.
+    pub fn start(&self, name: &'static str) {
+        self.send(WorkerStatusMsg::PhaseStarted { name });
+    }
+
+    /// Update current phase's status line.
+    pub fn update(&self, text: &str) {
+        self.send(WorkerStatusMsg::Update(text.into()));
+    }
+
+    /// Set current phase's agent display.
+    pub fn agent(&self, name: &str) {
+        self.send(WorkerStatusMsg::AgentResolved(name.into()));
+    }
+
+    /// Bind current phase to a task ID.
+    pub fn task(&self, id: &str) {
+        self.send(WorkerStatusMsg::TaskBound(id.into()));
+    }
+
+    /// Bind current phase to a parent task it orchestrates.
+    pub fn orchestrates(&self, id: &str) {
+        self.send(WorkerStatusMsg::Orchestrates(id.into()));
+    }
+
+    /// Mark current phase completed.
+    pub fn done(&self, result: &str) {
+        self.send(WorkerStatusMsg::PhaseDone {
+            result: result.into(),
+        });
+    }
+
+    /// Mark current phase failed.
+    pub fn failed(&self, error: &str) {
+        self.send(WorkerStatusMsg::PhaseFailed {
+            error: error.into(),
+        });
+    }
+
+    /// Insert a section header.
+    pub fn section(&self, title: &str) {
+        self.send(WorkerStatusMsg::Section(title.into()));
+    }
+
+    /// Signal pipeline completion.
+    pub fn finish(&self) {
+        self.send(WorkerStatusMsg::Done);
+    }
+
+    fn send(&self, msg: WorkerStatusMsg) {
+        let _ = self.tx.send(msg);
+    }
+}
+
+/// An entry in the worker status display — either a phase or section header.
+pub enum Entry {
+    Phase(PhaseState),
+    Section(String),
+}
+
+/// State of a single worker phase.
+pub struct PhaseState {
+    pub name: &'static str,
+    pub agent: Option<String>,
+    pub task_id: Option<String>,
+    pub orchestrates_id: Option<String>,
+    pub worker_status: Option<String>,
+    pub state: PhaseLifecycle,
+    pub started_at: Instant,
+}
+
+/// Lifecycle state of a phase.
+pub enum PhaseLifecycle {
+    Active,
+    Done { result: String },
+    Failed { error: String },
+}
+
+// ── Model ────────────────────────────────────────────────────────────
+
 /// Everything the view needs to render.
 pub struct Model {
     /// Domain state — materialized from JJ task events.
@@ -73,12 +188,22 @@ pub struct Model {
     pub screen: Screen,
     /// Window state (scroll, terminal size, etc.).
     pub window: WindowState,
+    /// Ordered list of phases and sections, built up by worker messages.
+    pub entries: Vec<Entry>,
+    /// True after worker sends Done (or WorkerDisconnected handled).
+    pub finished: bool,
+    /// True after Ctrl+C.
+    pub detached: bool,
 }
 
 /// Events that can change the model.
 pub enum Msg {
     /// New TaskGraph read from JJ (or cached if JJ was slow).
     GraphUpdated(TaskGraph),
+    /// Worker thread status update.
+    Worker(WorkerStatusMsg),
+    /// Worker channel disconnected without sending Done.
+    WorkerDisconnected,
     /// User pressed Ctrl+C.
     Detach,
     /// Terminal resized.
@@ -106,6 +231,70 @@ pub fn update(mut model: Model, msg: Msg) -> (Model, Effect) {
             model.graph = Arc::new(graph);
             let effect = if done { Effect::Done } else { Effect::Continue };
             (model, effect)
+        }
+        Msg::Worker(worker_msg) => {
+            match worker_msg {
+                WorkerStatusMsg::PhaseStarted { name } => {
+                    model.entries.push(Entry::Phase(PhaseState {
+                        name,
+                        agent: None,
+                        task_id: None,
+                        orchestrates_id: None,
+                        worker_status: None,
+                        state: PhaseLifecycle::Active,
+                        started_at: Instant::now(),
+                    }));
+                }
+                WorkerStatusMsg::Update(text) => {
+                    if let Some(Entry::Phase(phase)) = model.entries.last_mut() {
+                        phase.worker_status = Some(text);
+                    }
+                }
+                WorkerStatusMsg::AgentResolved(name) => {
+                    if let Some(Entry::Phase(phase)) = model.entries.last_mut() {
+                        phase.agent = Some(name);
+                    }
+                }
+                WorkerStatusMsg::TaskBound(id) => {
+                    if let Some(Entry::Phase(phase)) = model.entries.last_mut() {
+                        phase.task_id = Some(id);
+                    }
+                }
+                WorkerStatusMsg::Orchestrates(id) => {
+                    if let Some(Entry::Phase(phase)) = model.entries.last_mut() {
+                        phase.orchestrates_id = Some(id);
+                    }
+                }
+                WorkerStatusMsg::PhaseDone { result } => {
+                    if let Some(Entry::Phase(phase)) = model.entries.last_mut() {
+                        phase.state = PhaseLifecycle::Done { result };
+                    }
+                }
+                WorkerStatusMsg::PhaseFailed { error } => {
+                    if let Some(Entry::Phase(phase)) = model.entries.last_mut() {
+                        phase.state = PhaseLifecycle::Failed { error };
+                    }
+                }
+                WorkerStatusMsg::Section(title) => {
+                    model.entries.push(Entry::Section(title));
+                }
+                WorkerStatusMsg::Done => {
+                    model.finished = true;
+                }
+            }
+            (model, Effect::Continue)
+        }
+        Msg::WorkerDisconnected => {
+            // Mark last active phase as failed
+            if let Some(Entry::Phase(phase)) = model.entries.last_mut() {
+                if matches!(phase.state, PhaseLifecycle::Active) {
+                    phase.state = PhaseLifecycle::Failed {
+                        error: "worker exited unexpectedly".to_string(),
+                    };
+                }
+            }
+            model.finished = true;
+            (model, Effect::Continue)
         }
         Msg::Detach => (model, Effect::Detached),
         Msg::Resize { width, .. } => {
@@ -199,12 +388,6 @@ pub fn run(model: Model, cwd: &Path) -> Result<Effect> {
     run_inner(model, cwd)
 }
 
-/// Temporary shim — callers pass a child_pid but it's currently ignored.
-/// Will be replaced by worker thread approach where the work runs in-process.
-pub fn run_with_child(model: Model, cwd: &Path, _child_pid: Option<u32>) -> Result<Effect> {
-    run_inner(model, cwd)
-}
-
 fn run_inner(model: Model, cwd: &Path) -> Result<Effect> {
     crate::tui::panic_hook::install_panic_hook();
 
@@ -259,6 +442,88 @@ fn run_inner(model: Model, cwd: &Path) -> Result<Effect> {
 
     // Cleanup: signal the JJ thread to stop and restore terminal
     stop.store(true, Ordering::Relaxed);
+    crossterm::terminal::disable_raw_mode()?;
+
+    match result {
+        Ok(Effect::Detached) => {
+            println!("[detached]");
+            Ok(Effect::Detached)
+        }
+        other => other,
+    }
+}
+
+/// Run the Elm loop with a worker closure that drives phases.
+///
+/// The worker runs on a background thread and sends `WorkerStatusMsg`s
+/// to the TUI event loop. The loop exits when the worker sends `Done`
+/// (or disconnects unexpectedly).
+pub fn run_with_worker<F>(model: Model, cwd: &Path, worker: F) -> Result<Effect>
+where
+    F: FnOnce(WorkerStatus, PathBuf) -> Result<()> + Send + 'static,
+{
+    crate::tui::panic_hook::install_panic_hook();
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let _signal_guards = crate::tui::panic_hook::install_signal_handlers(Arc::clone(&stop));
+
+    let theme = theme::Theme::from_mode(theme::detect_mode());
+
+    let backend = CrosstermBackend::new(std::io::stdout());
+    let initial_height = 1u16;
+    let mut terminal = Terminal::with_options(
+        backend,
+        TerminalOptions {
+            viewport: Viewport::Inline(initial_height),
+        },
+    )?;
+    let mut current_height = initial_height;
+
+    crossterm::terminal::enable_raw_mode()?;
+
+    // Spawn JJ reader thread
+    let (jj_tx, jj_rx) = mpsc::channel::<TaskGraph>();
+    let cwd_owned = cwd.to_owned();
+    let jj_stop = Arc::clone(&stop);
+    let _jj_thread = thread::spawn(move || {
+        loop {
+            if jj_stop.load(Ordering::Relaxed) {
+                break;
+            }
+            if let Ok(events) = read_events(&cwd_owned) {
+                let graph = materialize_graph(&events);
+                if jj_tx.send(graph).is_err() {
+                    break;
+                }
+            }
+            for _ in 0..10 {
+                if jj_stop.load(Ordering::Relaxed) {
+                    return;
+                }
+                thread::sleep(Duration::from_millis(100));
+            }
+        }
+    });
+
+    // Spawn worker thread
+    let (worker_tx, worker_rx) = mpsc::channel::<WorkerStatusMsg>();
+    let status = WorkerStatus::new(worker_tx);
+    let worker_cwd = cwd.to_owned();
+    let worker_handle = thread::spawn(move || worker(status, worker_cwd));
+
+    let result = run_loop_with_worker(
+        model,
+        &jj_rx,
+        &worker_rx,
+        &stop,
+        &theme,
+        &mut terminal,
+        &mut current_height,
+    );
+
+    // Cleanup: signal threads to stop, join worker, restore terminal
+    stop.store(true, Ordering::Relaxed);
+    let _ = worker_handle.join();
     crossterm::terminal::disable_raw_mode()?;
 
     match result {
@@ -381,8 +646,152 @@ fn poll_next_msg(rx: &mpsc::Receiver<TaskGraph>, stop: &AtomicBool) -> Result<Ms
     Ok(Msg::Tick)
 }
 
+/// Inner loop for worker mode — checks `model.finished` for exit.
+fn run_loop_with_worker(
+    mut model: Model,
+    jj_rx: &mpsc::Receiver<TaskGraph>,
+    worker_rx: &mpsc::Receiver<WorkerStatusMsg>,
+    stop: &AtomicBool,
+    theme: &theme::Theme,
+    terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
+    current_height: &mut u16,
+) -> Result<Effect> {
+    loop {
+        // 1. View (pure)
+        let mut lines = view(&model);
+        apply_dimming(&mut lines);
+
+        // 2. Grow viewport if content exceeds current height
+        let new_height = lines_height(&lines).max(1);
+        if new_height > *current_height {
+            let growth = new_height - *current_height;
+            terminal.insert_before(growth, |_| {})?;
+            terminal.resize(ratatui::layout::Rect::new(
+                0,
+                0,
+                model.window.width,
+                new_height,
+            ))?;
+            *current_height = new_height;
+        }
+
+        // 3. Render
+        let tick = model.window.tick;
+        terminal.draw(|frame| {
+            let area = frame.area();
+            render_lines(&lines, frame.buffer_mut(), area, theme, tick);
+        })?;
+
+        // 4. Poll for next event
+        let msg = poll_next_msg_with_worker(jj_rx, worker_rx, stop, model.finished)?;
+
+        // 5. Update
+        let (new_model, effect) = update(model, msg);
+        model = new_model;
+
+        // In worker mode, finished flag drives exit
+        let effect = if model.finished && matches!(effect, Effect::Continue) {
+            Effect::Done
+        } else {
+            effect
+        };
+
+        match effect {
+            Effect::Continue => continue,
+            Effect::Done | Effect::Detached => {
+                // Final render
+                let mut lines = view(&model);
+                apply_dimming(&mut lines);
+                let new_height = lines_height(&lines).max(1);
+                if new_height > *current_height {
+                    let growth = new_height - *current_height;
+                    terminal.insert_before(growth, |_| {})?;
+                    terminal.resize(ratatui::layout::Rect::new(
+                        0,
+                        0,
+                        model.window.width,
+                        new_height,
+                    ))?;
+                    *current_height = new_height;
+                }
+                let tick = model.window.tick;
+                terminal.draw(|frame| {
+                    let area = frame.area();
+                    render_lines(&lines, frame.buffer_mut(), area, theme, tick);
+                })?;
+                return Ok(effect);
+            }
+        }
+    }
+}
+
+/// Poll with worker channel support. Prioritizes worker messages over JJ graph updates.
+fn poll_next_msg_with_worker(
+    jj_rx: &mpsc::Receiver<TaskGraph>,
+    worker_rx: &mpsc::Receiver<WorkerStatusMsg>,
+    stop: &AtomicBool,
+    finished: bool,
+) -> Result<Msg> {
+    // 1. Signal-driven stop
+    if stop.load(Ordering::Relaxed) {
+        return Ok(Msg::Detach);
+    }
+
+    // 2. Check worker channel (priority — worker messages are structural)
+    match worker_rx.try_recv() {
+        Ok(msg) => return Ok(Msg::Worker(msg)),
+        Err(mpsc::TryRecvError::Empty) => {}
+        Err(mpsc::TryRecvError::Disconnected) => {
+            if !finished {
+                return Ok(Msg::WorkerDisconnected);
+            }
+            // Normal: worker sent Done then dropped
+        }
+    }
+
+    // 3. Check JJ graph (non-blocking)
+    if let Ok(graph) = jj_rx.try_recv() {
+        return Ok(Msg::GraphUpdated(graph));
+    }
+
+    // 4. Poll crossterm for 100ms
+    if event::poll(Duration::from_millis(100))? {
+        match event::read()? {
+            Event::Key(KeyEvent {
+                code: KeyCode::Char('c'),
+                modifiers,
+                ..
+            }) if modifiers.contains(KeyModifiers::CONTROL) => {
+                return Ok(Msg::Detach);
+            }
+            Event::Resize(w, h) => {
+                return Ok(Msg::Resize {
+                    width: w,
+                    height: h,
+                });
+            }
+            _ => {}
+        }
+    }
+
+    // 5. Tick
+    Ok(Msg::Tick)
+}
+
 /// Pure view function — produces lines from model.
+///
+/// When `model.entries` is non-empty (worker-driven commands), renders from
+/// the entry list using shared helpers. Otherwise falls back to per-screen
+/// graph-only view functions (for `run()` without worker).
 pub fn view(model: &Model) -> Vec<Line> {
+    if model.entries.is_empty() {
+        return view_from_screen(model);
+    }
+    render_entries(model)
+}
+
+/// Fallback: dispatch to per-screen view functions (graph-only rendering).
+fn view_from_screen(model: &Model) -> Vec<Line> {
     match &model.screen {
         Screen::TaskRun { task_id } =>
             super::screens::task_run::view(&model.graph, task_id, &model.window),
@@ -397,6 +806,62 @@ pub fn view(model: &Model) -> Vec<Line> {
         Screen::ReviewShow { review_id } =>
             super::screens::review_show::view(&model.graph, review_id, &model.window),
     }
+}
+
+/// Entry-based rendering: iterates `model.entries` and uses shared helpers.
+fn render_entries(model: &Model) -> Vec<Line> {
+    use super::screens::helpers::{
+        render_issue_list, render_lane_blocks, render_phase_line, render_subtask_table,
+        render_summary_line,
+    };
+
+    let mut lines = Vec::new();
+
+    for entry in &model.entries {
+        match entry {
+            Entry::Phase(phase) => {
+                lines.extend(render_phase_line(phase, &model.graph, &model.window));
+
+                // Graph-derived components keyed by orchestrates_id
+                if let Some(orch_id) = &phase.orchestrates_id {
+                    // Lane blocks inside loop phases
+                    if phase.name == "loop" {
+                        lines.extend(render_lane_blocks(
+                            &model.graph,
+                            orch_id,
+                            &model.window,
+                        ));
+                    }
+                    // Subtask table for any phase with orchestrates_id
+                    lines.extend(render_subtask_table(
+                        &model.graph,
+                        orch_id,
+                        &model.window,
+                    ));
+                }
+
+                // Issue list for review phases
+                if phase.name == "review" {
+                    if let Some(task_id) = &phase.task_id {
+                        lines.extend(render_issue_list(
+                            &model.graph,
+                            task_id,
+                            &model.window,
+                        ));
+                    }
+                }
+            }
+            Entry::Section(title) => {
+                lines.extend(crate::tui::components::section_header(0, title));
+            }
+        }
+    }
+
+    if model.finished {
+        lines.extend(render_summary_line(model));
+    }
+
+    lines
 }
 
 #[cfg(test)]
@@ -449,6 +914,24 @@ mod tests {
             }),
             screen,
             window: WindowState::new(80),
+            entries: Vec::new(),
+            finished: false,
+            detached: false,
+        }
+    }
+
+    fn make_model_with_entries(entries: Vec<Entry>) -> Model {
+        Model {
+            graph: Arc::new(TaskGraph {
+                tasks: FastHashMap::default(),
+                edges: EdgeStore::default(),
+                slug_index: FastHashMap::default(),
+            }),
+            screen: Screen::TaskRun { task_id: "test".into() },
+            window: WindowState::new(80),
+            entries,
+            finished: false,
+            detached: false,
         }
     }
 
@@ -588,5 +1071,224 @@ mod tests {
         let graph = make_graph_with_task("rev1", TaskStatus::Closed);
         let (_, effect) = update(model, Msg::GraphUpdated(graph));
         assert!(matches!(effect, Effect::Done));
+    }
+
+    // ── Worker message tests ────────────────────────────────────────
+
+    #[test]
+    fn phase_started_appends_entry() {
+        let model = make_model(Screen::TaskRun { task_id: "abc".into() });
+        let (model, effect) = update(model, Msg::Worker(WorkerStatusMsg::PhaseStarted { name: "build" }));
+        assert!(matches!(effect, Effect::Continue));
+        assert_eq!(model.entries.len(), 1);
+        match &model.entries[0] {
+            Entry::Phase(p) => {
+                assert_eq!(p.name, "build");
+                assert!(matches!(p.state, PhaseLifecycle::Active));
+                assert!(p.agent.is_none());
+                assert!(p.task_id.is_none());
+                assert!(p.orchestrates_id.is_none());
+            }
+            _ => panic!("expected Phase entry"),
+        }
+    }
+
+    #[test]
+    fn worker_update_sets_status_on_last_phase() {
+        let mut model = make_model(Screen::TaskRun { task_id: "abc".into() });
+        // First create a phase
+        let (m, _) = update(model, Msg::Worker(WorkerStatusMsg::PhaseStarted { name: "deploy" }));
+        model = m;
+        let (model, _) = update(model, Msg::Worker(WorkerStatusMsg::Update("running...".into())));
+        match &model.entries[0] {
+            Entry::Phase(p) => assert_eq!(p.worker_status.as_deref(), Some("running...")),
+            _ => panic!("expected Phase entry"),
+        }
+    }
+
+    #[test]
+    fn agent_resolved_sets_agent() {
+        let model = make_model(Screen::TaskRun { task_id: "abc".into() });
+        let (model, _) = update(model, Msg::Worker(WorkerStatusMsg::PhaseStarted { name: "test" }));
+        let (model, _) = update(model, Msg::Worker(WorkerStatusMsg::AgentResolved("claude".into())));
+        match &model.entries[0] {
+            Entry::Phase(p) => assert_eq!(p.agent.as_deref(), Some("claude")),
+            _ => panic!("expected Phase entry"),
+        }
+    }
+
+    #[test]
+    fn task_bound_sets_task_id() {
+        let model = make_model(Screen::TaskRun { task_id: "abc".into() });
+        let (model, _) = update(model, Msg::Worker(WorkerStatusMsg::PhaseStarted { name: "test" }));
+        let (model, _) = update(model, Msg::Worker(WorkerStatusMsg::TaskBound("task123".into())));
+        match &model.entries[0] {
+            Entry::Phase(p) => assert_eq!(p.task_id.as_deref(), Some("task123")),
+            _ => panic!("expected Phase entry"),
+        }
+    }
+
+    #[test]
+    fn orchestrates_sets_orchestrates_id() {
+        let model = make_model(Screen::TaskRun { task_id: "abc".into() });
+        let (model, _) = update(model, Msg::Worker(WorkerStatusMsg::PhaseStarted { name: "test" }));
+        let (model, _) = update(model, Msg::Worker(WorkerStatusMsg::Orchestrates("parent1".into())));
+        match &model.entries[0] {
+            Entry::Phase(p) => assert_eq!(p.orchestrates_id.as_deref(), Some("parent1")),
+            _ => panic!("expected Phase entry"),
+        }
+    }
+
+    #[test]
+    fn phase_done_marks_done() {
+        let model = make_model(Screen::TaskRun { task_id: "abc".into() });
+        let (model, _) = update(model, Msg::Worker(WorkerStatusMsg::PhaseStarted { name: "test" }));
+        let (model, _) = update(model, Msg::Worker(WorkerStatusMsg::PhaseDone { result: "ok".into() }));
+        match &model.entries[0] {
+            Entry::Phase(p) => assert!(matches!(&p.state, PhaseLifecycle::Done { result } if result == "ok")),
+            _ => panic!("expected Phase entry"),
+        }
+    }
+
+    #[test]
+    fn phase_failed_marks_failed() {
+        let model = make_model(Screen::TaskRun { task_id: "abc".into() });
+        let (model, _) = update(model, Msg::Worker(WorkerStatusMsg::PhaseStarted { name: "test" }));
+        let (model, _) = update(model, Msg::Worker(WorkerStatusMsg::PhaseFailed { error: "boom".into() }));
+        match &model.entries[0] {
+            Entry::Phase(p) => assert!(matches!(&p.state, PhaseLifecycle::Failed { error } if error == "boom")),
+            _ => panic!("expected Phase entry"),
+        }
+    }
+
+    #[test]
+    fn section_appends_section_entry() {
+        let model = make_model(Screen::TaskRun { task_id: "abc".into() });
+        let (model, _) = update(model, Msg::Worker(WorkerStatusMsg::Section("Header".into())));
+        assert_eq!(model.entries.len(), 1);
+        assert!(matches!(&model.entries[0], Entry::Section(s) if s == "Header"));
+    }
+
+    #[test]
+    fn worker_done_sets_finished() {
+        let model = make_model(Screen::TaskRun { task_id: "abc".into() });
+        let (model, effect) = update(model, Msg::Worker(WorkerStatusMsg::Done));
+        assert!(model.finished);
+        assert!(matches!(effect, Effect::Continue));
+    }
+
+    #[test]
+    fn worker_disconnected_marks_phase_failed_and_finished() {
+        let model = make_model(Screen::TaskRun { task_id: "abc".into() });
+        let (model, _) = update(model, Msg::Worker(WorkerStatusMsg::PhaseStarted { name: "test" }));
+        let (model, effect) = update(model, Msg::WorkerDisconnected);
+        assert!(model.finished);
+        assert!(matches!(effect, Effect::Continue));
+        match &model.entries[0] {
+            Entry::Phase(p) => assert!(matches!(&p.state, PhaseLifecycle::Failed { error } if error.contains("unexpectedly"))),
+            _ => panic!("expected Phase entry"),
+        }
+    }
+
+    #[test]
+    fn worker_disconnected_does_not_overwrite_done_phase() {
+        let model = make_model(Screen::TaskRun { task_id: "abc".into() });
+        let (model, _) = update(model, Msg::Worker(WorkerStatusMsg::PhaseStarted { name: "test" }));
+        let (model, _) = update(model, Msg::Worker(WorkerStatusMsg::PhaseDone { result: "ok".into() }));
+        let (model, _) = update(model, Msg::WorkerDisconnected);
+        // Phase should still be Done, not Failed
+        match &model.entries[0] {
+            Entry::Phase(p) => assert!(matches!(&p.state, PhaseLifecycle::Done { .. })),
+            _ => panic!("expected Phase entry"),
+        }
+    }
+
+    #[test]
+    fn update_on_empty_entries_is_noop() {
+        // Worker messages that target "last phase" should be harmless when entries is empty
+        let model = make_model(Screen::TaskRun { task_id: "abc".into() });
+        let (model, _) = update(model, Msg::Worker(WorkerStatusMsg::Update("text".into())));
+        assert!(model.entries.is_empty());
+    }
+
+    #[test]
+    fn update_on_section_last_entry_is_noop() {
+        // Worker messages targeting last phase should skip Section entries
+        let model = make_model(Screen::TaskRun { task_id: "abc".into() });
+        let (model, _) = update(model, Msg::Worker(WorkerStatusMsg::Section("Header".into())));
+        let (model, _) = update(model, Msg::Worker(WorkerStatusMsg::Update("text".into())));
+        // Section should be unchanged, no panic
+        assert_eq!(model.entries.len(), 1);
+        assert!(matches!(&model.entries[0], Entry::Section(_)));
+    }
+
+    #[test]
+    fn agent_resolved_doesnt_affect_non_last_phases() {
+        let model = make_model(Screen::TaskRun { task_id: "abc".into() });
+        // Create two phases
+        let (model, _) = update(model, Msg::Worker(WorkerStatusMsg::PhaseStarted { name: "first" }));
+        let (model, _) = update(model, Msg::Worker(WorkerStatusMsg::PhaseStarted { name: "second" }));
+        // AgentResolved should only affect the last (second) phase
+        let (model, _) = update(model, Msg::Worker(WorkerStatusMsg::AgentResolved("claude".into())));
+        match &model.entries[0] {
+            Entry::Phase(p) => assert!(p.agent.is_none(), "first phase agent should remain None"),
+            _ => panic!("expected Phase entry"),
+        }
+        match &model.entries[1] {
+            Entry::Phase(p) => assert_eq!(p.agent.as_deref(), Some("claude")),
+            _ => panic!("expected Phase entry"),
+        }
+    }
+
+    #[test]
+    fn worker_disconnected_noop_when_finished() {
+        let mut model = make_model(Screen::TaskRun { task_id: "abc".into() });
+        let (m, _) = update(model, Msg::Worker(WorkerStatusMsg::PhaseStarted { name: "test" }));
+        model = m;
+        let (m, _) = update(model, Msg::Worker(WorkerStatusMsg::PhaseDone { result: "ok".into() }));
+        model = m;
+        let (m, _) = update(model, Msg::Worker(WorkerStatusMsg::Done));
+        model = m;
+        assert!(model.finished);
+        // WorkerDisconnected after Done should be a no-op for the phase
+        let (model, effect) = update(model, Msg::WorkerDisconnected);
+        assert!(model.finished);
+        assert!(matches!(effect, Effect::Continue));
+        match &model.entries[0] {
+            Entry::Phase(p) => assert!(matches!(&p.state, PhaseLifecycle::Done { .. }), "phase should still be Done"),
+            _ => panic!("expected Phase entry"),
+        }
+    }
+
+    #[test]
+    fn multiple_phases_update_and_done_affect_only_last() {
+        let model = make_model(Screen::TaskRun { task_id: "abc".into() });
+        // Phase 1: start, update, done
+        let (model, _) = update(model, Msg::Worker(WorkerStatusMsg::PhaseStarted { name: "phase1" }));
+        let (model, _) = update(model, Msg::Worker(WorkerStatusMsg::Update("running phase1".into())));
+        let (model, _) = update(model, Msg::Worker(WorkerStatusMsg::PhaseDone { result: "phase1 ok".into() }));
+        // Phase 2: start
+        let (model, _) = update(model, Msg::Worker(WorkerStatusMsg::PhaseStarted { name: "phase2" }));
+        let (model, _) = update(model, Msg::Worker(WorkerStatusMsg::Update("running phase2".into())));
+
+        assert_eq!(model.entries.len(), 2);
+        // Phase 1 should retain its Done state and original status
+        match &model.entries[0] {
+            Entry::Phase(p) => {
+                assert_eq!(p.name, "phase1");
+                assert!(matches!(&p.state, PhaseLifecycle::Done { result } if result == "phase1 ok"));
+                assert_eq!(p.worker_status.as_deref(), Some("running phase1"));
+            }
+            _ => panic!("expected Phase entry"),
+        }
+        // Phase 2 should be active with its own status
+        match &model.entries[1] {
+            Entry::Phase(p) => {
+                assert_eq!(p.name, "phase2");
+                assert!(matches!(p.state, PhaseLifecycle::Active));
+                assert_eq!(p.worker_status.as_deref(), Some("running phase2"));
+            }
+            _ => panic!("expected Phase entry"),
+        }
     }
 }

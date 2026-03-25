@@ -126,7 +126,7 @@ pub fn run_decompose(
         let result = task_run_on_session(cwd, &decompose_task_id, run_options, true)?;
         handle_session_result(cwd, &decompose_task_id, result, true)?;
     } else {
-        task_run(cwd, &decompose_task_id, run_options)?;
+        task_run(cwd, &decompose_task_id, run_options.quiet())?;
     }
 
     // 6. Return decompose task ID

@@ -110,7 +110,7 @@ pub fn view(
             .lanes
             .iter()
             .enumerate()
-            .map(|(i, lane)| lane_to_data(i + 1, lane, graph))
+            .map(|(i, lane)| lane_to_data(i + 1, lane, graph, &decomposition.lanes))
             .collect();
         lines.extend(components::loop_block(group + 1, &lane_data));
         group += 2;
@@ -164,6 +164,7 @@ fn lane_to_data(
     number: usize,
     lane: &crate::tasks::lanes::Lane,
     graph: &TaskGraph,
+    all_lanes: &[crate::tasks::lanes::Lane],
 ) -> LaneData {
     let all_task_ids: Vec<&str> = lane
         .sessions
@@ -199,7 +200,7 @@ fn lane_to_data(
         }
     }
 
-    let status = lane_status(lane, graph);
+    let status = lane_status(lane, graph, all_lanes);
     let shutdown = matches!(status, LaneStatus::Complete | LaneStatus::Failed);
 
     LaneData {

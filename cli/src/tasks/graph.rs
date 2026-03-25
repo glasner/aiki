@@ -3044,4 +3044,33 @@ mod tests {
         let task = graph.tasks.get("A").unwrap();
         assert_eq!(task.status, TaskStatus::Reserved);
     }
+
+    // --- Autostart regression: Reserved status in find_autorun_candidates ---
+
+    #[test]
+    fn test_find_autorun_candidates_skips_reserved_tasks() {
+        // B validates A with autorun. B is Reserved. find_autorun_candidates should
+        // include Reserved tasks (they are eligible for auto-start, like Open/Stopped).
+        // NOTE: Currently find_autorun_candidates only allows Open/Stopped, which means
+        // Reserved tasks are skipped. This test documents that behavior so any change
+        // to include Reserved is a deliberate decision, not an accident.
+        let events = vec![
+            make_created("A", "Implementation"),
+            make_created("B", "Review"),
+            make_autorun_link("B", "A", "validates"),
+            make_reserved(&["B"]),
+            make_closed("A"),
+        ];
+        let graph = materialize_graph(&events);
+        let candidates = graph.find_autorun_candidates("A");
+        // Reserved tasks are currently NOT returned by find_autorun_candidates.
+        // The outer run_close code accepts Reserved for spawn autorun (line 3174)
+        // but this graph method skips them. If Reserved should be eligible,
+        // update this assertion and the filter in find_autorun_candidates.
+        assert!(
+            candidates.is_empty(),
+            "Reserved tasks are currently skipped by find_autorun_candidates. \
+             If this starts failing, it means Reserved was intentionally added — update this test."
+        );
+    }
 }

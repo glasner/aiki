@@ -2470,3 +2470,556 @@ fn test_run_template_creates_task() {
         stderr
     );
 }
+
+// ============================================================================
+// Autostart Regression Tests
+// ============================================================================
+// These tests cover the four autostart paths in run_close():
+// 1. Spawn autorun (spawned tasks with autorun: true)
+// 2. Blocking link autorun (find_autorun_candidates)
+// 3. Parent auto-start (all subtasks closed → parent starts)
+// 4. Next subtask auto-start (session-owned parent → next child starts)
+
+// --- Path 3: Parent auto-start guards ---
+
+#[test]
+fn test_parent_autostart_skips_when_parent_already_in_progress() {
+    // If the parent is already InProgress, closing the last subtask should NOT
+    // re-auto-start it (the guard at run_close should skip).
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    // Create parent + 1 subtask
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["task", "add", "Parent already running"])
+        .output()
+        .unwrap();
+    let parent_id = extract_short_id(&String::from_utf8_lossy(&output.stdout));
+
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["task", "add", "Only subtask", "--parent", &parent_id])
+        .output()
+        .unwrap();
+    let sub_id = extract_short_id(&String::from_utf8_lossy(&output.stdout));
+
+    // Start parent (puts it InProgress)
+    Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["task", "start", &parent_id])
+        .output()
+        .unwrap();
+
+    // Start and close the only subtask
+    Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["task", "start", &sub_id])
+        .output()
+        .unwrap();
+
+    let close_output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["task", "close", &sub_id, "--summary", "Done"])
+        .output()
+        .unwrap();
+    let close_stdout = String::from_utf8_lossy(&close_output.stdout);
+
+    // The close output should NOT contain parent auto-start notice
+    assert!(
+        !close_stdout.contains("auto-started for review"),
+        "Parent already InProgress should not be auto-started again. Output: {}",
+        close_stdout
+    );
+
+    // Parent should still be InProgress (unchanged)
+    let show_output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["task", "show", &parent_id])
+        .output()
+        .unwrap();
+    let show_stdout = String::from_utf8_lossy(&show_output.stdout);
+    assert!(
+        show_stdout.contains("Status: in_progress"),
+        "Parent should remain InProgress. Output: {}",
+        show_stdout
+    );
+}
+
+#[test]
+fn test_parent_autostart_skips_when_parent_already_closed() {
+    // If the parent is already closed, closing its subtask should NOT
+    // try to auto-start it.
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    // Create parent + 1 subtask
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["task", "add", "Parent closed early"])
+        .output()
+        .unwrap();
+    let parent_id = extract_short_id(&String::from_utf8_lossy(&output.stdout));
+
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["task", "add", "Subtask A", "--parent", &parent_id])
+        .output()
+        .unwrap();
+    let sub_id = extract_short_id(&String::from_utf8_lossy(&output.stdout));
+
+    // Start and close the parent directly
+    Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["task", "start", &parent_id])
+        .output()
+        .unwrap();
+    Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["task", "close", &parent_id, "--summary", "Closed early"])
+        .output()
+        .unwrap();
+
+    // Now close the subtask
+    Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["task", "start", &sub_id])
+        .output()
+        .unwrap();
+    let close_output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["task", "close", &sub_id, "--summary", "Done"])
+        .output()
+        .unwrap();
+    let close_stdout = String::from_utf8_lossy(&close_output.stdout);
+
+    // Should not auto-start the already-closed parent
+    assert!(
+        !close_stdout.contains("auto-started for review"),
+        "Already-closed parent should not be auto-started. Output: {}",
+        close_stdout
+    );
+}
+
+#[test]
+fn test_parent_autostart_not_triggered_with_partial_close() {
+    // If only some subtasks are closed, parent should NOT auto-start.
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    // Create parent + 2 subtasks
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["task", "add", "Partial parent"])
+        .output()
+        .unwrap();
+    let parent_id = extract_short_id(&String::from_utf8_lossy(&output.stdout));
+
+    Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["task", "add", "Sub 1", "--parent", &parent_id])
+        .output()
+        .unwrap();
+
+    let output2 = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["task", "add", "Sub 2", "--parent", &parent_id])
+        .output()
+        .unwrap();
+    let sub2_id = extract_short_id(&String::from_utf8_lossy(&output2.stdout));
+
+    // Start parent, start and close only subtask 2
+    Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["task", "start", &parent_id])
+        .output()
+        .unwrap();
+    // Stop parent so it's no longer InProgress (otherwise the InProgress guard hides the test)
+    Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["task", "stop"])
+        .output()
+        .unwrap();
+
+    Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["task", "start", &sub2_id])
+        .output()
+        .unwrap();
+
+    let close_output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["task", "close", &sub2_id, "--summary", "Done"])
+        .output()
+        .unwrap();
+    let close_stdout = String::from_utf8_lossy(&close_output.stdout);
+
+    // Only 1 of 2 subtasks closed — parent should NOT auto-start
+    assert!(
+        !close_stdout.contains("auto-started for review"),
+        "Parent should not auto-start when not all subtasks are closed. Output: {}",
+        close_stdout
+    );
+}
+
+#[test]
+fn test_parent_autostart_triggers_with_wontdo_subtasks() {
+    // Parent should auto-start even if subtasks were closed as wont-do.
+    // all_subtasks_closed() checks status == Closed regardless of outcome.
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    // Create parent + 2 subtasks
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["task", "add", "Wontdo parent"])
+        .output()
+        .unwrap();
+    let parent_id = extract_short_id(&String::from_utf8_lossy(&output.stdout));
+
+    let out1 = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["task", "add", "Sub done", "--parent", &parent_id])
+        .output()
+        .unwrap();
+    let sub1_id = extract_short_id(&String::from_utf8_lossy(&out1.stdout));
+
+    let out2 = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["task", "add", "Sub wontdo", "--parent", &parent_id])
+        .output()
+        .unwrap();
+    let sub2_id = extract_short_id(&String::from_utf8_lossy(&out2.stdout));
+
+    // Start and close sub1 normally
+    Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["task", "start", &sub1_id])
+        .output()
+        .unwrap();
+    Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["task", "close", &sub1_id, "--summary", "Done"])
+        .output()
+        .unwrap();
+
+    // Close sub2 as wont-do
+    Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["task", "start", &sub2_id])
+        .output()
+        .unwrap();
+    aiki_task(
+        temp_dir.path(),
+        &["close", &sub2_id, "--wont-do", "--summary", "Not needed"],
+    )
+    .success();
+
+    // Parent should be auto-started (both subtasks closed, regardless of outcome)
+    let list_output = aiki_task(temp_dir.path(), &["list"])
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let list_stdout = String::from_utf8_lossy(&list_output);
+    assert!(
+        list_stdout.contains("In Progress:") && list_stdout.contains("Wontdo parent"),
+        "Parent should auto-start even with wont-do subtasks. Output: {}",
+        list_stdout
+    );
+}
+
+#[test]
+fn test_parent_autostart_skips_when_orchestrated() {
+    // If the parent has an active orchestrator, closing the last subtask
+    // should NOT auto-start the parent.
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    // Create parent + subtask + orchestrator
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["task", "add", "Orchestrated parent"])
+        .output()
+        .unwrap();
+    let parent_id = extract_short_id(&String::from_utf8_lossy(&output.stdout));
+
+    let out_sub = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["task", "add", "Sub orchestrated", "--parent", &parent_id])
+        .output()
+        .unwrap();
+    let sub_id = extract_short_id(&String::from_utf8_lossy(&out_sub.stdout));
+
+    // Create an orchestrator task that orchestrates the parent
+    let out_orch = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["task", "add", "Loop orchestrator"])
+        .output()
+        .unwrap();
+    let orch_id = extract_short_id(&String::from_utf8_lossy(&out_orch.stdout));
+
+    // Link orchestrator → parent
+    aiki_task(
+        temp_dir.path(),
+        &["link", &orch_id, "--orchestrates", &parent_id],
+    )
+    .success();
+
+    // Start the orchestrator (it's the active orchestrator)
+    Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["task", "start", &orch_id])
+        .output()
+        .unwrap();
+
+    // Start and close the subtask
+    Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["task", "start", &sub_id])
+        .output()
+        .unwrap();
+
+    let close_output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["task", "close", &sub_id, "--summary", "Done"])
+        .output()
+        .unwrap();
+    let close_stdout = String::from_utf8_lossy(&close_output.stdout);
+
+    // Parent should NOT auto-start because it has an active orchestrator
+    assert!(
+        !close_stdout.contains("auto-started for review"),
+        "Orchestrated parent should not be auto-started. Output: {}",
+        close_stdout
+    );
+
+    // Parent should still be in its original state (Open/Stopped, not InProgress)
+    let show = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["task", "show", &parent_id])
+        .output()
+        .unwrap();
+    let show_stdout = String::from_utf8_lossy(&show.stdout);
+    assert!(
+        !show_stdout.contains("Status: in_progress"),
+        "Orchestrated parent should not transition to InProgress. Output: {}",
+        show_stdout
+    );
+}
+
+// --- Path 2: Blocking link autorun (integration tests) ---
+
+#[test]
+fn test_blocking_link_autorun_starts_task_on_close() {
+    // When task A is closed and task B has a blocked-by link to A with autorun,
+    // B should be auto-started.
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    // Create task A (the blocker)
+    let out_a = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["task", "add", "Blocker task"])
+        .output()
+        .unwrap();
+    let a_id = extract_short_id(&String::from_utf8_lossy(&out_a.stdout));
+
+    // Create task B with --blocked-by A --autorun (creates link at add time)
+    let out_b = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args([
+            "task", "add", "Blocked autorun task",
+            "--blocked-by", &a_id, "--autorun",
+        ])
+        .output()
+        .unwrap();
+    let b_id = extract_short_id(&String::from_utf8_lossy(&out_b.stdout));
+
+    // Start and close A
+    Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["task", "start", &a_id])
+        .output()
+        .unwrap();
+
+    let close_output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["task", "close", &a_id, "--summary", "Done"])
+        .output()
+        .unwrap();
+    let close_stdout = String::from_utf8_lossy(&close_output.stdout);
+
+    // B should be auto-started
+    assert!(
+        close_stdout.contains("Auto-started (autorun)"),
+        "Blocked task with autorun should be auto-started on blocker close. Output: {}",
+        close_stdout
+    );
+
+    // Verify B is now InProgress
+    let show = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["task", "show", &b_id])
+        .output()
+        .unwrap();
+    let show_stdout = String::from_utf8_lossy(&show.stdout);
+    assert!(
+        show_stdout.contains("Status: in_progress"),
+        "Autorun task should be in_progress after blocker closes. Output: {}",
+        show_stdout
+    );
+}
+
+#[test]
+fn test_blocking_link_no_autorun_does_not_start() {
+    // When task A is closed and B has blocked-by without autorun, B should NOT auto-start.
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    // Create task A
+    let out_a = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["task", "add", "Blocker no-auto"])
+        .output()
+        .unwrap();
+    let a_id = extract_short_id(&String::from_utf8_lossy(&out_a.stdout));
+
+    // Create task B with --blocked-by A (NO --autorun)
+    let out_b = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args([
+            "task", "add", "Blocked no-autorun",
+            "--blocked-by", &a_id,
+        ])
+        .output()
+        .unwrap();
+    let b_id = extract_short_id(&String::from_utf8_lossy(&out_b.stdout));
+
+    // Start and close A
+    Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["task", "start", &a_id])
+        .output()
+        .unwrap();
+
+    let close_output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["task", "close", &a_id, "--summary", "Done"])
+        .output()
+        .unwrap();
+    let close_stdout = String::from_utf8_lossy(&close_output.stdout);
+
+    // B should NOT auto-start (no autorun flag)
+    assert!(
+        !close_stdout.contains("Auto-started"),
+        "Task without autorun should not be auto-started. Output: {}",
+        close_stdout
+    );
+
+    // Verify B is still Open
+    let show = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["task", "show", &b_id])
+        .output()
+        .unwrap();
+    let show_stdout = String::from_utf8_lossy(&show.stdout);
+    assert!(
+        show_stdout.contains("Status: open"),
+        "Task without autorun should remain open. Output: {}",
+        show_stdout
+    );
+}
+
+#[test]
+fn test_blocking_link_autorun_stays_blocked_with_multiple_blockers() {
+    // C is blocked by A and B (both with autorun). Closing only A should NOT start C.
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    // Create blocker tasks A and B
+    let out_a = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["task", "add", "Blocker A"])
+        .output()
+        .unwrap();
+    let a_id = extract_short_id(&String::from_utf8_lossy(&out_a.stdout));
+
+    let out_b = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["task", "add", "Blocker B"])
+        .output()
+        .unwrap();
+    let b_id = extract_short_id(&String::from_utf8_lossy(&out_b.stdout));
+
+    // Create task C blocked by A with autorun
+    let out_c = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args([
+            "task", "add", "Blocked by both",
+            "--blocked-by", &a_id, "--autorun",
+        ])
+        .output()
+        .unwrap();
+    let c_id = extract_short_id(&String::from_utf8_lossy(&out_c.stdout));
+
+    // Add second blocked-by link via task link (no --autorun needed; C already has autorun on one link)
+    aiki_task(
+        temp_dir.path(),
+        &["link", &c_id, "--blocked-by", &b_id],
+    )
+    .success();
+
+    // Close only A
+    Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["task", "start", &a_id])
+        .output()
+        .unwrap();
+    let close_output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["task", "close", &a_id, "--summary", "Done"])
+        .output()
+        .unwrap();
+    let close_stdout = String::from_utf8_lossy(&close_output.stdout);
+
+    // C should NOT auto-start (still blocked by B)
+    assert!(
+        !close_stdout.contains("Auto-started"),
+        "Task still blocked by B should not auto-start. Output: {}",
+        close_stdout
+    );
+
+    // Now close B too
+    Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["task", "start", &b_id])
+        .output()
+        .unwrap();
+    let close_output2 = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["task", "close", &b_id, "--summary", "Done"])
+        .output()
+        .unwrap();
+    let close_stdout2 = String::from_utf8_lossy(&close_output2.stdout);
+
+    // NOW C should auto-start (all blockers closed)
+    assert!(
+        close_stdout2.contains("Auto-started (autorun)"),
+        "Task should auto-start when all blockers are closed. Output: {}",
+        close_stdout2
+    );
+
+    // Verify C is InProgress
+    let show = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["task", "show", &c_id])
+        .output()
+        .unwrap();
+    let show_stdout = String::from_utf8_lossy(&show.stdout);
+    assert!(
+        show_stdout.contains("Status: in_progress"),
+        "C should be in_progress after all blockers closed. Output: {}",
+        show_stdout
+    );
+}

@@ -28,7 +28,7 @@ This creates and starts a task in one atomic command (quick-start).
 
 **"Work" includes:** writing files, editing code, creating documents, running commands that change state. Reading files to understand the task is OK before starting.
 
-**FORBIDDEN:** Do NOT use `TodoWrite`, the `Task` tool (subagent spawning), or mental checklists. These do not persist. Use `aiki task` for tracking and `aiki task run` for delegation.
+**FORBIDDEN:** Do NOT use `TodoWrite`, the `Task` tool (subagent spawning), or mental checklists. These do not persist. Use `aiki task` for tracking and `aiki run` for delegation.
 
 ### ❌ WRONG (don't do this)
 ```bash
@@ -186,22 +186,22 @@ This opens the conflicted change, lets you resolve the JJ conflict markers, and 
 
 ### Delegating Work to Subagents
 
-**Do NOT use native subagent tools to spawn agents.** Use `aiki task run` instead — it spawns a separate agent session with full aiki context (task tracking, provenance, hooks).
+**Do NOT use native subagent tools to spawn agents.** Use `aiki run` instead — it spawns a separate agent session with full aiki context (task tracking, provenance, hooks).
 
 Native subagent tools include:
 - **Claude Code**: `Task` tool (subagent spawning)
 - **Codex**: `spawn_agent`, `spawn_agents_parallel`
 - **Cursor**: Subagents (`/explore`, `/bash`, etc.) and Background Agents
 
-**Why:** Native subagents run without aiki context. Their work isn't tracked, isn't visible to other agents/humans, and doesn't persist. `aiki task run` gives the spawned agent the same aiki integration you have.
+**Why:** Native subagents run without aiki context. Their work isn't tracked, isn't visible to other agents/humans, and doesn't persist. `aiki run` gives the spawned agent the same aiki integration you have.
 
 **Scenario 1: User asks you to delegate an existing task**
 ```bash
 # Run synchronously (wait for agent to finish)
-aiki task run <task-id>
+aiki run <task-id>
 
 # Run in background (return immediately)
-aiki task run <task-id> --async
+aiki run <task-id> --async
 ```
 
 **Scenario 2: User asks you to have a subagent do something new**
@@ -210,7 +210,7 @@ aiki task run <task-id> --async
 aiki task add "Description of the work to delegate"
 
 # 2. Run it with a subagent
-aiki task run <task-id>
+aiki run <task-id>
 ```
 
 **Scenario 3: User asks you to run multiple things in parallel**
@@ -220,8 +220,8 @@ aiki task add "First piece of work"
 aiki task add "Second piece of work"
 
 # Run them concurrently in background
-aiki task run <id1> --async
-aiki task run <id2> --async
+aiki run <id1> --async
+aiki run <id2> --async
 ```
 
 ### ❌ WRONG: Using native subagents
@@ -236,10 +236,10 @@ spawn_agent(role="fixer", prompt="Go fix the tests")
 /bash fix the failing tests
 ```
 
-### ✅ CORRECT: Using aiki task run
+### ✅ CORRECT: Using aiki run
 ```bash
 aiki task add "Fix failing tests in auth module"
-aiki task run <task-id>
+aiki run <task-id>
 ```
 
 ### Quick Reference
@@ -279,10 +279,10 @@ aiki task close <task-id> --wont-do --summary "Already handled by existing code"
 aiki task close <id1> <id2> <id3> --summary "All done"
 
 # Delegate task to a subagent
-aiki task run <task-id>
+aiki run <task-id>
 
 # Delegate in background
-aiki task run <task-id> --async
+aiki run <task-id> --async
 
 # Add a relationship between tasks
 aiki task link <id> --blocked-by <blocker-id>       # Block until blocker closes
@@ -470,7 +470,7 @@ Example:
 ### Common Pitfalls
 
 - **Using TodoWrite instead of `aiki task`** ← Most common mistake!
-- **Using the Task tool instead of `aiki task run`** ← Native subagents lack aiki context!
+- **Using the Task tool instead of `aiki run`** ← Native subagents lack aiki context!
 - **Not leaving progress comments on long tasks** ← Easy to forget!
 - **Not reporting completed tasks to user** ← User can't see what was done!
 - **Not explicitly stopping tasks before switching to new work** ← Tasks don't auto-stop!
