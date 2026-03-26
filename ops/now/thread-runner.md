@@ -65,18 +65,54 @@ Run `aiki task list` to see your backlog.
 
 **File:** `cli/src/tasks/lanes.rs`
 
-Add `parse_thread_id(input: &str) -> Result<(String, String)>`:
+Add `ThreadId` struct:
 
-- Format: `<head>:<tail>` or `<head>` (shortcut for `<head>:<head>`)
-- Both halves support prefix resolution (reuse `resolve_task_id_in_graph`)
-- Split on `:` — if no colon, head = tail = input
-- Error on empty halves
+```rust
+/// Identifies a thread — a sequential chunk of tasks within a lane.
+/// Single-task threads have head == tail.
+pub struct ThreadId {
+    pub head: String,  // first task ID in the chain
+    pub tail: String,  // last task ID in the chain
+}
+
+impl ThreadId {
+    /// Parse from wire format: `"head:tail"` or `"head"` (single-task shortcut).
+    pub fn parse(input: &str) -> Result<Self>;
+
+    /// Single-task thread (head == tail).
+    pub fn single(task_id: String) -> Self;
+
+    /// Full-ID serialization for env vars, session files, history metadata.
+    pub fn serialize(&self) -> String;
+
+    pub fn is_single(&self) -> bool { self.head == self.tail }
+}
+
+impl fmt::Display for ThreadId {
+    // Uses short_id: "wttorov:zllkwzr" or "wttorov" when head == tail
+
+}
+```
+
+Two constructors — `parse()` for stored/wire format, `resolve()` for CLI input:
+
+- `parse(input)`: split on `:` — if no colon, head = tail = input. Error on empty halves. **No prefix resolution.** Expects full 32-char task IDs. Used by session files, env vars, history metadata — contexts where no task graph is available.
+- `resolve(input, graph)`: same splitting, but resolves both halves via `resolve_task_id_in_graph`. Used only at CLI entry points (`--thread` flag). Errors if resolution fails.
 
 Examples:
 ```
-wttorov              → (resolve("wttorov"), resolve("wttorov"))   # single task
-wttorov:zllkwzrv     → (resolve("wttorov"), resolve("zllkwzrv"))  # multi-task thread
+ThreadId::parse("full32chars...:full32chars...")  → ThreadId { head: "full32...", tail: "full32..." }
+ThreadId::parse("full32chars...")                 → ThreadId { head: "full32...", tail: "full32..." }
+ThreadId::resolve("wttorov", &graph)              → ThreadId { head: resolve("wttorov"), tail: resolve("wttorov") }
+ThreadId::resolve("wttorov:zllkwzrv", &graph)     → ThreadId { head: resolve("wttorov"), tail: resolve("zllkwzrv") }
+ThreadId::single("abc123")                        → ThreadId { head: "abc123", tail: "abc123" }
 ```
+
+`ThreadId` is the internal representation. Two output formats:
+- `Display`/`to_string()` — short IDs for human-facing output (`"wttorov:zllkwzr"` or `"wttorov"`)
+- `serialize()` — full IDs for env vars, session files, and history metadata (`"full32chars...:full32chars..."`)
+
+**Context boundary rule:** Prefix resolution only happens at CLI entry points. All persistence layers (env vars, session files, history) store and read full IDs via `parse()`/`serialize()`. This avoids requiring a task graph in contexts that don't have one (e.g., global session file scanning in `session/mod.rs`).
 
 Also rename in this file:
 - `LaneSession` → `Thread`
@@ -92,19 +128,25 @@ Also rename in this file:
   1. `AIKI_THREAD` env var (guardrail — cannot be overridden)
   2. `--thread` flag
   3. None (normal scope)
-- When set: parse thread ID via `parse_thread_id`, walk `needs-context` chain from head to tail to get all task IDs, filter task set to those IDs
+- When set via `--thread`: resolve thread ID via `ThreadId::resolve(input, graph)`. When set via `AIKI_THREAD`: parse via `ThreadId::parse(input)` (full IDs, no graph needed).
+- Walk `needs-context` chain from head, but **stop at lane boundary**: only include tasks that share the same parent as the head task. If a `needs-context` link crosses to a task with a different parent, treat it as the end of the thread. This prevents accidental cross-lane/cross-parent leakage through stray `needs-context` links.
+- Filter task set to the validated chain IDs
 
 ### 3. Set AIKI_THREAD on spawned sessions
 
 **Files:** `cli/src/agents/runtime/claude_code.rs`, `cli/src/agents/runtime/codex.rs`
 
-- Replace `.env("AIKI_TASK", &options.task_id)` with `.env("AIKI_THREAD", thread_env)`
-- Build value: `"{head}:{tail}"` for multi-task threads, `"{head}"` for single-task (head == tail)
+- Replace `.env("AIKI_TASK", &options.task_id)` with `.env("AIKI_THREAD", &options.thread.serialize())`
 
 **File:** `cli/src/agents/runtime/mod.rs`
 
-- Replace `task_id: String` with `thread_head: String` and `thread_tail: String` in `AgentSpawnOptions`
-- Add `with_thread_id()` builder method
+- Replace `task_id: String` and `chain_task_ids: Option<Vec<String>>` with `thread: ThreadId` in `AgentSpawnOptions` — threads subsume both fields
+- Remove `with_chain_task_ids()` builder
+- `AgentSpawnOptions::new()` takes a `ThreadId` (single-task: `ThreadId::single(id)`, multi-task: constructed from chain resolution)
+- Update all call sites that set `task_id` or `chain_task_ids` (e.g., `commands/run.rs` chain resolution) to build a `ThreadId` instead
+- Rename `BackgroundHandle.task_id` → `BackgroundHandle.thread: ThreadId` and update construction in `claude_code.rs` and `codex.rs`
+- Update `discover_session_id(cwd, task_id)` → `discover_session_id(cwd, thread: &ThreadId)`, pass `thread.serialize()` to the history lookup. **The history lookup does an exact match on the full serialized thread ID** — not a head-only match. The caller always has the full `ThreadId`, so there is no reason to weaken the match.
+- Update `spawn_and_discover` callers in `commands/run.rs` to use `handle.thread`
 
 ### 4. Rename `--next-session` to `--next-thread`
 
@@ -126,25 +168,19 @@ Also rename in this file:
 
 ### 5. Replace session.task with session.thread
 
-Replace `AIKI_TASK` with `AIKI_THREAD` across all session paths. Session stores the raw thread ID string — parsing into head/tail happens at read time via `parse_thread_id`.
+Replace `AIKI_TASK` with `AIKI_THREAD` across all session paths. Session stores the full serialized thread ID string — parsing into head/tail happens at read time via `ThreadId::parse()` (no prefix resolution — full IDs only at this layer).
 
 **Env var:** `AIKI_THREAD=<head>:<tail>` (or just `<head>` when head == tail)
 
 **File:** `cli/src/session/mod.rs`
 
 - Remove `task: Option<String>` field
-- Add `thread: Option<String>` field (stores raw thread ID: `"head:tail"` or `"head"`)
-- Replace `with_task_from_env()` with `with_thread_from_env()` reading `AIKI_THREAD`
-- Add `thread_head()` and `thread_tail()` accessor methods that parse on demand
+- Add `thread: Option<ThreadId>` field (parsed once at construction time)
+- Replace `with_task_from_env()` with `with_thread_from_env()` reading `AIKI_THREAD` → `ThreadId::parse()`
+- Replace `task()` accessor with `thread()` returning `Option<&ThreadId>`
+- Session file serialization: write `thread=<wire>` via `ThreadId::serialize()`, read via `ThreadId::parse()`
 
-**File:** `cli/src/agents/runtime/claude_code.rs`, `cli/src/agents/runtime/codex.rs`
-
-- Replace `.env("AIKI_TASK", &options.task_id)` with `.env("AIKI_THREAD", &options.thread_id)`
-
-**File:** `cli/src/agents/runtime/mod.rs`
-
-- Replace `task_id: String` with `thread_id: String` in `AgentSpawnOptions`
-- `AgentSpawnOptions::new()` takes a thread ID (single task: just the task ID; multi-task thread: `"head:tail"`)
+**Note:** `AgentSpawnOptions` and spawner env var changes are in Step 3 — not repeated here.
 
 **File:** `cli/src/flows/core/hooks.yaml`
 
@@ -152,20 +188,21 @@ Replace `AIKI_TASK` with `AIKI_THREAD` across all session paths. Session stores 
   ```yaml
   - if: event.task.id == session.thread.tail && session.mode == "interactive"
   ```
-  This fires `session.end` when the last task in the thread closes.
+  **Behavioral change:** Today, closing the session's single task triggers `session.end`. With threads, only closing the *tail* task (last in the chain) triggers it. For single-task threads (head == tail) behavior is identical. For multi-task threads, closing earlier tasks no longer terminates the session — the agent keeps working through its backlog. This is the intended semantic shift.
 
 **File:** `cli/src/flows/engine.rs`
 
 - Update `find_task_session` call in `execute_session_end` to use thread tail
 - Expose `session.thread` (raw ID), `session.thread.head`, and `session.thread.tail` as flow variables (head/tail parsed on demand)
 
-**File:** `cli/src/commands/plan.rs` (or wherever `aiki plan` sets up its session)
+**File:** `cli/src/commands/plan.rs`
 
-- Update to use `AIKI_THREAD` instead of `AIKI_TASK` (single-task: just the task ID)
+- Replace `.env("AIKI_TASK", plan_task_id)` with `.env("AIKI_THREAD", ThreadId::single(plan_task_id).serialize())`
+- Plan sessions are always single-task threads (the plan task itself)
 
 **File:** `cli/src/history/recorder.rs`
 
-- Line 59: `run_task_id: session.task()` → `run_thread_id: session.thread()`
+- Line 59: `run_task_id: session.task()` → `run_thread: session.thread().map(|t| t.serialize())`
 
 **File:** `cli/src/history/types.rs`
 
@@ -174,7 +211,7 @@ Replace `AIKI_TASK` with `AIKI_THREAD` across all session paths. Session stores 
 **File:** `cli/src/history/storage.rs`
 
 - Line 477: `find_session_started_for_run_task` → `find_session_started_for_thread`
-- Line 483-485: match on `run_thread_id` instead of `run_task_id`, compare thread head (not exact match on full thread ID — the caller passes the head task ID)
+- Line 483-485: match on `run_thread_id` instead of `run_task_id`, **exact match on the full serialized thread ID**. The caller always has the full `ThreadId` and passes `thread.serialize()`. Head-only matching would alias distinct threads that share a head task, defeating the purpose of storing the full ID.
 - Line 624: metadata key `run_task` → `run_thread`
 
 **Cleanup:**
@@ -200,7 +237,7 @@ hooks.yaml: task.closed
       → returns PID for SIGTERM
 ```
 
-**Change:** `find_task_session` becomes `find_thread_session`. Instead of exact match `task=X == X`, it parses `thread=head:tail` and compares tail against the lookup ID. The function signature stays the same (takes a task ID, returns PID+mode), but matching logic changes.
+**Change:** `find_task_session` becomes `find_thread_session`. Reads `thread=<wire>` from session file, parses via `ThreadId::parse()` (full IDs, no graph needed), and compares `thread.tail` against the lookup task ID. The function signature stays the same (takes a task ID, returns PID+mode), but matching logic changes.
 
 **Path 2: `aiki run --async` → discover session UUID**
 
@@ -218,8 +255,8 @@ commands/run.rs:353: discover_session_id(cwd, &handle.task_id)
 2. `ConversationEvent::SessionStart.run_task_id` → `.run_thread` (history/types.rs:81)
 3. Serialization: `run_task` metadata key → `run_thread` (history/storage.rs:624)
 4. Deserialization: parse `run_thread` (history/storage.rs:793)
-5. `find_session_started_for_run_task()` → `find_session_started_for_run_thread()`, match on `run_thread` field (history/storage.rs:477)
-6. `discover_session_id(cwd, task_id)` → `discover_session_id(cwd, thread_id)`, calls renamed function (agents/runtime/mod.rs:283)
+5. `find_session_started_for_run_task()` → `find_session_started_for_run_thread()`, exact match on full serialized `run_thread` field (history/storage.rs:477)
+6. `discover_session_id(cwd, task_id)` → `discover_session_id(cwd, thread: &ThreadId)`, passes `thread.serialize()` to the renamed function (agents/runtime/mod.rs:283)
 7. `spawn_and_discover` callers in commands/run.rs: `handle.task_id` → `handle.thread_id`
 8. `BackgroundHandle` construction in claude_code.rs:104 and codex.rs:143: `task_id:` → `thread_id:` (value stays `options.task_id` — the head task IS the thread head)
 9. `record_session_start` (history/recorder.rs:59): `session.task()` feeds `run_thread` — value unchanged until Path 3 lands
@@ -240,7 +277,7 @@ Read:
   session/mod.rs:1045: parses "task=" line from session file
 ```
 
-**Change:** All writes become `thread=<head:tail>` (or `thread=<head>` for single task). All reads parse `thread=` line. Env var becomes `AIKI_THREAD`.
+**Change:** All writes use `ThreadId::serialize()` → `thread=<full-ids>`. All reads use `ThreadId::parse()`. Env var becomes `AIKI_THREAD`. `ThreadId` is constructed once at the boundary — no repeated parsing downstream.
 
 **Path 4: History recording**
 
@@ -250,7 +287,7 @@ history/recorder.rs:59: run_task_id: session.task()
   → read back by find_session_started_for_run_task
 ```
 
-**Change:** Field becomes `run_thread_id`, metadata key becomes `run_thread`. Stores thread ID (head:tail or head).
+**Change:** Field becomes `run_thread`, metadata key becomes `run_thread`. Stores full IDs via `ThreadId::serialize()`.
 
 ### 6. Update prompt
 
@@ -292,11 +329,14 @@ Thread IDs use `head:tail` for multi-task threads, bare `head` for single-task t
 
 ## Testing
 
-- Unit test: `parse_thread_id` — `"abc"` → `(abc, abc)`, `"abc:def"` → `(abc, def)`, empty halves error
+- Unit test: `ThreadId::parse` — `"abc"` → `{ head: abc, tail: abc }`, `"abc:def"` → `{ head: abc, tail: def }`, empty halves error, `serialize()` roundtrip, `to_string()` uses short IDs
 - Unit test: prefix resolution on both halves
 - Unit test: `run_list` with `AIKI_THREAD` filters to thread tasks only
 - Unit test: `AIKI_THREAD` takes precedence over `--thread` flag
 - Integration: create parent + subtasks with needs-context, verify thread filtering
+- Unit test: thread chain walk stops at parent boundary — a `needs-context` link to a task under a different parent is not included in the thread
+- Unit test: `ThreadId::parse()` rejects short/prefix IDs (expects full 32-char IDs)
+- Unit test: `ThreadId::resolve()` resolves prefixes via graph
 - Verify `AIKI_THREAD` env var is set on spawned processes (replaces `AIKI_TASK`)
 - Verify `-o id` output mode works with thread filtering
 - Verify `session.thread.tail` closes interactive session correctly
@@ -336,6 +376,12 @@ Other templates (`review/*`, `resolve.md`, `fix.md`, `plan.md`) don't reference 
 **File:** `cli/docs/aiki-for-clawbots.md`
 
 - Check for any `--next-session` references, update to `--next-thread`
+
+## Migration
+
+This must land as a single atomic change. Session files written by old code use `task=<id>`, new code expects `thread=<wire>`. If the change is split across multiple commits with running agents in between, old-format session files won't be found by the new `find_thread_session` lookup.
+
+**Mitigation if incremental landing is needed:** Add a fallback in `find_thread_session` that also checks for `task=` lines (treating them as `ThreadId::single(task_id)`). Remove the fallback after one release cycle. For this plan, prefer a single atomic change and skip the fallback.
 
 ## Not in scope
 
