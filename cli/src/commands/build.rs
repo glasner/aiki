@@ -116,7 +116,6 @@ pub struct BuildOpts {
 /// Maximum number of fix iterations before giving up.
 const MAX_BUILD_ITERATIONS: usize = 10;
 
-
 /// Assemble a build workflow for a plan path (includes Plan step).
 ///
 /// When `opts.fix_after` is true, the static Fix step is omitted — fix iteration
@@ -436,7 +435,8 @@ fn run_continue_async(cwd: &Path, epic_id: &str, args: BuildArgs) -> Result<()> 
     };
 
     let wf = build_workflow_from_epic(cwd, &epic_id, &plan_path, &opts);
-    wf.run_build(RunMode::Quiet, &opts).map_err(anyhow_to_aiki)?;
+    wf.run_build(RunMode::Quiet, &opts)
+        .map_err(anyhow_to_aiki)?;
 
     Ok(())
 }
@@ -780,10 +780,7 @@ pub(crate) fn run_decompose_step(
     // Run decompose if no subtasks exist
     let subtasks = get_subtasks(&graph, &epic_id);
     if subtasks.is_empty() {
-        let options = super::decompose::DecomposeOptions {
-            template,
-            agent,
-        };
+        let options = super::decompose::DecomposeOptions { template, agent };
         let decompose_task_id =
             super::decompose::run_decompose(&ctx.cwd, &plan_path, &epic_id, options, false)?;
 
@@ -831,30 +828,34 @@ pub(crate) fn run_loop_step(
     })
 }
 
-/// Review step: create a code review scoped to the plan and run it.
+/// Build the review scope for a build workflow review step.
+///
+/// Uses `Task` scope so that downstream fix tasks become subtasks of the epic,
+/// which triggers `reopen_if_closed` and keeps the epic in-progress during the
+/// review/fix cycle.
+fn build_review_scope(epic_id: &str) -> super::review::ReviewScope {
+    use super::review::{ReviewScope, ReviewScopeKind};
+    ReviewScope {
+        kind: ReviewScopeKind::Task,
+        id: epic_id.to_string(),
+        task_ids: vec![],
+    }
+}
+
+/// Review step: create a task-scoped review for the epic and run it.
 pub(crate) fn run_review_step(
     ctx: &mut WorkflowContext,
     template: Option<String>,
     agent: Option<String>,
 ) -> anyhow::Result<StepResult> {
-    use super::review::{create_review, CreateReviewParams, ReviewScope, ReviewScopeKind};
+    use super::review::{create_review, CreateReviewParams};
 
     let epic_id = ctx
         .task_id
         .as_ref()
         .ok_or_else(|| AikiError::InvalidArgument("No epic ID in workflow context".to_string()))?
         .clone();
-    let plan_path = ctx
-        .plan_path
-        .as_ref()
-        .ok_or_else(|| AikiError::InvalidArgument("No plan path in workflow context".to_string()))?
-        .clone();
-
-    let scope = ReviewScope {
-        kind: ReviewScopeKind::Code,
-        id: plan_path.clone(),
-        task_ids: vec![],
-    };
+    let scope = build_review_scope(&epic_id);
 
     let result = create_review(
         &ctx.cwd,
@@ -2052,9 +2053,9 @@ mod tests {
         }
         match existing_epic {
             Some((epic, _)) if epic.status == TaskStatus::Closed => (true, false),
-            Some((_, true)) => (false, false),  // Valid incomplete epic — reuse
-            Some((_, false)) => (true, true),    // Invalid epic (no subtasks) — close and create new
-            None => (true, false),               // No epic — create new
+            Some((_, true)) => (false, false), // Valid incomplete epic — reuse
+            Some((_, false)) => (true, true),  // Invalid epic (no subtasks) — close and create new
+            None => (true, false),             // No epic — create new
         }
     }
 
@@ -2121,11 +2122,12 @@ mod tests {
         fix: bool,
         fix_template: Option<&str>,
     ) -> (bool, bool) {
-        let fix_template = fix_template
-            .map(|s| s.to_string())
-            .or(if fix { Some("fix".to_string()) } else { None });
-        let review_after =
-            review_template.is_some() || review || fix_template.is_some();
+        let fix_template = fix_template.map(|s| s.to_string()).or(if fix {
+            Some("fix".to_string())
+        } else {
+            None
+        });
+        let review_after = review_template.is_some() || review || fix_template.is_some();
         let fix_after = fix_template.is_some();
         (review_after, fix_after)
     }
@@ -2160,7 +2162,8 @@ mod tests {
 
     #[test]
     fn test_build_flags_review_template_only() {
-        let (review_after, fix_after) = resolve_build_flags(false, Some("custom/review"), false, None);
+        let (review_after, fix_after) =
+            resolve_build_flags(false, Some("custom/review"), false, None);
         assert!(review_after);
         assert!(!fix_after);
     }
@@ -2175,10 +2178,7 @@ mod tests {
 
     // --- Stale build detection contract (pure logic) ---
 
-    fn find_stale_builds(
-        tasks: &FastHashMap<String, Task>,
-        plan_path: &str,
-    ) -> Vec<String> {
+    fn find_stale_builds(tasks: &FastHashMap<String, Task>, plan_path: &str) -> Vec<String> {
         tasks
             .values()
             .filter(|t| {
@@ -2249,7 +2249,10 @@ mod tests {
         let plan_file = temp_dir.path().join("draft-plan.md");
         std::fs::write(&plan_file, "---\ndraft: true\n---\n# My Plan\n").unwrap();
         let metadata = crate::plans::parse_plan_metadata(&plan_file);
-        assert!(metadata.draft, "Plan with draft: true should be detected as draft");
+        assert!(
+            metadata.draft,
+            "Plan with draft: true should be detected as draft"
+        );
     }
 
     #[test]
@@ -2258,7 +2261,10 @@ mod tests {
         let plan_file = temp_dir.path().join("ready-plan.md");
         std::fs::write(&plan_file, "---\ndraft: false\n---\n# My Plan\n").unwrap();
         let metadata = crate::plans::parse_plan_metadata(&plan_file);
-        assert!(!metadata.draft, "Plan with draft: false should not be draft");
+        assert!(
+            !metadata.draft,
+            "Plan with draft: false should not be draft"
+        );
     }
 
     #[test]
@@ -2267,7 +2273,10 @@ mod tests {
         let plan_file = temp_dir.path().join("no-fm.md");
         std::fs::write(&plan_file, "# Simple Plan\n\nNo frontmatter here.\n").unwrap();
         let metadata = crate::plans::parse_plan_metadata(&plan_file);
-        assert!(!metadata.draft, "Plan without frontmatter should not be draft");
+        assert!(
+            !metadata.draft,
+            "Plan without frontmatter should not be draft"
+        );
     }
 
     // --- close_epic_as_invalid contract ---
@@ -2301,7 +2310,10 @@ mod tests {
         let epic = make_task("epic1", "Epic", TaskStatus::InProgress);
         let has_subtasks = true;
         let (create_new, close_existing) = epic_resume_decision(false, Some((&epic, has_subtasks)));
-        assert!(!create_new, "Should reuse existing epic when subtasks exist (skip decompose)");
+        assert!(
+            !create_new,
+            "Should reuse existing epic when subtasks exist (skip decompose)"
+        );
         assert!(!close_existing, "Should not close a valid in-progress epic");
     }
 
@@ -2311,7 +2323,10 @@ mod tests {
         let epic = make_task("epic1", "Epic", TaskStatus::InProgress);
         let (create_new, close_existing) = epic_resume_decision(true, Some((&epic, true)));
         assert!(create_new, "--restart must create a new epic");
-        assert!(close_existing, "--restart must close the existing in-progress epic");
+        assert!(
+            close_existing,
+            "--restart must close the existing in-progress epic"
+        );
     }
 
     /// When the build target is an epic ID (task ID), the plan path is not
@@ -2325,7 +2340,10 @@ mod tests {
         // inspection. This test locks down the routing decision: task IDs must
         // take the epic path where no plan file validation occurs.
         let plan_path = "nonexistent/path/to/plan.md";
-        assert!(!is_task_id(plan_path), "Plan path must NOT be routed as epic ID");
+        assert!(
+            !is_task_id(plan_path),
+            "Plan path must NOT be routed as epic ID"
+        );
     }
 
     // --- drive_build / fix iteration contract ---
@@ -2333,7 +2351,10 @@ mod tests {
     /// The build fix iteration loop must cap at MAX_BUILD_ITERATIONS (10).
     #[test]
     fn test_max_iterations_cap() {
-        assert_eq!(MAX_BUILD_ITERATIONS, 10, "Build fix iteration must cap at 10");
+        assert_eq!(
+            MAX_BUILD_ITERATIONS, 10,
+            "Build fix iteration must cap at 10"
+        );
         // Simulate: when every review returns issues, iteration counter stops at MAX
         let mut iteration = 0;
         let mut cycles_injected = 0;
@@ -2394,7 +2415,10 @@ mod tests {
             .and_then(|c| c.parse::<usize>().ok())
             .unwrap_or(0)
             > 0;
-        assert!(has_issues, "issue_count=3 should indicate actionable issues");
+        assert!(
+            has_issues,
+            "issue_count=3 should indicate actionable issues"
+        );
     }
 
     /// has_review_issues returns false when issue_count is 0.
@@ -2408,7 +2432,10 @@ mod tests {
             .and_then(|c| c.parse::<usize>().ok())
             .unwrap_or(0)
             > 0;
-        assert!(!has_issues, "issue_count=0 should indicate no actionable issues");
+        assert!(
+            !has_issues,
+            "issue_count=0 should indicate no actionable issues"
+        );
     }
 
     /// build_workflow omits static Fix step when fix_after is true (drive_build handles it).
@@ -2466,6 +2493,21 @@ mod tests {
         let names: Vec<_> = wf.steps.iter().map(|s| s.name()).collect();
         assert_eq!(names, vec!["plan", "decompose", "loop"]);
         assert_eq!(wf.steps.len(), 3);
+    }
+
+    #[test]
+    #[test]
+    fn test_build_review_scope_uses_task_kind() {
+        use crate::commands::review::ReviewScopeKind;
+
+        let epic_id = "onnlrwntommtvtnzovwromnkyulorwtz";
+        let scope = super::build_review_scope(epic_id);
+
+        // Must be Task scope so that fix tasks become subtasks of the epic,
+        // triggering reopen_if_closed. Using Code/Plan scope breaks this.
+        assert_eq!(scope.kind, ReviewScopeKind::Task);
+        assert_eq!(scope.id, epic_id);
+        assert!(scope.task_ids.is_empty());
     }
 
     #[test]
