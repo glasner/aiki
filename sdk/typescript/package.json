@@ -9,10 +9,6 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
-    },
-    "./opencode": {
-      "types": "./dist/opencode/index.d.ts",
-      "import": "./dist/opencode/index.js"
     }
   },
   "files": [

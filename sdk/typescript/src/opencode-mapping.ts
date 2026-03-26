@@ -3,7 +3,7 @@ import type {
   ChangeOperation,
   EditDetail,
   WebOperation,
-} from "../types.js";
+} from "./types.js";
 
 // ============================================================================
 // OpenCode Tool → Aiki Event Mapping

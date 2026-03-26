@@ -41,3 +41,16 @@ export type {
 // Client
 export { AikiHooksClient } from "./client.js";
 export type { AikiClientOptions, SessionOptions } from "./client.js";
+
+// OpenCode tool mapping utilities
+export {
+  classifyTool,
+  getBeforeEvent,
+  getAfterEvent,
+  normalizeToolName,
+  buildChangeOperation,
+  buildReadPayload,
+  buildWebPayload,
+  parseMcpServer,
+} from "./opencode-mapping.js";
+export type { AikiEventDomain } from "./opencode-mapping.js";
