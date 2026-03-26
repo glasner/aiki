@@ -207,7 +207,7 @@ Final line of a completed pipeline. Shows per-agent breakdown when multiple agen
 > **Mockup format:** monospace, character-accurate, 1-char left padding, right-aligned metadata.
 > Every line has a `←` style annotation suffix (never rendered) describing its color/formatting.
 
-### Flow 1: `aiki task run <id>`
+### Flow 1: `aiki run <id>`
 
 Monitors an agent running a task. If the task has subtasks, shows a subtask table (same component used by build/fix flows).
 
@@ -217,7 +217,7 @@ Monitors an agent running a task. If the task has subtasks, shows a subtask tabl
 
 ```
 [80 cols]
- $ aiki task run <id>                                    ← terminal prompt
+ $ aiki run <id>                                    ← terminal prompt
                                                          ← blank row
  ⠋ task                                                  ← yellow spinner, fg name
  ⎿ Reading task graph...                                 ← dim ⎿, yellow text

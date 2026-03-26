@@ -246,7 +246,7 @@ Skills are injected when an agent starts a task via `aiki task start`. Aiki foll
 3. Prepend skill instructions to the task's main instructions
 4. Agent receives: skill context + template instructions + subtask list
 
-**Why auto-inject instead of model-invoked?** Unlike Claude Code where users manually invoke skills (`/skill-name`) or models decide based on description matching, aiki skills are **deterministically injected** based on task metadata. This is more reliable for workflow automation — the right context is always present when agents start work via `aiki task run`.
+**Why auto-inject instead of model-invoked?** Unlike Claude Code where users manually invoke skills (`/skill-name`) or models decide based on description matching, aiki skills are **deterministically injected** based on task metadata. This is more reliable for workflow automation — the right context is always present when agents start work via `aiki run`.
 
 **Respecting Claude Code extension fields during injection:**
 - `disable-model-invocation: true` → exclude from `<available_skills>` XML (agents can't discover it)
@@ -434,7 +434,7 @@ Aiki will parse and store all Claude Code extension fields but implement their b
 1. Update `.aiki/tasks/review.md` to reference `aiki-review` skill
 2. Remove `.aiki/tasks/review/criteria/*` subtask templates
 3. Add `references/` directory to `aiki-review` skill for supplementary content
-4. Test review workflow with skill injection (both `aiki review` and `aiki task run`)
+4. Test review workflow with skill injection (both `aiki review` and `aiki run`)
 
 ### Phase 5: Documentation & Tooling
 1. `aiki skill list` — show discovered skills (name, description, location)
@@ -448,7 +448,7 @@ Aiki will parse and store all Claude Code extension fields but implement their b
 2. Model-invoked skill activation (agents choose skills from `<available_skills>` XML)
 3. Multiple skills per task (`skills: [aiki-review, security-audit]`)
 4. Skill composition (one skill referencing another)
-5. Support `context: fork` + `agent` (run skill in subagent via `aiki task run`)
+5. Support `context: fork` + `agent` (run skill in subagent via `aiki run`)
 6. Support `$ARGUMENTS` / `$N` string substitutions for parameterized skills
 7. Support `!`command`` dynamic content preprocessing (Claude Code extension)
 
@@ -481,7 +481,7 @@ Aiki will parse and store all Claude Code extension fields but implement their b
 ## Success Criteria
 
 1. Users can customize review criteria by editing `.aiki/skills/aiki-review/SKILL.md`
-2. Skills work with `aiki task run` (delegated agents receive skill context)
+2. Skills work with `aiki run` (delegated agents receive skill context)
 3. Skills are portable (can copy `.aiki/skills/` across projects)
 4. No breaking changes to existing templates
 5. Clear migration path from subtask templates to skills

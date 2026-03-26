@@ -1,31 +1,30 @@
 Bugs:
-- add reserved status
-- worker theread
-- session run command
-- output on run
-- fix loop
-- fix token consumption
+- thread runner
+- workflow split -> commands
 
+- fix claude session resume
 - hung fix
 - fix session isolation
 
 Now:
+- better reviews/
 - cleanup loop/fix commands
-- token usage
-- task heartbeat (could be replaced by acp)
+- track token usage
+- metrics
+- new tui
 
 Next:
-- registry
+- codex profile support (simplify settings overrides)
+- plugin folders > plugin search > registry
 - automatic agent failover
 - move aiki context out into an aiki skill(s) (reduce AGENTS.md)
 - finish hooks rename -> rename actions to commands?
+- - task heartbeat (could be replaced by acp)
 - clawmart fasttrack
-- context usage re: lance
 - workflow hooks commands -> review loop plug
 - formalize task kinds -> conflict command
 - plugin directory -> plugin search
 - skill injection
-- metrics
 - block in yaml
 - branched sessions
 - cursor third party hooks

@@ -28,6 +28,7 @@ use crate::tasks::{
 pub fn run(
     id: Option<String>,
     run_async: bool,
+    force: bool,
     next_session: bool,
     lane: Option<String>,
     agent: Option<String>,
@@ -36,7 +37,7 @@ pub fn run(
     output: Option<OutputFormat>,
 ) -> Result<()> {
     let cwd = std::env::current_dir().map_err(|e| AikiError::Other(e.into()))?;
-    run_impl(&cwd, id, run_async, next_session, lane, agent, template, data, output)
+    run_impl(&cwd, id, run_async, force, next_session, lane, agent, template, data, output)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -44,6 +45,7 @@ fn run_impl(
     cwd: &Path,
     id: Option<String>,
     run_async: bool,
+    force: bool,
     next_session: bool,
     lane: Option<String>,
     agent: Option<String>,
@@ -228,7 +230,50 @@ fn run_impl(
             }
         }
     } else {
-        id.expect("id must be Some after validation")
+        let target_id = id.expect("id must be Some after validation");
+        let events = read_events(cwd)?;
+        let graph = materialize_graph(&events);
+
+        let target_task_id = resolve_task_id_in_graph(&graph, &target_id)?;
+        let task = find_task(&graph.tasks, &target_task_id)?;
+
+        match task.status {
+            TaskStatus::Reserved => {
+                if force {
+                    let released = TaskEvent::Released {
+                        task_ids: vec![target_task_id.clone()],
+                        reason: Some("Force-released by aiki run --force".to_string()),
+                        timestamp: chrono::Utc::now(),
+                    };
+                    write_event(cwd, &released)?;
+                } else {
+                    return Err(AikiError::InvalidArgument(format!(
+                        "Task '{}' is reserved and already pending a run. Use --force to override and re-run it.",
+                        target_task_id
+                    )));
+                }
+            }
+            TaskStatus::InProgress => {
+                if force {
+                    let stopped = TaskEvent::Stopped {
+                        task_ids: vec![target_task_id.clone()],
+                        reason: Some("Force-stopped by aiki run --force".to_string()),
+                        session_id: None,
+                        turn_id: None,
+                        timestamp: chrono::Utc::now(),
+                    };
+                    write_event(cwd, &stopped)?;
+                } else {
+                    return Err(AikiError::InvalidArgument(format!(
+                        "Task '{}' is already in progress. Use --force to override and re-run it.",
+                        target_task_id
+                    )));
+                }
+            }
+            _ => {}
+        }
+
+        target_task_id
     };
 
     // Build options
@@ -248,18 +293,79 @@ fn run_impl(
     };
 
     // Rollback claim on spawn failure
-    if result.is_err() {
-        if let Some(ref cid) = claimed_id {
-            let rollback_event = TaskEvent::Released {
-                task_ids: vec![cid.clone()],
-                reason: Some("Spawn failed, rolling back claim".to_string()),
-                timestamp: chrono::Utc::now(),
-            };
-            let _ = write_event(cwd, &rollback_event);
-        }
-    }
+    rollback_on_spawn_failure(cwd, &claimed_id, &result);
 
     result
+}
+
+/// Roll back a task claim if spawn failed and the task is still in Reserved status.
+///
+/// Re-reads the event log to check if the agent already started the task before
+/// emitting a Released event. If reading the event log itself fails, emits a
+/// Released event unconditionally to avoid stranding the task in Reserved.
+pub(crate) fn rollback_on_spawn_failure(
+    cwd: &Path,
+    claimed_id: &Option<String>,
+    result: &Result<()>,
+) {
+    if let Err(ref spawn_err) = result {
+        if let Some(ref cid) = claimed_id {
+            let reason = format!("Spawn failed: {spawn_err}");
+            try_rollback_reserved(cwd, cid, &reason);
+        }
+    }
+}
+
+/// Re-read events, check the task's current status, and emit a Released event
+/// if the task is still Reserved. If the task is not found in the graph,
+/// returns without emitting any event. If reading events fails, assumes
+/// Reserved to avoid stranding the task.
+///
+/// This is the shared rollback logic used by both `rollback_on_spawn_failure`
+/// (in run.rs) and `rollback_if_still_reserved` (in runner.rs).
+pub(crate) fn try_rollback_reserved(cwd: &Path, task_id: &str, reason: &str) {
+    let current_status = match read_events(cwd) {
+        Ok(events) => match materialize_graph(&events).tasks.get(task_id).map(|t| t.status) {
+            Some(status) => status,
+            None => return, // Task not in graph — nothing to roll back
+        },
+        Err(_) => {
+            // Cannot determine status — assume Reserved to avoid stranding
+            TaskStatus::Reserved
+        }
+    };
+
+    if let Some(event) = rollback_claim_if_reserved(task_id, current_status, Some(reason)) {
+        let _ = write_event(cwd, &event);
+    }
+}
+
+/// Build a Released rollback event if the task is still Reserved.
+///
+/// Returns `Some(Released)` when the current status is `Reserved` (the agent
+/// hasn't started yet, so we need to release the claim). Returns `None` for any
+/// other status — e.g. `InProgress` (agent already started) or `Closed`.
+///
+/// The `reason` parameter is included in the Released event so that task history
+/// preserves the concrete failure cause (e.g. the spawn error).
+pub(crate) fn rollback_claim_if_reserved(
+    task_id: &str,
+    current_status: TaskStatus,
+    reason: Option<&str>,
+) -> Option<TaskEvent> {
+    if current_status == TaskStatus::Reserved {
+        Some(TaskEvent::Released {
+            task_ids: vec![task_id.to_string()],
+            reason: Some(
+                reason
+                    .unwrap_or("Spawn failed, rolling back claim")
+                    .to_string(),
+            ),
+            timestamp: chrono::Utc::now(),
+        })
+    } else {
+        None
+    }
 }
 
 /// Spawn an agent session, discover the session UUID, and optionally wait.
@@ -272,8 +378,37 @@ fn spawn_and_discover(
 ) -> Result<()> {
     use crate::tasks::runner::task_run_async;
 
+    let codex_fallback = options.agent_override == Some(AgentType::Codex);
+
     // Always spawn async first to get the handle
     let handle = task_run_async(cwd, task_id, options)?;
+
+    if codex_fallback {
+        if is_async {
+            if output_id {
+                println!("{}", handle.task_id);
+            } else {
+                let md = MdBuilder::new().build(&format!(
+                    "## Run Started\n- **Task:** {}\n- **Session:** pending Codex hook-based discovery\n- Task started asynchronously using temporary task-based fallback.\n",
+                    short_id(&handle.task_id),
+                ));
+                println!("{}", md);
+            }
+            return Ok(());
+        }
+
+        if output_id {
+            println!("{}", handle.task_id);
+        } else {
+            let md = MdBuilder::new().build(&format!(
+                "## Running\n- **Task:** {}\n- **Session:** pending Codex hook-based discovery\n- Using temporary task-based fallback while Codex session start is unavailable.\n",
+                short_id(&handle.task_id),
+            ));
+            eprintln!("{}", md);
+        }
+
+        return wait_for_task_completion(cwd, &handle.task_id);
+    }
 
     // Discover session UUID
     let session_id = match discover_session_id(cwd, &handle.task_id) {
@@ -345,5 +480,72 @@ fn wait_for_task_completion(cwd: &Path, task_id: &str) -> Result<()> {
         }
 
         thread::sleep(poll_interval);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rollback_when_still_reserved() {
+        let result = rollback_claim_if_reserved("task-123", TaskStatus::Reserved, None);
+        assert!(result.is_some(), "Should return Released event when Reserved");
+        if let Some(TaskEvent::Released {
+            task_ids, reason, ..
+        }) = result
+        {
+            assert_eq!(task_ids, vec!["task-123"]);
+            assert!(reason.unwrap().contains("rolling back"));
+        } else {
+            panic!("Expected Released event");
+        }
+    }
+
+    #[test]
+    fn rollback_with_custom_reason() {
+        let result = rollback_claim_if_reserved(
+            "task-123",
+            TaskStatus::Reserved,
+            Some("Spawn failed: connection refused"),
+        );
+        assert!(result.is_some(), "Should return Released event when Reserved");
+        if let Some(TaskEvent::Released { reason, .. }) = result {
+            assert_eq!(reason.unwrap(), "Spawn failed: connection refused");
+        } else {
+            panic!("Expected Released event");
+        }
+    }
+
+    #[test]
+    fn no_rollback_when_in_progress() {
+        let result = rollback_claim_if_reserved("task-123", TaskStatus::InProgress, None);
+        assert!(result.is_none(), "Should not rollback when agent already started");
+    }
+
+    #[test]
+    fn no_rollback_when_closed() {
+        let result = rollback_claim_if_reserved("task-123", TaskStatus::Closed, None);
+        assert!(result.is_none(), "Should not rollback when task is closed");
+    }
+
+    #[test]
+    fn no_rollback_when_open() {
+        let result = rollback_claim_if_reserved("task-123", TaskStatus::Open, None);
+        assert!(result.is_none(), "Should not rollback when task is Open");
+    }
+
+    #[test]
+    fn no_rollback_when_task_absent_from_graph() {
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        try_rollback_reserved(dir.path(), "nonexistent-task", "test reason");
+        // Verify no events were written
+        let events = read_events(dir.path()).unwrap_or_default();
+        assert!(
+            events.is_empty(),
+            "Should not write events when task is absent from graph"
+        );
     }
 }

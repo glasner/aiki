@@ -24,7 +24,7 @@ Beads is a distributed, git-backed graph issue tracker built specifically for AI
 |-----------|-----|--------|
 | **Memory decay / semantic summarization** | Context rot degrades long review sessions. Beads' `bd admin compact` summarizes completed tasks to free context window. Aiki has no compaction story — closed tasks pile up in JJ history with no synthesis. | [README](https://github.com/steveyegge/beads), [Ian Bull](https://ianbull.com/posts/beads/) |
 | **Persistent cross-session memory** | Beads' `bd remember/recall/forget` solves the "50 First Dates" problem. Aiki agents rely on CLAUDE.md (static) and agent-specific auto-memory (unstructured). Review-specific memories (e.g., "this project always fails on strict null checks") would directly improve review quality. | [Releases](https://github.com/steveyegge/beads/releases), [Yegge blog](https://steve-yegge.medium.com/introducing-beads-a-coding-agent-memory-system-637d7d92514a) |
-| **Inter-agent messaging** | As Aiki scales parallel agents via `aiki task run --async`, direct messaging between review and fix agents will beat indirect coordination through task state transitions. Gas Town's messaging shows real demand. | [Gas Town blog](https://steve-yegge.medium.com/welcome-to-gas-town-4f25ee16dd04) |
+| **Inter-agent messaging** | As Aiki scales parallel agents via `aiki run --async`, direct messaging between review and fix agents will beat indirect coordination through task state transitions. Gas Town's messaging shows real demand. | [Gas Town blog](https://steve-yegge.medium.com/welcome-to-gas-town-4f25ee16dd04) |
 
 ### Capabilities to COUNTER (Beads has it, Aiki should respond differently)
 

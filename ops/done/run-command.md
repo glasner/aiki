@@ -297,4 +297,4 @@ Delete the `Run` variant from `TaskCommands`, `run_run()`, and all
 - `aiki session wait <sid>` → blocks until session ends
 - `aiki session wait <sid1> <sid2> --any` → returns when first finishes
 - End-to-end: loop template runs correctly with new commands
-- `aiki task run` → unrecognized command (removed)
+- `aiki run` → unrecognized command (removed)

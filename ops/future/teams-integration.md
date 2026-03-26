@@ -49,7 +49,7 @@ Team Lead (main session)
 | Task system | ✅ Complete | Event-sourced, persistent, with priorities/assignees |
 | Agent detection | ✅ Complete | ClaudeCode, Codex, Cursor, Gemini |
 | Assignee routing | ✅ Complete | Tasks can be assigned to specific agent types |
-| Task spawning | ✅ Complete | `aiki task run` spawns background agents |
+| Task spawning | ✅ Complete | `aiki run` spawns background agents |
 | Provenance tracking | ✅ Complete | Line-level attribution via PostToolUse hooks |
 | Flow engine | ✅ Complete | YAML-based event-driven automation |
 | Review workflows | ✅ Complete | `aiki review` creates review tasks |

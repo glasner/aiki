@@ -27,16 +27,16 @@ Create 10 tasks:
 
 Launch all 10 with --async:
 
-    aiki task run <id-01> --async
-    aiki task run <id-02> --async
-    aiki task run <id-03> --async
-    aiki task run <id-04> --async
-    aiki task run <id-05> --async
-    aiki task run <id-06> --async
-    aiki task run <id-07> --async
-    aiki task run <id-08> --async
-    aiki task run <id-09> --async
-    aiki task run <id-10> --async
+    aiki run <id-01> --async
+    aiki run <id-02> --async
+    aiki run <id-03> --async
+    aiki run <id-04> --async
+    aiki run <id-05> --async
+    aiki run <id-06> --async
+    aiki run <id-07> --async
+    aiki run <id-08> --async
+    aiki run <id-09> --async
+    aiki run <id-10> --async
 
 ### 1.2 Monitor workspaces
 
@@ -119,11 +119,11 @@ Each agent replaces the placeholder in its assigned section:
 
 Launch all 5 with --async:
 
-    aiki task run <id-s1> --async
-    aiki task run <id-s2> --async
-    aiki task run <id-s3> --async
-    aiki task run <id-s4> --async
-    aiki task run <id-s5> --async
+    aiki run <id-s1> --async
+    aiki run <id-s2> --async
+    aiki run <id-s3> --async
+    aiki run <id-s4> --async
+    aiki run <id-s5> --async
 
 ### 2.2 Wait and verify merges
 
@@ -182,11 +182,11 @@ Each agent tries to replace the same line with a different value:
 
 Launch all 5 with --async:
 
-    aiki task run <id-c1> --async
-    aiki task run <id-c2> --async
-    aiki task run <id-c3> --async
-    aiki task run <id-c4> --async
-    aiki task run <id-c5> --async
+    aiki run <id-c1> --async
+    aiki run <id-c2> --async
+    aiki run <id-c3> --async
+    aiki run <id-c4> --async
+    aiki run <id-c5> --async
 
 ### 3.2 Wait and verify conflict handling
 
@@ -245,7 +245,7 @@ Commit both files so the agent's workspace will see them:
 Create and launch one agent task (async so you can continue):
 
     aiki task add "Agent P4: In agent-file.txt, replace 'AGENT PLACEHOLDER' with 'Agent P4 was here at <timestamp>'. Then add 3 more lines below it with interesting facts about concurrency."
-    aiki task run <id-p4> --async
+    aiki run <id-p4> --async
 
 ### 4.2 Simulate human edits while agent is working
 
@@ -306,7 +306,7 @@ Commit it:
 Launch the agent:
 
     aiki task add "Agent P4B: In shared-human-agent.txt, replace 'agent placeholder' with 'Agent P4B edited this section at <timestamp>'. Do NOT touch the human section."
-    aiki task run <id-p4b> --async
+    aiki run <id-p4b> --async
 
 While the agent is running, edit the human section in the default workspace:
 

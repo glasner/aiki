@@ -2,7 +2,7 @@
 
 **Date**: 2026-03-09  
 **Status**: Draft  
-**Purpose**: Treat `openclaw:<id>` as a first-class identity target across `aiki task run --agent` and `--assignee` task ownership flows, while preserving existing built-in agent behavior.
+**Purpose**: Treat `openclaw:<id>` as a first-class identity target across `aiki run --agent` and `--assignee` task ownership flows, while preserving existing built-in agent behavior.
 
 **Related docs**: 
 - `ops/now/learn-from-skill.md` (template pattern)
@@ -10,7 +10,7 @@
 ---
 
 ## Executive Summary
-`aiki task run --agent` currently accepts only fixed built-in agent types (`claude-code`, `codex`, `cursor`, `gemini`, `unknown`), while task ownership flags (`--assignee` on `add`, `start`, `set`, etc.) also only accept built-in names.
+`aiki run --agent` currently accepts only fixed built-in agent types (`claude-code`, `codex`, `cursor`, `gemini`, `unknown`), while task ownership flags (`--assignee` on `add`, `start`, `set`, etc.) also only accept built-in names.
 
 To avoid half-implemented behavior, this change should support the same namespaced target model (`openclaw:<id>`, e.g. `openclaw:tu`) in both execution and assignment paths.
 
@@ -21,21 +21,21 @@ The change set is:
 4. update docs/tests so `openclaw:<id>` is coherent across command surfaces.
 
 ## Problem
-- `aiki task run --agent` rejects `openclaw:tu` today because `AgentType::from_str` only supports built-in identifiers.
+- `aiki run --agent` rejects `openclaw:tu` today because `AgentType::from_str` only supports built-in identifiers.
 - `--assignee` parsing (`Assignee::from_str`) only supports built-in agents (`claude-code`, `codex`, `cursor`, `gemini`) and `human`.
 - `get_runtime` accepts only `AgentType`, so execution dispatch cannot reach openclaw identities.
 - Runtime selection, event metadata, and task visibility are coupled to `AgentType` and currently lack an identity channel for clawbot ids.
 
 ## Goal
 Enable `openclaw:<id>` as a first-class target for:
-- execution routing via `aiki task run --agent openclaw:<id>`
+- execution routing via `aiki run --agent openclaw:<id>`
 - explicit ownership/filtering via task `--assignee` (`add`, `start`, `set`, and related task commands that already accept assignee)
 
 while preserving existing built-ins and minimizing semantics drift.
 
 ## Scope
 ### In scope
-- `aiki task run --agent` parsing/validation for namespaced openclaw identities.
+- `aiki run --agent` parsing/validation for namespaced openclaw identities.
 - `aiki task --assignee` parsing/validation for namespaced openclaw identities in command paths that currently support assignee flags.
 - Execution-time dispatch from run path (`TaskRunOptions` → resolution → runtime lookup).
 - Assignee-aware run fallback: when task assignee is openclaw target, run should resolve to that runtime target.
@@ -50,17 +50,17 @@ while preserving existing built-ins and minimizing semantics drift.
 
 ## Command-surface alignment (important)
 Current task command surfaces include two paths:
-- `--agent` (primarily `aiki task run`)
+- `--agent` (primarily `aiki run`)
 - `--assignee` (add/start/set/run path ownership and filtering logic)
 
 Decision:
 - Support openclaw identifiers on both in this change:
-  - `aiki task run --agent openclaw:<id>`
+  - `aiki run --agent openclaw:<id>`
   - `aiki task add/start/set ... --assignee openclaw:<id>` (where `--assignee` is already supported).
 - No changes to create new assignee flags on unrelated commands.
 
 ## Proposed behavior
-- `aiki task run --agent openclaw:tu ...` is accepted and resolved as an explicit runtime target.
+- `aiki run --agent openclaw:tu ...` is accepted and resolved as an explicit runtime target.
 - `aiki task add/start --assignee openclaw:tu ...` stores a valid assignee target.
 - Run resolution prioritizes explicit `--agent` override first, then task assignee (`openclaw:<id>` supported), then active session/process fallback.
 - Existing built-in behavior (`claude-code`, `codex`) remains unchanged.
@@ -121,13 +121,13 @@ Decision:
      - malformed ids rejected (`openclaw`, `openclaw:`)
    - `cli/src/commands/task.rs` parse tests / integration:
      - `aiki task add --assignee openclaw:tu ...`
-     - `aiki task run --agent openclaw:tu ...`
+     - `aiki run --agent openclaw:tu ...`
    - `cli/src/tasks/runner.rs` behavior tests:
      - `TaskRunOptions` resolves explicit `--agent` target before task assignee
      - task assignee `openclaw:<id>` resolves to openclaw runtime when no explicit override
 
 2. Update CLI docs/examples:
-   - `aiki task run --agent openclaw:tu --template ...`
+   - `aiki run --agent openclaw:tu --template ...`
    - `aiki task add --assignee openclaw:tu ...`
    - `aiki task start --assignee openclaw:tu ...`
 
@@ -136,7 +136,7 @@ Decision:
    - if binary invocation unavailable in CI/local, tests should verify graceful failure path.
 
 ## Acceptance criteria
-1. `aiki task run --agent openclaw:tu` is accepted and resolves to OpenClaw runtime.
+1. `aiki run --agent openclaw:tu` is accepted and resolves to OpenClaw runtime.
 2. `--assignee openclaw:tu` is accepted wherever `--assignee` is supported (`add`, `start`, `set`, etc. as currently defined).
 3. Existing `--agent`/`--assignee` behavior for built-ins remains unchanged.
 4. Run resolution still prefers explicit `--agent` override before assignee fallback.

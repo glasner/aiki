@@ -5,6 +5,7 @@
 //! requires only a new entry in `LINK_KINDS` — zero changes to EdgeStore.
 
 use super::types::{FastHashMap, Task, TaskComment, TaskEvent, TaskOutcome, TaskStatus};
+use crate::cache::debug_log;
 
 /// Link kind metadata — defines cardinality rules and blocking behavior.
 /// Checked at write time when adding links.
@@ -683,10 +684,10 @@ fn process_event(
         }
         TaskEvent::Started {
             task_ids,
+            agent_type,
             session_id,
             turn_id,
             timestamp,
-            ..
         } => {
             for task_id in task_ids {
                 if let Some(task) = tasks.get_mut(task_id) {
@@ -697,6 +698,10 @@ fn process_event(
                     task.started_at = Some(*timestamp);
                     task.turn_started = turn_id.clone();
                     task.turn_stopped = None;
+                    // Set assignee from the agent that started the task
+                    if agent_type != "unknown" {
+                        task.assignee = Some(agent_type.clone());
+                    }
                 }
             }
         }
@@ -855,11 +860,11 @@ fn process_event(
             for task_id in task_ids {
                 if let Some(task) = tasks.get_mut(task_id) {
                     if task.status != TaskStatus::Open {
-                        eprintln!(
+                        debug_log(|| format!(
                             "warn: Reserved event for task {} in status {}, expected Open — skipping",
                             &task_id[..6],
                             task.status
-                        );
+                        ));
                         continue;
                     }
                     task.status = TaskStatus::Reserved;
@@ -870,11 +875,11 @@ fn process_event(
             for task_id in task_ids {
                 if let Some(task) = tasks.get_mut(task_id) {
                     if task.status != TaskStatus::Reserved {
-                        eprintln!(
+                        debug_log(|| format!(
                             "warn: Released event for task {} in status {}, expected Reserved — skipping",
                             &task_id[..6],
                             task.status
-                        );
+                        ));
                         continue;
                     }
                     task.status = TaskStatus::Open;
@@ -883,21 +888,6 @@ fn process_event(
         }
         TaskEvent::Absorbed { .. } => {
             // Absorbed events are informational; they don't change task state.
-        }
-        TaskEvent::Reserved { task_ids, .. } => {
-            for task_id in task_ids {
-                if let Some(task) = tasks.get_mut(task_id) {
-                    task.status = TaskStatus::Reserved;
-                }
-            }
-        }
-        TaskEvent::Released { task_ids, .. } => {
-            for task_id in task_ids {
-                if let Some(task) = tasks.get_mut(task_id) {
-                    // Release returns the task to Open status
-                    task.status = TaskStatus::Open;
-                }
-            }
         }
     }
 }

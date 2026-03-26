@@ -226,7 +226,7 @@ Secrets are cached **per session** in memory. Never written to disk. Cache lifet
 |-------|----------|-----------|
 | Interactive session | Until session ends | Avoid repeated vault calls across turns |
 | Background session | Until task completes | Same agent, same credentials |
-| `aiki task run` (spawned) | Fresh resolution | Different process, different credential scope |
+| `aiki run` (spawned) | Fresh resolution | Different process, different credential scope |
 
 Cache is a `HashMap<String, SecretValue>` held in the `HookEngine` or `AikiState`. Cleared on process exit (no persistence).
 
@@ -380,7 +380,7 @@ Secrets:
 - Secret rotation awareness (TTL-based cache invalidation)
 - Dynamic secrets (Vault dynamic database creds, AWS STS)
 - Per-agent secret scoping (agent X can access secrets A,B but not C)
-- Secret injection into `aiki task run` spawned agents
+- Secret injection into `aiki run` spawned agents
 - Plugin secret composition (plugin A provides secrets for plugin B)
 
 ---

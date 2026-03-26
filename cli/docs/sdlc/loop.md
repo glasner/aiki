@@ -33,7 +33,7 @@ aiki loop <parent-task-id> -o id
 
 5. **Execute** — The loop agent iterates:
    - Get ready lanes via `aiki task lane <parent-id>`
-   - Start each ready lane with `aiki task run <parent-id> --next-session --lane <lane-id> --async`
+   - Start each ready lane with `aiki run <parent-id> --next-session --lane <lane-id> --async`
    - Wait for any session to finish with `aiki task wait <ids> --any`
    - Loop back — finished sessions may unblock new lanes
    - Exit when no ready lanes remain
@@ -98,7 +98,7 @@ Within a lane, work is divided into **sessions**. Each session is one agent invo
 - A single-task session runs one subtask in a fresh agent
 - A `needs-context` chain runs multiple tasks in the same agent session, preserving in-memory context between them
 
-The loop orchestrator starts sessions via `aiki task run <parent-id> --next-session --lane <lane-id>`, which automatically picks the next ready task (or chain) in the lane.
+The loop orchestrator starts sessions via `aiki run <parent-id> --next-session --lane <lane-id>`, which automatically picks the next ready task (or chain) in the lane.
 
 ## Failure Handling
 

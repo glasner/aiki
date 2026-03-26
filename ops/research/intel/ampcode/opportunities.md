@@ -45,7 +45,7 @@ Add user-defined, composable review criteria to match/exceed Amp's Checks system
 Lean into Aiki's durability and observability advantage for multi-agent work. Amp's subagents are ephemeral within a thread; Aiki's persist across sessions with full task tracking and provenance.
 - **Pain (4):** Losing context between agent sessions is a real and recurring frustration.
 - **Fit (5):** Core to Aiki's task orchestration wedge.
-- **Complexity (4):** Already partly built via `aiki task run`. Incremental improvements needed.
+- **Complexity (4):** Already partly built via `aiki run`. Incremental improvements needed.
 - **GTM (4):** Clear differentiator. "Your agent work survives across sessions — nothing gets lost."
 
 ### 4. Cross-session review memory — 3.90

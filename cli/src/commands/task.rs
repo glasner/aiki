@@ -270,7 +270,7 @@ pub enum TaskCommands {
         #[arg(long)]
         all: bool,
 
-        /// Filter by status: ready, open, in_progress, stopped, closed
+        /// Filter by status: ready, open, in_progress, reserved, stopped, closed, done, wont_do
         /// "ready" shows only tasks in the ready queue (open + unblocked).
         /// Multiple values can be comma-separated: --status ready,in_progress
         #[arg(long, value_delimiter = ',')]
@@ -292,6 +292,14 @@ pub enum TaskCommands {
         #[arg(long)]
         closed: bool,
 
+        /// Filter to closed tasks with outcome "done"
+        #[arg(long)]
+        done: bool,
+
+        /// Filter to closed tasks with outcome "won't do"
+        #[arg(long)]
+        wont_do: bool,
+
         /// Filter to tasks assigned to specific agent or human
         #[arg(long = "assignee", value_name = "AGENT")]
         assignee: Option<String>,
@@ -307,6 +315,10 @@ pub enum TaskCommands {
         /// Filter to tasks created from a specific template (e.g., "review", "myorg/build@1.0")
         #[arg(long)]
         template: Option<String>,
+
+        /// Scope results to descendants of a given task (subtree filter)
+        #[arg(long)]
+        descendant_of: Option<String>,
 
         /// Output format (e.g., `id` for bare task IDs on stdout)
         #[arg(long, short = 'o', value_name = "FORMAT")]
@@ -963,10 +975,13 @@ pub fn run(command: Option<TaskCommands>) -> Result<()> {
         in_progress: false,
         stopped: false,
         closed: false,
+        done: false,
+        wont_do: false,
         assignee: None,
         unassigned: false,
         source: None,
         template: None,
+        descendant_of: None,
         output: None,
     });
 
@@ -978,10 +993,13 @@ pub fn run(command: Option<TaskCommands>) -> Result<()> {
             in_progress,
             stopped,
             closed,
+            done,
+            wont_do,
             assignee,
             unassigned,
             source,
             template,
+            descendant_of,
             output,
         } => run_list(
             &cwd,
@@ -992,10 +1010,13 @@ pub fn run(command: Option<TaskCommands>) -> Result<()> {
             in_progress,
             stopped,
             closed,
+            done,
+            wont_do,
             assignee,
             unassigned,
             source,
             template,
+            descendant_of,
             output,
         ),
         TaskCommands::Template { command } => run_template(&cwd, command),
@@ -1272,10 +1293,13 @@ fn run_list(
     filter_in_progress: bool,
     filter_stopped: bool,
     filter_closed: bool,
+    filter_done: bool,
+    filter_wont_do: bool,
     filter_assignee: Option<String>,
     filter_unassigned: bool,
     filter_source: Option<String>,
     filter_template: Option<String>,
+    filter_descendant_of: Option<String>,
     output_format: Option<super::OutputFormat>,
 ) -> Result<()> {
     use crate::agents::{AgentType, Assignee};
@@ -1284,6 +1308,20 @@ fn run_list(
     let events = read_events(cwd)?;
     let graph = materialize_graph(&events);
     let tasks = &graph.tasks;
+
+    // Resolve --descendant-of filter: build a set of descendant IDs
+    let descendant_set: Option<HashSet<String>> = if let Some(ref ancestor_id) = filter_descendant_of {
+        use crate::tasks::manager::get_all_descendants;
+        let resolved = find_task(tasks, ancestor_id)?;
+        let descendants = get_all_descendants(&graph, &resolved.id);
+        Some(descendants.into_iter().map(|t| t.id.clone()).collect())
+    } else {
+        None
+    };
+
+    let matches_descendant_of = |task: &Task| -> bool {
+        descendant_set.as_ref().map_or(true, |set| set.contains(&task.id))
+    };
 
     // Determine scope set from override or current in-progress tasks
     let scope_set = if let Some(s) = scope_override {
@@ -1296,11 +1334,13 @@ fn run_list(
     };
 
     // Parse --status values and merge with boolean flags
-    // --status accepts: ready, open, in_progress, stopped, closed
+    // --status accepts: ready, open, in_progress, stopped, closed, done, wont_do
     let mut filter_open = filter_open;
     let mut filter_in_progress = filter_in_progress;
     let mut filter_stopped = filter_stopped;
     let mut filter_closed = filter_closed;
+    let mut filter_done = filter_done;
+    let mut filter_wont_do = filter_wont_do;
     let mut filter_ready = false;
     let mut filter_reserved = false;
 
@@ -1312,18 +1352,25 @@ fn run_list(
             "reserved" => filter_reserved = true,
             "stopped" => filter_stopped = true,
             "closed" => filter_closed = true,
+            "done" => filter_done = true,
+            "wont_do" | "wont-do" => filter_wont_do = true,
             other => {
                 return Err(AikiError::InvalidArgument(format!(
-                    "Unknown status filter '{}'. Valid values: ready, open, in_progress, reserved, stopped, closed",
+                    "Unknown status filter '{}'. Valid values: ready, open, in_progress, reserved, stopped, closed, done, wont_do",
                     other
                 )));
             }
         }
     }
 
+    // --done and --wont-do imply --closed
+    if filter_done || filter_wont_do {
+        filter_closed = true;
+    }
+
     // Collect active status filters
     let has_status_filters =
-        filter_open || filter_in_progress || filter_reserved || filter_stopped || filter_closed || filter_ready;
+        filter_open || filter_in_progress || filter_reserved || filter_stopped || filter_closed || filter_ready || filter_done || filter_wont_do;
     let has_explicit_assignee_filters = filter_assignee.is_some() || filter_unassigned;
 
     // Validate and normalize assignee filter if provided
@@ -1474,7 +1521,8 @@ fn run_list(
         || has_status_filters
         || has_explicit_assignee_filters
         || filter_source.is_some()
-        || filter_template.is_some();
+        || filter_template.is_some()
+        || filter_descendant_of.is_some();
 
     let list_tasks: Vec<&Task> = if has_active_filters {
         // Show tasks with filters applied
@@ -1488,6 +1536,11 @@ fn run_list(
             std::collections::HashSet::new()
         };
 
+        // Determine if outcome sub-filtering is active (--done or --wont-do without the other)
+        let outcome_filter_active = filter_done || filter_wont_do;
+        // When both --done and --wont-do are set (or just --closed without either), show all closed
+        let both_outcomes = (filter_done && filter_wont_do) || (!filter_done && !filter_wont_do);
+
         // Apply status filters if active
         let filtered_by_status: Vec<_> = if has_status_filters {
             all_tasks
@@ -1498,7 +1551,18 @@ fn run_list(
                         || (filter_in_progress && t.status == TaskStatus::InProgress)
                         || (filter_reserved && t.status == TaskStatus::Reserved)
                         || (filter_stopped && t.status == TaskStatus::Stopped)
-                        || (filter_closed && t.status == TaskStatus::Closed)
+                        || (filter_closed && t.status == TaskStatus::Closed && {
+                            if outcome_filter_active && !both_outcomes {
+                                // Only one outcome flag is set — filter by it
+                                if filter_done {
+                                    t.closed_outcome == Some(TaskOutcome::Done)
+                                } else {
+                                    t.closed_outcome == Some(TaskOutcome::WontDo)
+                                }
+                            } else {
+                                true
+                            }
+                        })
                 })
                 .collect()
         } else {
@@ -1535,16 +1599,26 @@ fn run_list(
             filtered_by_source
         };
 
+        // Apply descendant-of filter if active
+        let filtered_by_descendant: Vec<_> = if filter_descendant_of.is_some() {
+            filtered_by_template
+                .into_iter()
+                .filter(|t| matches_descendant_of(t))
+                .collect()
+        } else {
+            filtered_by_template
+        };
+
         // Apply auto visibility filter (unless --all is specified or explicit filter is used)
         // This ensures status filters still respect assignee visibility
         // Also apply session filtering
         let filtered_by_visibility: Vec<_> = if !all && !has_explicit_assignee_filters {
-            filtered_by_template
+            filtered_by_descendant
                 .into_iter()
                 .filter(|t| is_auto_visible(t))
                 .collect()
         } else {
-            filtered_by_template
+            filtered_by_descendant
         };
 
         // Apply session filtering
@@ -3246,8 +3320,8 @@ fn run_close(
         let autorun_candidates = graph.find_autorun_candidates(task_id);
         for candidate_id in &autorun_candidates {
             if let Some(task) = graph.tasks.get(candidate_id) {
-                // Idempotent: only start if Open, Reserved, or Stopped
-                if !matches!(task.status, TaskStatus::Open | TaskStatus::Reserved | TaskStatus::Stopped) {
+                // Idempotent: only start if Open or Stopped
+                if !matches!(task.status, TaskStatus::Open | TaskStatus::Stopped) {
                     continue;
                 }
             }
@@ -4001,6 +4075,14 @@ fn run_show(
     let mut content = format!("Task: {}\nID: {}\n", task.name, task.id,);
     if let Some(ref slug) = task.slug {
         content.push_str(&format!("Slug: {}\n", slug));
+    }
+    if let Some(parent_id) = graph.edges.target(&task_id, "subtask-of") {
+        let parent_display = graph
+            .tasks
+            .get(parent_id)
+            .map(|t| format!("{} — {}", short_id(parent_id), t.name))
+            .unwrap_or_else(|| short_id(parent_id).to_string());
+        content.push_str(&format!("Parent: {}\n", parent_display));
     }
     content.push_str(&format!(
         "Status: {}\nPriority: {}\n",

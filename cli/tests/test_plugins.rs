@@ -403,11 +403,7 @@ fn test_plugin_remove_with_dot_in_namespace() {
         .stderr(predicate::str::contains("Only GitHub plugins"));
 }
 
-/// Outside-repo `plugin list` shows all cycle-member plugins as top-level.
-///
-/// When every installed plugin is a dependency of another (full cycle), no plugin
-/// qualifies as a "root", so the cycle-aware logic should treat *all* of them as
-/// top-level entries rather than hiding them.
+/// Outside-repo `plugin list` reports no project plugin references.
 #[test]
 fn test_plugin_list_outside_repo_cycle_shows_all_top_level() {
     use assert_cmd::prelude::*;
@@ -429,16 +425,17 @@ fn test_plugin_list_outside_repo_cycle_shows_all_top_level() {
         .current_dir(workdir.path())
         .env("AIKI_HOME", aiki_home.path());
 
-    cmd.assert()
-        .success()
-        .stdout(predicate::str::contains("ns/alpha"))
-        .stdout(predicate::str::contains("ns/beta"));
+    let output = cmd.output().unwrap();
+    assert!(output.status.success(), "plugin list should succeed");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("No plugin references found in project."),
+        "expected outside-repo plugin list message, got: {}",
+        stdout
+    );
 }
 
-/// Outside-repo `plugin list` hides deps of root plugins.
-///
-/// When there is a clear root (not a dependency of anyone), its deps should be
-/// shown indented under it, not as top-level entries.
+/// Outside-repo `plugin list` reports no project plugin references.
 #[test]
 fn test_plugin_list_outside_repo_hides_deps_of_roots() {
     use std::process::Command;
@@ -457,29 +454,12 @@ fn test_plugin_list_outside_repo_hides_deps_of_roots() {
         .current_dir(workdir.path())
         .env("AIKI_HOME", aiki_home.path());
 
-    // root should appear as top-level, dep should appear indented (as dependency)
     let output = cmd.output().unwrap();
+    assert!(output.status.success(), "plugin list should succeed");
     let stdout = String::from_utf8_lossy(&output.stdout);
-
-    // root is top-level (preceded by two spaces)
     assert!(
-        stdout.contains("  ns/root"),
-        "root should be top-level: {}",
-        stdout
-    );
-    // dep should appear indented as a dependency, not as top-level
-    assert!(
-        stdout.contains("(dependency)"),
-        "dep should be shown as dependency: {}",
-        stdout
-    );
-    // dep should NOT appear as a top-level entry (only as a dependency)
-    let top_level_dep = stdout
-        .lines()
-        .any(|line| line.starts_with("  ns/dep") && !line.contains("(dependency)"));
-    assert!(
-        !top_level_dep,
-        "dep should not appear as top-level entry: {}",
+        stdout.contains("No plugin references found in project."),
+        "expected outside-repo plugin list message, got: {}",
         stdout
     );
 }

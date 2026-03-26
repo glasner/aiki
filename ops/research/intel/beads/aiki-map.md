@@ -24,7 +24,7 @@
 | 12 | MCP server with context reduction | none | med | counter | Aiki integrates via CLAUDE.md hooks, not MCP; different integration model |
 | 13 | SQL queries against task database | none | low | ignore | Aiki uses JJ as storage; SQL adds complexity without clear value |
 | 14 | Offline-first / git-native sync | high | low | ignore | Aiki is already git-native via JJ; both solve the same problem |
-| 15 | Gas Town (multi-agent orchestrator) | medium | high | counter | Aiki has `aiki task run` for delegation; Gas Town is more ambitious (20-30 agents) |
+| 15 | Gas Town (multi-agent orchestrator) | medium | high | counter | Aiki has `aiki run` for delegation; Gas Town is more ambitious (20-30 agents) |
 | 16 | Plugin framework (GitLab, Linear adapters) | none | low | ignore | Aiki is opinionated; plugin extensibility is premature |
 | 17 | Dolt database backend | none | low | ignore | Aiki uses JJ; Dolt is an implementation detail, not a feature |
 | 18 | Community ecosystem (TUIs, web UIs, editor plugins) | none | med | counter | Aiki has no community layer yet; Beads' ecosystem signals product-market fit |
@@ -77,7 +77,7 @@ Aiki currently relies on CLAUDE.md for persistent configuration and JJ history f
 
 Beads' `--claim` flag provides database-level locking to prevent race conditions when multiple agents attempt to start the same task. This is critical for multi-agent workflows where 20-30 agents may be working in parallel (as in Gas Town).
 
-Aiki solves this differently: JJ workspace isolation gives each agent its own copy of the codebase, and `aiki task start` transitions tasks to in-progress. However, Aiki doesn't have atomic claiming — two agents could theoretically start the same task simultaneously. In practice, Aiki's orchestration model (`aiki task run`) assigns tasks to specific agents, reducing contention.
+Aiki solves this differently: JJ workspace isolation gives each agent its own copy of the codebase, and `aiki task start` transitions tasks to in-progress. However, Aiki doesn't have atomic claiming — two agents could theoretically start the same task simultaneously. In practice, Aiki's orchestration model (`aiki run`) assigns tasks to specific agents, reducing contention.
 
 **Opportunity: counter.** Aiki's workspace isolation is a stronger primitive than claim-based locking. Where Beads prevents conflicts at the task level, Aiki prevents them at the file level. The gap is in task-level contention for ready-queue scenarios. If Aiki scales to more parallel agents, atomic claiming or an equivalent should be added to `aiki task start`.
 
@@ -109,7 +109,7 @@ Beads supports an "issue" type with `--thread` flag for ephemeral inter-agent co
 
 Aiki has no inter-agent messaging. Agents communicate indirectly through task comments (`aiki task comment add`) and task state transitions, but there's no direct messaging channel. The community has also built `mcp-beads-village` for inter-agent coordination with file locking.
 
-**Opportunity: copy.** As Aiki scales to more parallel agents (via `aiki task run --async`), inter-agent communication will become necessary. A lightweight messaging primitive (`aiki msg send <agent-id> "..."`) could enable coordination patterns like "agent A found a blocker that agent B needs to know about." This supports the autonomous review wedge: a review agent could message a fix agent directly rather than going through task state transitions.
+**Opportunity: copy.** As Aiki scales to more parallel agents (via `aiki run --async`), inter-agent communication will become necessary. A lightweight messaging primitive (`aiki msg send <agent-id> "..."`) could enable coordination patterns like "agent A found a blocker that agent B needs to know about." This supports the autonomous review wedge: a review agent could message a fix agent directly rather than going through task state transitions.
 
 — Sources: [README](https://github.com/steveyegge/beads), [Gas Town blog](https://steve-yegge.medium.com/welcome-to-gas-town-4f25ee16dd04)
 
@@ -177,7 +177,7 @@ Both products share the same architectural philosophy here. This is table stakes
 
 Gas Town is a separate project that manages "colonies" of 20-30 parallel Claude Code agents through a "Mayor" coordinator pattern. It builds on Beads for task storage and adds agent lifecycle management, work distribution, and result aggregation.
 
-Aiki has `aiki task run` for delegating work to subagents and `--async` + `aiki task wait` for parallel execution. However, Aiki's orchestration is simpler — it delegates individual tasks rather than managing a fleet of agents. Gas Town represents a more ambitious vision for multi-agent workflows.
+Aiki has `aiki run` for delegating work to subagents and `--async` + `aiki task wait` for parallel execution. However, Aiki's orchestration is simpler — it delegates individual tasks rather than managing a fleet of agents. Gas Town represents a more ambitious vision for multi-agent workflows.
 
 **Opportunity: counter.** Aiki's orchestration model is already differentiated by being review-loop-aware (review → fix → re-review cycles). Rather than copying Gas Town's Mayor pattern, Aiki should deepen its review-specific orchestration: automatic re-review after fixes, cascading fix propagation, and review quality scoring. The key differentiator is that Aiki's orchestration understands code review semantics, while Gas Town is a generic task dispatcher.
 

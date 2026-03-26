@@ -2024,12 +2024,12 @@ Review the changes."#;
             "Template should contain '--next-session --lane' command"
         );
         assert!(
-            instructions.contains("task wait"),
-            "Template should contain 'task wait' command"
+            instructions.contains("session wait"),
+            "Template should contain 'session wait' command"
         );
         assert!(
             instructions.contains("--any"),
-            "Template should contain '--any' flag for task wait"
+            "Template should contain '--any' flag for session wait"
         );
         assert!(
             instructions.contains("task show {{data.target}}"),

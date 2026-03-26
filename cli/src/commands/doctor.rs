@@ -147,7 +147,7 @@ pub fn run(fix: bool) -> Result<()> {
         }
     }
 
-    // Check Codex hooks - verify config.toml contains aiki OTel + notify
+    // Check Codex hooks - verify config.toml contains aiki OTel + native hooks
     let codex_config_path = home_dir.join(".codex/config.toml");
     let codex_hooks_ok = check_codex_hooks(&codex_config_path);
     if codex_hooks_ok {
@@ -990,7 +990,7 @@ fn check_cursor_hooks(hooks_path: &std::path::Path) -> bool {
 ///
 /// Returns true if ~/.codex/config.toml exists AND contains both:
 /// - [otel] section with aiki endpoint (127.0.0.1:19876)
-/// - notify array with aiki hooks stdin command
+/// - [hooks] section with native hook entries (sessionStart, stop, etc.)
 fn check_codex_hooks(config_path: &std::path::Path) -> bool {
     if !config_path.exists() {
         return false;
@@ -1019,17 +1019,43 @@ fn check_codex_hooks(config_path: &std::path::Path) -> bool {
         .map(|endpoint| endpoint.contains("19876"))
         .unwrap_or(false);
 
-    // Check notify array contains aiki command
-    let has_notify = config
-        .get("notify")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .any(|v| v.as_str().map(|s| s.contains("aiki")).unwrap_or(false))
+    // Check native hooks: [hooks.sessionStart] and [hooks.stop] must have aiki commands
+    let required_hooks = ["sessionStart", "stop"];
+    let has_hooks = config
+        .get("hooks")
+        .and_then(|v| v.as_table())
+        .map(|hooks| {
+            required_hooks.iter().all(|hook_name| {
+                hooks
+                    .get(*hook_name)
+                    .and_then(|v| v.as_table())
+                    .and_then(|t| t.get("command"))
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .any(|v| v.as_str().map(|s| s.contains("aiki")).unwrap_or(false))
+                    })
+                    .unwrap_or(false)
+            })
         })
         .unwrap_or(false);
 
-    has_otel && has_notify
+    let global_aiki = crate::global::global_aiki_dir();
+    let global_aiki = global_aiki.to_string_lossy().to_string();
+
+    let has_writable_root = config
+        .get("sandbox_workspace_write")
+        .and_then(|v| v.as_table())
+        .and_then(|t| t.get("writable_roots"))
+        .and_then(|v| v.as_array())
+        .map(|roots| {
+            roots
+                .iter()
+                .any(|v| v.as_str().is_some_and(|s| s == global_aiki))
+        })
+        .unwrap_or(false);
+
+    has_otel && has_hooks && has_writable_root
 }
 
 /// Check if the OTel receiver is listening on 127.0.0.1:19876
@@ -1668,6 +1694,56 @@ mod tests {
         write!(file, "{}", serde_json::to_string(&hooks).unwrap()).unwrap();
 
         assert!(check_cursor_hooks(file.path()));
+    }
+
+    #[test]
+    fn test_check_codex_hooks_complete() {
+        let mut file = NamedTempFile::new().unwrap();
+        let global_aiki = crate::global::global_aiki_dir().to_string_lossy().to_string();
+        let config = format!(
+            r#"
+[hooks.sessionStart]
+command = ["/path/to/aiki", "hooks", "stdin", "--agent", "codex", "--event", "sessionStart"]
+
+[hooks.stop]
+command = ["/path/to/aiki", "hooks", "stdin", "--agent", "codex", "--event", "stop"]
+
+[otel]
+log_user_prompt = true
+
+[otel.exporter.otlp-http]
+endpoint = "http://127.0.0.1:19876/v1/logs"
+protocol = "binary"
+
+[sandbox_workspace_write]
+writable_roots = ["{global_aiki}"]
+"#
+        );
+        write!(file, "{}", config).unwrap();
+
+        assert!(check_codex_hooks(file.path()));
+    }
+
+    #[test]
+    fn test_check_codex_hooks_missing_writable_root() {
+        let mut file = NamedTempFile::new().unwrap();
+        let config = r#"
+[hooks.sessionStart]
+command = ["/path/to/aiki", "hooks", "stdin", "--agent", "codex", "--event", "sessionStart"]
+
+[hooks.stop]
+command = ["/path/to/aiki", "hooks", "stdin", "--agent", "codex", "--event", "stop"]
+
+[otel]
+log_user_prompt = true
+
+[otel.exporter.otlp-http]
+endpoint = "http://127.0.0.1:19876/v1/logs"
+protocol = "binary"
+"#;
+        write!(file, "{}", config).unwrap();
+
+        assert!(!check_codex_hooks(file.path()));
     }
 
     #[test]

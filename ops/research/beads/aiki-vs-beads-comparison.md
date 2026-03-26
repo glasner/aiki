@@ -452,7 +452,7 @@ This is one of aiki's strongest differentiators. The review workflow (`aiki revi
 - **Session tracking**: `claimed_by_session` ties tasks to agent sessions
 - **Agent type detection**: Auto-detects Claude Code, Gemini CLI, Codex, etc.
 - **Assignee-based visibility**: `get_ready_queue_for_agent()` filters by agent type
-- **Task runner**: `aiki task run <id>` spawns an agent session for a task
+- **Task runner**: `aiki run <id>` spawns an agent session for a task
 - **Status monitor**: Real-time terminal display of task tree with symbols
 - **CLAUDE.md integration**: Task system instructions injected into agent context
 - **Flow events**: `TaskStarted` dispatches to event bus for hook integration
@@ -465,8 +465,8 @@ This is one of aiki's strongest differentiators. The review workflow (`aiki revi
 | Agent setup | `bd setup claude` + `bd prime` | CLAUDE.md with instructions |
 | Session binding | Via `--claim` flag | Automatic on `task start` |
 | Multi-agent | Assignee field | Agent type detection + visibility filtering |
-| Task execution | No built-in runner | `aiki task run` with status monitor |
-| Background work | Daemon for sync | `aiki task run --async` |
+| Task execution | No built-in runner | `aiki run` with status monitor |
+| Background work | Daemon for sync | `aiki run --async` |
 
 ---
 
@@ -528,7 +528,7 @@ This is one of aiki's strongest differentiators. The review workflow (`aiki revi
 | **Stopped status** | Distinct from "blocked" -- captures "was working, now paused" |
 | **Review workflow** | `aiki review` with template-generated subtasks per finding |
 | **Fix workflow** | `aiki fix <review-id>` creates follow-up tasks from review comments |
-| **Task runner** | `aiki task run` spawns agent sessions |
+| **Task runner** | `aiki run` spawns agent sessions |
 | **Status monitor** | Real-time terminal tree display |
 | **Agent visibility** | Ready queue filtered by agent type |
 | **Flow integration** | Task events trigger hooks via event bus |

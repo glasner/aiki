@@ -31,8 +31,8 @@ Commit it:
 
 Launch both with --async:
 
-    aiki task run <id-a1> --async
-    aiki task run <id-a2> --async
+    aiki run <id-a1> --async
+    aiki run <id-a2> --async
 
 ### 1.2 Wait and verify conflict detection
 
@@ -107,8 +107,8 @@ Commit it:
 
 Launch both:
 
-    aiki task run <id-m1> --async
-    aiki task run <id-m2> --async
+    aiki run <id-m1> --async
+    aiki run <id-m2> --async
     aiki task wait <id-m1> <id-m2>
 
 ### 2.2 Validate marker structure
@@ -167,8 +167,8 @@ Commit it:
     aiki task add "Agent R1: In resolve-manual.txt, replace 'CONTESTED LINE' with 'R1 version: implemented feature X'"
     aiki task add "Agent R2: In resolve-manual.txt, replace 'CONTESTED LINE' with 'R2 version: implemented feature Y'"
 
-    aiki task run <id-r1> --async
-    aiki task run <id-r2> --async
+    aiki run <id-r1> --async
+    aiki run <id-r2> --async
     aiki task wait <id-r1> <id-r2>
 
 Verify conflicts exist:
@@ -226,8 +226,8 @@ Commit it:
     aiki task add "Agent RC1: In resolve-cmd-test.txt, replace 'BATTLE LINE' with 'RC1 claims this'"
     aiki task add "Agent RC2: In resolve-cmd-test.txt, replace 'BATTLE LINE' with 'RC2 claims this'"
 
-    aiki task run <id-rc1> --async
-    aiki task run <id-rc2> --async
+    aiki run <id-rc1> --async
+    aiki run <id-rc2> --async
     aiki task wait <id-rc1> <id-rc2>
 
 Verify conflicts:
@@ -311,9 +311,9 @@ Commit it:
     aiki task add "Agent MC2: In multi-conflict.txt, replace 'REPLACE_C' with 'MC2 edited C'"
     aiki task add "Agent MC3: In multi-conflict.txt, replace 'REPLACE_D' with 'MC3 edited D'"
 
-    aiki task run <id-mc1> --async
-    aiki task run <id-mc2> --async
-    aiki task run <id-mc3> --async
+    aiki run <id-mc1> --async
+    aiki run <id-mc2> --async
+    aiki run <id-mc3> --async
     aiki task wait <id-mc1> <id-mc2> <id-mc3>
 
 ### 5.2 Examine the conflict structure
@@ -381,8 +381,8 @@ Commit it:
     aiki task add "Agent MD1: In mod-vs-delete.txt, replace 'DELETE OR MODIFY THIS LINE' with 'MD1 modified this line with new content'"
     aiki task add "Agent MD2: In mod-vs-delete.txt, delete the line 'DELETE OR MODIFY THIS LINE' entirely (remove it, don't replace it)"
 
-    aiki task run <id-md1> --async
-    aiki task run <id-md2> --async
+    aiki run <id-md1> --async
+    aiki run <id-md2> --async
     aiki task wait <id-md1> <id-md2>
 
 ### 6.2 Examine the conflict
@@ -435,8 +435,8 @@ Commit it:
     aiki task add "Agent PV1: In provenance-test.txt, replace 'PROVENANCE LINE' with 'PV1 was here'"
     aiki task add "Agent PV2: In provenance-test.txt, replace 'PROVENANCE LINE' with 'PV2 was here'"
 
-    aiki task run <id-pv1> --async
-    aiki task run <id-pv2> --async
+    aiki run <id-pv1> --async
+    aiki run <id-pv2> --async
     aiki task wait <id-pv1> <id-pv2>
 
 ### 7.2 Before resolving: check provenance

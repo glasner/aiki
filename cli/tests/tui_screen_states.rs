@@ -91,7 +91,7 @@ fn count_lines<F: Fn(&aiki::tui::app::Line) -> bool>(
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// Flow 1: `aiki task run <id>`
+// Flow 1: `aiki run <id>`
 // ═══════════════════════════════════════════════════════════════════════
 
 /// State 1.0a: Loading — task not yet in graph

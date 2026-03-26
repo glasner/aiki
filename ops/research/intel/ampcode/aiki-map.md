@@ -14,7 +14,7 @@
 | 3 | Skills framework | None | Low | Ignore | Markdown-based extensibility packages. Aiki uses CLAUDE.md instructions and task-based workflows instead. Different extension philosophy — Aiki extends via workflow, not plugins. |
 | 4 | Checks system (composable review) | Direct | High | Counter | User-defined review criteria in `.agents/checks/`. This is squarely in Aiki's wedge — autonomous review with structured, composable criteria. Amp shipped this Feb 2026, signaling they see review as a competitive differentiator. Aiki must ensure its review system is at least as composable. |
 | 5 | MCP support | None | Low | Ignore | Standard protocol support. Table stakes for any agent tool. Not relevant to Aiki's wedge. |
-| 6 | Subagent spawning | Direct | High | Counter | Parallel isolated execution contexts for agent work. Directly overlaps with `aiki task run` and multi-agent orchestration. Amp's approach is model-native; Aiki's is workflow-native (task tracking, provenance, hooks). Aiki's advantage: persistence and observability across sessions. |
+| 6 | Subagent spawning | Direct | High | Counter | Parallel isolated execution contexts for agent work. Directly overlaps with `aiki run` and multi-agent orchestration. Amp's approach is model-native; Aiki's is workflow-native (task tracking, provenance, hooks). Aiki's advantage: persistence and observability across sessions. |
 | 7 | Thread collaboration | Partial | Medium | Counter | Shareable, searchable conversation threads across teams. Aiki tasks are persistent and visible across agents/humans but lack the polished collaboration UX. Thread sharing is enterprise-attractive. Worth monitoring but not core to the autonomous review wedge. |
 | 8 | Cross-repo search (Librarian) | None | Low | Ignore | Subagent for external code research. Useful but not in Aiki's autonomous review/iteration wedge. Aiki operates within repo boundaries. |
 | 9 | Handoff system | Partial | Medium | Copy | Context transfer between focused threads. Aiki's task system provides continuity across sessions but lacks explicit "handoff" semantics for splitting complex tasks into focused sub-conversations. Could inform how Aiki handles task delegation context. |
@@ -30,7 +30,7 @@
 
 **Checks system (composable review):** Amp's `.agents/checks/` system lets users define structured review criteria that compose with each other. This is the most direct competitive overlap — Aiki's wedge is autonomous review, and Amp is building composable review primitives. The Feb 2026 launch timing suggests this is a strategic priority for Amp. Aiki needs to ensure its `aiki review` workflow supports user-defined review criteria with at least equivalent composability.
 
-**Subagent spawning:** Both Aiki and Amp support parallel agent execution. Amp's is tightly integrated with its multi-model system (different models for different subagent roles). Aiki's advantage is that `aiki task run` provides full workflow context — task tracking, provenance, hooks, persistence. Amp's subagents are ephemeral within a thread; Aiki's are durable across sessions. This durability is a real differentiator for autonomous iteration loops.
+**Subagent spawning:** Both Aiki and Amp support parallel agent execution. Amp's is tightly integrated with its multi-model system (different models for different subagent roles). Aiki's advantage is that `aiki run` provides full workflow context — task tracking, provenance, hooks, persistence. Amp's subagents are ephemeral within a thread; Aiki's are durable across sessions. This durability is a real differentiator for autonomous iteration loops.
 
 ### Medium-Threat Capabilities
 
@@ -40,7 +40,7 @@
 
 **Thread collaboration:** Enterprise teams sharing agent conversations is valuable for knowledge transfer. Aiki's task history is persistent but not designed for team browsing. Medium threat because collaboration is adjacent to, not within, the autonomous review wedge.
 
-**Handoff system:** Context-preserving task splitting. Aiki does this via `aiki task run` with task descriptions, but lacks Amp's automatic context analysis for optimal handoff. Worth studying but not an immediate threat.
+**Handoff system:** Context-preserving task splitting. Aiki does this via `aiki run` with task descriptions, but lacks Amp's automatic context analysis for optimal handoff. Worth studying but not an immediate threat.
 
 ### Low-Threat Capabilities
 

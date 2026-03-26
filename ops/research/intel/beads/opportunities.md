@@ -83,11 +83,11 @@
 - **Pain (4):** When a fix in one module affects others, developers must manually identify and re-review downstream dependencies. This is especially painful in large codebases where a single fix can cascade through multiple files. Currently agents don't track these relationships.
 - **Fit (5):** This directly counters Gas Town's generic orchestration with domain-specific intelligence. Beads/Gas Town dispatches tasks; Aiki would dispatch reviews with semantic understanding of what needs re-reviewing and why. This is the deepest expression of the autonomous review wedge.
 - **GTM (4):** "Orchestration that understands code review" is a strong positioning statement against Gas Town's "dispatch anything to 30 agents." Depth vs. breadth is a compelling story for developers who care about review quality.
-- **Complexity (2):** Requires dependency analysis (which modules are affected by a fix), priority computation from severity scores, cascading logic, and integration with the existing `aiki task run` orchestration.
+- **Complexity (2):** Requires dependency analysis (which modules are affected by a fix), priority computation from severity scores, cascading logic, and integration with the existing `aiki run` orchestration.
 
 **Evidence:**
 - Gas Town manages 20-30 agents but with generic task dispatch, no review semantics — [Gas Town GitHub](https://github.com/steveyegge/gastown), [SE Daily](https://softwareengineeringdaily.com/2026/02/12/gas-town-beads-and-the-rise-of-agentic-development-with-steve-yegge/)
-- Aiki already has `aiki task run --async` + `aiki task wait` for parallel execution — `ops/now/intel/beads/aiki-map.md` (#15)
+- Aiki already has `aiki run --async` + `aiki task wait` for parallel execution — `ops/now/intel/beads/aiki-map.md` (#15)
 - Strategic recommendation: "deepen review-specific orchestration rather than copying Gas Town" — `ops/now/intel/beads/aiki-map.md` (Strategic Recommendations #1)
 
 ---
@@ -175,7 +175,7 @@
 **Description:** Add atomic claiming to `aiki task start` to prevent race conditions when multiple agents attempt to start the same task concurrently. While Aiki's JJ workspace isolation prevents file-level conflicts, two agents could currently start the same task simultaneously. An atomic check-and-claim operation would close this gap.
 
 **Rationale:**
-- **Pain (3):** Not painful today with Aiki's current scale (typically 1-5 parallel agents via `aiki task run`). Will become more painful as parallel agent count grows. The risk is wasted work, not data corruption (JJ isolation prevents that).
+- **Pain (3):** Not painful today with Aiki's current scale (typically 1-5 parallel agents via `aiki run`). Will become more painful as parallel agent count grows. The risk is wasted work, not data corruption (JJ isolation prevents that).
 - **Fit (3):** Supports multi-agent review scenarios where multiple agents pull from the ready queue. Relevant but not core to the review wedge.
 - **GTM (2):** Infrastructure feature with no marketing appeal. Users don't buy tools for race condition prevention; they buy for workflow outcomes.
 - **Complexity (4):** Relatively simple — add an atomic check-and-transition to `aiki task start` using JJ's atomic operations. The core change is small.

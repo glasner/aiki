@@ -418,6 +418,8 @@ Ready (3):
 - `show oorznprsukkomwtnolrrqspllrywxznv` → User wants to see task details
 - `close tnslzmpqpzypnymnzlroorzvxkqtulml` → User wants to close that task
 
+**Short prefixes:** Commands may print short task IDs such as `uvvloqn` or users may refer to tasks by prefix. Do NOT invent or guess the full 32-character ID from the prefix. Always resolve it by running `aiki task show <prefix>` or another `aiki task` command that prints the canonical full ID.
+
 **When you see a task ID:**
 1. Run `aiki task show <id>` to see what the task is about
 2. If the user wants work done, run `aiki task start <id>` (if not already started)

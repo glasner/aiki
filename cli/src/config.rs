@@ -441,17 +441,37 @@ pub fn install_codex_hooks_global() -> Result<()> {
         config_table.insert("otel".to_string(), toml::Value::Table(otel_table));
     }
 
-    // Configure notify command
-    let notify_cmd = vec![
-        toml::Value::String(aiki_path),
-        toml::Value::String("hooks".to_string()),
-        toml::Value::String("stdin".to_string()),
-        toml::Value::String("--agent".to_string()),
-        toml::Value::String("codex".to_string()),
-        toml::Value::String("--event".to_string()),
-        toml::Value::String("agent-turn-complete".to_string()),
-    ];
-    config_table.insert("notify".to_string(), toml::Value::Array(notify_cmd));
+    // Remove legacy notify config if present
+    config_table.remove("notify");
+
+    // Configure native hooks
+    let hook_events = ["sessionStart", "userPromptSubmit", "preToolUse", "stop"];
+    let mut hooks_table = config_table
+        .get("hooks")
+        .and_then(|v| v.as_table())
+        .cloned()
+        .unwrap_or_default();
+
+    for event_name in &hook_events {
+        let cmd = vec![
+            toml::Value::String(aiki_path.clone()),
+            toml::Value::String("hooks".to_string()),
+            toml::Value::String("stdin".to_string()),
+            toml::Value::String("--agent".to_string()),
+            toml::Value::String("codex".to_string()),
+            toml::Value::String("--event".to_string()),
+            toml::Value::String(event_name.to_string()),
+        ];
+        let mut hook_entry = toml::map::Map::new();
+        hook_entry.insert("command".to_string(), toml::Value::Array(cmd));
+        hooks_table.insert(event_name.to_string(), toml::Value::Table(hook_entry));
+    }
+
+    config_table.insert("hooks".to_string(), toml::Value::Table(hooks_table));
+
+    // Codex native hooks inherit the session sandbox. Add ~/.aiki so hook
+    // handlers can write global session state under workspace-write mode.
+    ensure_codex_writable_root(config_table)?;
 
     // Write updated config
     let content = toml::to_string_pretty(&config).context("Failed to serialize config.toml")?;
@@ -460,7 +480,8 @@ pub fn install_codex_hooks_global() -> Result<()> {
     println!("✓ Installed Codex hooks at {}", config_path.display());
     println!("  - [otel.exporter]: Log events → {}", aiki_endpoint);
     println!("  - [otel.trace_exporter]: Disabled (no trace spans)");
-    println!("  - notify: Turn completion tracking");
+    println!("  - [hooks]: sessionStart, userPromptSubmit, preToolUse, stop");
+    println!("  - [sandbox_workspace_write]: writable_roots includes ~/.aiki");
     println!("  - log_user_prompt: true (prompt content capture enabled)");
 
     Ok(())
@@ -499,6 +520,45 @@ fn get_otlp_http_endpoint(otel: &toml::map::Map<String, toml::Value>) -> Option<
         .and_then(|http| http.get("endpoint"))
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
+}
+
+/// Ensure ~/.aiki is writable inside Codex's workspace-write sandbox.
+///
+/// Codex native hooks execute inside the session sandbox, so they need the
+/// global Aiki directory added as an extra writable root in order to create
+/// session files and update the global JJ repo.
+fn ensure_codex_writable_root(config_table: &mut toml::map::Map<String, toml::Value>) -> Result<()> {
+    let global_aiki = crate::global::global_aiki_dir();
+    let global_aiki = global_aiki
+        .to_str()
+        .context("Global aiki directory contains invalid UTF-8")?
+        .to_string();
+
+    let sandbox = config_table
+        .entry("sandbox_workspace_write".to_string())
+        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+
+    let sandbox_table = sandbox
+        .as_table_mut()
+        .context("sandbox_workspace_write must be a table")?;
+
+    let writable_roots = sandbox_table
+        .entry("writable_roots".to_string())
+        .or_insert_with(|| toml::Value::Array(Vec::new()));
+
+    let writable_roots = writable_roots
+        .as_array_mut()
+        .context("sandbox_workspace_write.writable_roots must be an array")?;
+
+    let already_present = writable_roots
+        .iter()
+        .any(|v| v.as_str().is_some_and(|s| s == global_aiki));
+
+    if !already_present {
+        writable_roots.push(toml::Value::String(global_aiki));
+    }
+
+    Ok(())
 }
 
 /// Install the OTel receiver as a socket-activated service.

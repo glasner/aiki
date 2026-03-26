@@ -24,7 +24,7 @@ it does **not** check task status. A lane whose head task is already
 
 **Consequence:** `aiki task lane <parent>` (no `--all`) lists in-progress
 lanes as ready. The loop orchestrator then calls
-`aiki task run <parent> --next-session --lane <lane> --async`, which
+`aiki run <parent> --next-session --lane <lane> --async`, which
 internally calls `resolve_next_session_in_lane`. That function filters for
 `status == Open`, finds nothing (the task is `InProgress`), and returns
 `Blocked(unclosed)` → error. The orchestrator gets an error each iteration

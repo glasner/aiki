@@ -114,6 +114,33 @@ fn extract_id_from_list_by_name(output: &str, name: &str) -> String {
     panic!("Could not find task '{}' in list output: {}", name, output);
 }
 
+fn task_stdout(path: &std::path::Path, args: &[&str]) -> String {
+    let output = aiki_task(path, args).success();
+    String::from_utf8_lossy(&output.get_output().stdout).into_owned()
+}
+
+/// Extract the filtered "Tasks" section from list output, excluding the
+/// context footer (Ready/In Progress queues appended after the filtered results).
+fn tasks_section(output: &str) -> &str {
+    // The context footer starts with a blank line followed by a status header
+    // like "Ready (N):" or "In Progress:". Split at the first such boundary.
+    for footer in &["\nReady (", "\nReady:\n", "\nIn Progress:", "\nIn Progress ("] {
+        if let Some(pos) = output.find(footer) {
+            return &output[..pos];
+        }
+    }
+    output
+}
+
+fn extract_full_id_from_show(output: &str) -> String {
+    for line in output.lines() {
+        if let Some(id) = line.strip_prefix("ID: ") {
+            return id.to_string();
+        }
+    }
+    panic!("Could not find 'ID: <id>' in output: {}", output);
+}
+
 // ============================================================================
 // Phase 1: Core Workflow Tests
 // ============================================================================
@@ -580,6 +607,172 @@ fn test_task_list_closed_filter() {
     aiki_task(temp_dir.path(), &["list", "--closed"])
         .success()
         .stdout(predicate::str::contains("Closed task"));
+}
+
+#[test]
+fn test_task_list_outcome_filters_regression() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    let done_add = task_stdout(temp_dir.path(), &["add", "Done task"]);
+    let done_id = extract_short_id(&done_add);
+    aiki_task(temp_dir.path(), &["start", &done_id]).success();
+    aiki_task(
+        temp_dir.path(),
+        &["close", &done_id, "--summary", "Done summary"],
+    )
+    .success();
+
+    let wont_do_add = task_stdout(temp_dir.path(), &["add", "Won't do task"]);
+    let wont_do_id = extract_short_id(&wont_do_add);
+    aiki_task(temp_dir.path(), &["start", &wont_do_id]).success();
+    aiki_task(
+        temp_dir.path(),
+        &[
+            "close",
+            &wont_do_id,
+            "--wont-do",
+            "--summary",
+            "Won't do summary",
+        ],
+    )
+    .success();
+
+    aiki_task(temp_dir.path(), &["add", "Open task"]).success();
+
+    let done_stdout = task_stdout(temp_dir.path(), &["list", "--done", "--all"]);
+    let done_tasks = tasks_section(&done_stdout);
+    assert!(done_tasks.contains("Tasks (1):"), "{}", done_stdout);
+    assert!(done_tasks.contains("Done task"), "{}", done_stdout);
+    assert!(done_tasks.contains("Done summary"), "{}", done_stdout);
+    assert!(!done_tasks.contains("Won't do task"), "{}", done_stdout);
+    assert!(!done_tasks.contains("Open task"), "{}", done_stdout);
+
+    let wont_do_stdout = task_stdout(temp_dir.path(), &["list", "--wont-do", "--all"]);
+    let wont_do_tasks = tasks_section(&wont_do_stdout);
+    assert!(wont_do_tasks.contains("Tasks (1):"), "{}", wont_do_stdout);
+    assert!(
+        wont_do_tasks.contains("Won't do task"),
+        "{}",
+        wont_do_stdout
+    );
+    assert!(
+        wont_do_tasks.contains("Won't do summary"),
+        "{}",
+        wont_do_stdout
+    );
+    assert!(!wont_do_tasks.contains("Done task"), "{}", wont_do_stdout);
+    assert!(!wont_do_tasks.contains("Open task"), "{}", wont_do_stdout);
+
+    let both_stdout = task_stdout(temp_dir.path(), &["list", "--done", "--wont-do", "--all"]);
+    let both_tasks = tasks_section(&both_stdout);
+    assert!(both_tasks.contains("Tasks (2):"), "{}", both_stdout);
+    assert!(both_tasks.contains("Done task"), "{}", both_stdout);
+    assert!(both_tasks.contains("Won't do task"), "{}", both_stdout);
+    assert!(both_tasks.contains("Done summary"), "{}", both_stdout);
+    assert!(both_tasks.contains("Won't do summary"), "{}", both_stdout);
+    assert!(!both_tasks.contains("Open task"), "{}", both_stdout);
+}
+
+#[test]
+fn test_task_list_status_done_matches_done_filter() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    let done_add = task_stdout(temp_dir.path(), &["add", "Status done task"]);
+    let done_id = extract_short_id(&done_add);
+    aiki_task(temp_dir.path(), &["start", &done_id]).success();
+    aiki_task(
+        temp_dir.path(),
+        &["close", &done_id, "--summary", "Closed via done"],
+    )
+    .success();
+
+    let wont_do_add = task_stdout(temp_dir.path(), &["add", "Status won't do task"]);
+    let wont_do_id = extract_short_id(&wont_do_add);
+    aiki_task(temp_dir.path(), &["start", &wont_do_id]).success();
+    aiki_task(
+        temp_dir.path(),
+        &[
+            "close",
+            &wont_do_id,
+            "--wont-do",
+            "--summary",
+            "Closed via won't do",
+        ],
+    )
+    .success();
+
+    let stdout = task_stdout(temp_dir.path(), &["list", "--status", "done", "--all"]);
+    let done_tasks = tasks_section(&stdout);
+    assert!(done_tasks.contains("Tasks (1):"), "{}", stdout);
+    assert!(done_tasks.contains("Status done task"), "{}", stdout);
+    assert!(done_tasks.contains("Closed via done"), "{}", stdout);
+    assert!(!done_tasks.contains("Status won't do task"), "{}", stdout);
+}
+
+#[test]
+fn test_task_list_descendant_of_accepts_full_and_short_ids() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    let parent_add = task_stdout(temp_dir.path(), &["add", "Parent task"]);
+    let parent_short_id = extract_short_id(&parent_add);
+    let parent_show = task_stdout(temp_dir.path(), &["show", &parent_short_id]);
+    let parent_full_id = extract_full_id_from_show(&parent_show);
+
+    let child_add = task_stdout(
+        temp_dir.path(),
+        &["add", "Child task", "--parent", &parent_short_id],
+    );
+    let child_short_id = extract_short_id(&child_add);
+
+    task_stdout(
+        temp_dir.path(),
+        &["add", "Grandchild task", "--parent", &child_short_id],
+    );
+    task_stdout(
+        temp_dir.path(),
+        &["add", "Sibling task", "--parent", &parent_short_id],
+    );
+    task_stdout(temp_dir.path(), &["add", "Unrelated task"]);
+
+    let full_stdout = task_stdout(
+        temp_dir.path(),
+        &["list", "--all", "--descendant-of", &parent_full_id],
+    );
+    let full_tasks = tasks_section(&full_stdout);
+    assert!(full_tasks.contains("Tasks (3):"), "{}", full_stdout);
+    assert!(full_tasks.contains("Child task"), "{}", full_stdout);
+    assert!(full_tasks.contains("Grandchild task"), "{}", full_stdout);
+    assert!(full_tasks.contains("Sibling task"), "{}", full_stdout);
+    assert!(!full_tasks.contains("Parent task"), "{}", full_stdout);
+    assert!(!full_tasks.contains("Unrelated task"), "{}", full_stdout);
+
+    let short_stdout = task_stdout(
+        temp_dir.path(),
+        &["list", "--all", "--descendant-of", &parent_short_id],
+    );
+    let short_tasks = tasks_section(&short_stdout);
+    assert!(short_tasks.contains("Tasks (3):"), "{}", short_stdout);
+    assert!(short_tasks.contains("Child task"), "{}", short_stdout);
+    assert!(short_tasks.contains("Grandchild task"), "{}", short_stdout);
+    assert!(short_tasks.contains("Sibling task"), "{}", short_stdout);
+    assert!(!short_tasks.contains("Parent task"), "{}", short_stdout);
+    assert!(!short_tasks.contains("Unrelated task"), "{}", short_stdout);
+}
+
+#[test]
+fn test_task_list_descendant_of_unknown_ancestor_errors() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    aiki_task(
+        temp_dir.path(),
+        &["list", "--all", "--descendant-of", "zzznotarealtaskid"],
+    )
+    .failure()
+    .stderr(predicate::str::contains("Task not found"));
 }
 
 // ============================================================================
@@ -2316,6 +2509,33 @@ fn test_show_without_id_returns_error() {
 }
 
 #[test]
+fn test_show_includes_parent_short_id() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    let parent_output = aiki_task(temp_dir.path(), &["add", "Parent task"]).success();
+    let parent_stdout = String::from_utf8_lossy(&parent_output.get_output().stdout);
+    let parent_id = extract_short_id(&parent_stdout);
+
+    let child_output = aiki_task(
+        temp_dir.path(),
+        &["add", "Child task", "--subtask-of", &parent_id],
+    )
+    .success();
+    let child_stdout = String::from_utf8_lossy(&child_output.get_output().stdout);
+    let child_id = extract_short_id(&child_stdout);
+
+    let output = aiki_task(temp_dir.path(), &["show", &child_id]).success();
+    let stdout = String::from_utf8_lossy(&output.get_output().stdout);
+
+    assert!(
+        stdout.contains(&format!("Parent: {} — Parent task", parent_id)),
+        "Expected parent line in task show output, got: {}",
+        stdout
+    );
+}
+
+#[test]
 fn test_show_output_summary_rejects_open_task() {
     let temp_dir = tempfile::tempdir().unwrap();
     init_aiki_repo(temp_dir.path());
@@ -2382,7 +2602,10 @@ fn test_run_requires_id_or_template() {
     let temp_dir = tempfile::tempdir().unwrap();
     init_aiki_repo(temp_dir.path());
 
-    aiki_task(temp_dir.path(), &["run"])
+    Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["run"])
+        .assert()
         .failure()
         .stderr(predicate::str::contains(
             "Either task ID or --template must be provided",
@@ -2394,7 +2617,11 @@ fn test_run_id_conflicts_with_template() {
     let temp_dir = tempfile::tempdir().unwrap();
     init_aiki_repo(temp_dir.path());
 
-    aiki_task(temp_dir.path(), &["run", "someid", "--template", "foo"]).failure();
+    Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["run", "someid", "--template", "foo"])
+        .assert()
+        .failure();
     // Clap produces "cannot be used with" error
 }
 
@@ -2403,7 +2630,11 @@ fn test_run_data_requires_template() {
     let temp_dir = tempfile::tempdir().unwrap();
     init_aiki_repo(temp_dir.path());
 
-    aiki_task(temp_dir.path(), &["run", "someid", "--data", "key=value"]).failure();
+    Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["run", "someid", "--data", "key=value"])
+        .assert()
+        .failure();
     // Clap produces "required by" or "requires" error
 }
 
@@ -2421,18 +2652,18 @@ fn test_run_invalid_data_format() {
         "---\nversion: 1.0.0\ndescription: Test\n---\n# Test\nBody",
     );
 
-    aiki_task(
-        temp_dir.path(),
-        &[
+    Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args([
             "run",
             "--template",
             "test/foo",
             "--data",
             "invalid-no-equals",
-        ],
-    )
-    .failure()
-    .stderr(predicate::str::contains("Invalid --data format"));
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Invalid --data format"));
 }
 
 #[test]
@@ -2452,14 +2683,7 @@ fn test_run_template_creates_task() {
     // The run may fail at agent spawning, but we should see the task was created.
     let output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
         .current_dir(temp_dir.path())
-        .args([
-            "task",
-            "run",
-            "--template",
-            "test/run-me",
-            "--data",
-            "key=hello",
-        ])
+        .args(["run", "--template", "test/run-me", "--data", "key=hello"])
         .output()
         .expect("Failed to run command");
 
@@ -2829,8 +3053,12 @@ fn test_blocking_link_autorun_starts_task_on_close() {
     let out_b = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
         .current_dir(temp_dir.path())
         .args([
-            "task", "add", "Blocked autorun task",
-            "--blocked-by", &a_id, "--autorun",
+            "task",
+            "add",
+            "Blocked autorun task",
+            "--blocked-by",
+            &a_id,
+            "--autorun",
         ])
         .output()
         .unwrap();
@@ -2888,10 +3116,7 @@ fn test_blocking_link_no_autorun_does_not_start() {
     // Create task B with --blocked-by A (NO --autorun)
     let out_b = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
         .current_dir(temp_dir.path())
-        .args([
-            "task", "add", "Blocked no-autorun",
-            "--blocked-by", &a_id,
-        ])
+        .args(["task", "add", "Blocked no-autorun", "--blocked-by", &a_id])
         .output()
         .unwrap();
     let b_id = extract_short_id(&String::from_utf8_lossy(&out_b.stdout));
@@ -2956,19 +3181,19 @@ fn test_blocking_link_autorun_stays_blocked_with_multiple_blockers() {
     let out_c = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
         .current_dir(temp_dir.path())
         .args([
-            "task", "add", "Blocked by both",
-            "--blocked-by", &a_id, "--autorun",
+            "task",
+            "add",
+            "Blocked by both",
+            "--blocked-by",
+            &a_id,
+            "--autorun",
         ])
         .output()
         .unwrap();
     let c_id = extract_short_id(&String::from_utf8_lossy(&out_c.stdout));
 
     // Add second blocked-by link via task link (no --autorun needed; C already has autorun on one link)
-    aiki_task(
-        temp_dir.path(),
-        &["link", &c_id, "--blocked-by", &b_id],
-    )
-    .success();
+    aiki_task(temp_dir.path(), &["link", &c_id, "--blocked-by", &b_id]).success();
 
     // Close only A
     Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
@@ -3021,5 +3246,136 @@ fn test_blocking_link_autorun_stays_blocked_with_multiple_blockers() {
         show_stdout.contains("Status: in_progress"),
         "C should be in_progress after all blockers closed. Output: {}",
         show_stdout
+    );
+}
+
+// ============================================================================
+// Regression: Outcome and Descendant Filters
+// ============================================================================
+
+#[test]
+fn test_task_list_done_filter() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    // Create two tasks: one closed-done, one closed-wont_do
+    aiki_task(temp_dir.path(), &["add", "Done task"]).success();
+    aiki_task(temp_dir.path(), &["add", "Wont do task"]).success();
+
+    // Close first as done
+    aiki_task(temp_dir.path(), &["start"]).success();
+    aiki_task(
+        temp_dir.path(),
+        &["close", "--outcome", "done", "--summary", "Completed"],
+    )
+    .success();
+
+    // Close second as wont_do
+    aiki_task(temp_dir.path(), &["start"]).success();
+    aiki_task(
+        temp_dir.path(),
+        &["close", "--wont-do", "--summary", "Skipped"],
+    )
+    .success();
+
+    // --done should show only the done task
+    let output = aiki_task(temp_dir.path(), &["list", "--done"]).success();
+    let stdout = String::from_utf8_lossy(&output.get_output().stdout);
+    assert!(
+        stdout.contains("Done task"),
+        "--done should include done task, got: {}",
+        stdout
+    );
+    assert!(
+        !stdout.contains("Wont do task"),
+        "--done should exclude wont_do task, got: {}",
+        stdout
+    );
+}
+
+#[test]
+fn test_task_list_wont_do_filter() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    // Create two tasks: one closed-done, one closed-wont_do
+    aiki_task(temp_dir.path(), &["add", "Done task"]).success();
+    aiki_task(temp_dir.path(), &["add", "Wont do task"]).success();
+
+    // Close first as done
+    aiki_task(temp_dir.path(), &["start"]).success();
+    aiki_task(
+        temp_dir.path(),
+        &["close", "--outcome", "done", "--summary", "Completed"],
+    )
+    .success();
+
+    // Close second as wont_do
+    aiki_task(temp_dir.path(), &["start"]).success();
+    aiki_task(
+        temp_dir.path(),
+        &["close", "--wont-do", "--summary", "Skipped"],
+    )
+    .success();
+
+    // --wont-do should show only the wont_do task
+    let output = aiki_task(temp_dir.path(), &["list", "--wont-do"]).success();
+    let stdout = String::from_utf8_lossy(&output.get_output().stdout);
+    assert!(
+        stdout.contains("Wont do task"),
+        "--wont-do should include wont_do task, got: {}",
+        stdout
+    );
+    assert!(
+        !stdout.contains("Done task"),
+        "--wont-do should exclude done task, got: {}",
+        stdout
+    );
+}
+
+#[test]
+fn test_task_list_done_and_wont_do_combined() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    // Create three tasks: one done, one wont_do, one still open
+    aiki_task(temp_dir.path(), &["add", "Done task"]).success();
+    aiki_task(temp_dir.path(), &["add", "Wont do task"]).success();
+    aiki_task(temp_dir.path(), &["add", "Open task"]).success();
+
+    // Close first as done
+    aiki_task(temp_dir.path(), &["start"]).success();
+    aiki_task(
+        temp_dir.path(),
+        &["close", "--outcome", "done", "--summary", "Completed"],
+    )
+    .success();
+
+    // Close second as wont_do
+    aiki_task(temp_dir.path(), &["start"]).success();
+    aiki_task(
+        temp_dir.path(),
+        &["close", "--wont-do", "--summary", "Skipped"],
+    )
+    .success();
+
+    // --done --wont-do should show both closed tasks (all outcomes)
+    let output = aiki_task(temp_dir.path(), &["list", "--done", "--wont-do"]).success();
+    let stdout = String::from_utf8_lossy(&output.get_output().stdout);
+    assert!(
+        stdout.contains("Done task"),
+        "--done --wont-do should include done task, got: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("Wont do task"),
+        "--done --wont-do should include wont_do task, got: {}",
+        stdout
+    );
+    // The filtered "Tasks" section should contain exactly the 2 closed tasks
+    assert!(
+        stdout.contains("Tasks (2):"),
+        "--done --wont-do filtered section should show exactly 2 tasks, got: {}",
+        stdout
     );
 }

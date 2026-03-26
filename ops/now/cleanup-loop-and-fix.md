@@ -5,24 +5,28 @@ draft: false
 # Cleanup Loop and Fix Commands
 
 **Date**: 2026-03-23
-**Status**: Draft
-**Purpose**: Rename CLI commands to be more self-documenting and separate concerns cleanly
+**Updated**: 2026-03-25
+**Status**: Ready
+**Purpose**: Rename CLI commands to be more self-documenting and clean up docs
 
 **Related Documents**:
-- [cli/src/commands/loop_cmd.rs](../../cli/src/commands/loop_cmd.rs) - Current loop command
-- [cli/src/commands/fix.rs](../../cli/src/commands/fix.rs) - Current fix command (orchestrator + planning)
-- [cli/src/commands/build.rs](../../cli/src/commands/build.rs) - Build command (reference pure orchestrator)
-- [cli/src/commands/plan.rs](../../cli/src/commands/plan.rs) - Current plan command (interactive authoring)
+- [cli/src/commands/loop_cmd.rs](../../cli/src/commands/loop_cmd.rs) - Current loop command (→ `code_cmd.rs`)
+- [cli/src/commands/fix.rs](../../cli/src/commands/fix.rs) - Fix command (already uses workflow steps)
+- [cli/src/commands/build.rs](../../cli/src/commands/build.rs) - Build command (already uses workflow steps)
+- [cli/src/workflow.rs](../../cli/src/workflow.rs) - Workflow step infrastructure (done)
+- [workflow-steps.md](tui/workflow-steps.md) - Workflow steps plan (completed)
 
 ---
 
 ## Executive Summary
 
-Two renames and one refactor to the CLI command surface:
+The workflow-steps refactor is complete — `build.rs`, `fix.rs`, and `review.rs` now use `WorkflowStep` enums driven by `Workflow<S>`. What remains is:
 
-1. **`aiki loop` → `aiki code`** — The "execute subtasks" stage gets a name that describes its purpose (coding) rather than its mechanism (looping).
-2. **`aiki plan` keeps its current subcommand support but is cleaned up** — `aiki plan fix <review-id>` already exists; this work makes that interface explicit in clap/help, keeps the default authoring mode as `epic`, and preserves backward compatibility for `aiki plan <path-or-text...>`.
-3. **`aiki fix` becomes a thinner orchestrator** — Like `build`, it chains shared stages, but it must still create and manage the fix-parent container that carries remediation links and review context.
+1. **`aiki loop` → `aiki code`** — Rename the command, module, structs, template, flags, step names, and docs.
+2. **Extract shared `run_plan_fix()`** — `plan.rs::run_fix()` and `fix.rs::create_plan_fix_task()` are two separate implementations of plan-fix creation. Extract a single shared function so `aiki plan fix` and `aiki fix` (via `FixStep::Fix`) use the same code path.
+3. **Docs and label cleanup** — Update all references from "loop" to "code" in docs, help text, and task labels.
+
+The `fix` orchestrator refactor originally planned here was completed by the workflow-steps work.
 
 ---
 
@@ -39,40 +43,21 @@ aiki code <parent-task-id> --agent codex
 
 No behavior change — just the command name and help text.
 
-### `aiki plan` (extended with subcommands)
+### `aiki plan` (subcommand dispatch exists, shared function needed)
 
 ```bash
 # Interactive epic plan authoring (shortcut — aiki plan = aiki plan epic)
 aiki plan "Build authentication system"
 aiki plan epic "Build authentication system"
 
-# Produce fix plan from review issues (v1)
+# Produce fix plan from review issues
 aiki plan fix <review-task-id>
 
 # Future: produce fix plan from bug report
 aiki plan bug <bug-task-id>
 ```
 
-**Output**: A plan file at `/tmp/aiki/plans/<task-id>.md` that `decompose` can consume.
-
-**Subcommand dispatch**:
-- `epic` (default when no subcommand) → interactive plan authoring
-- `fix` → fix-plan generation from review issues (existing behavior, cleaned up)
-- `bug` → `plan/bug` template (investigate, diagnose, produce plan) (future)
-
-**Compatibility requirement**:
-- `aiki plan <path-or-text...>` must keep working exactly as it does today
-- Unknown first arguments must continue to be treated as plan input, not rejected as unknown clap subcommands
-
-### `aiki fix` (refactored to pure orchestrator)
-
-```bash
-# From a review (existing path, same UX)
-aiki fix <review-task-id>
-aiki fix <review-task-id> --once
-```
-
-Pipeline: `create fix-parent → plan fix → decompose → code → review` (with quality loop unless `--once`).
+The dispatch routing exists in `plan.rs:70-91` (`epic`, `fix`, fallthrough). But `plan.rs::run_fix()` and `fix.rs::create_plan_fix_task()` are separate implementations that need to be unified into a shared `run_plan_fix()` function.
 
 ### CLI help (updated categories)
 
@@ -94,63 +79,23 @@ For Agents:
 
 ---
 
-## How It Works
+## Scope of Changes
 
-### Design principle: `build` and `fix` are mostly symmetric orchestrators
+### What's already done (workflow-steps)
 
-Both orchestrators follow the same pattern and should share building-block functions where possible. The main difference is that `fix` must first create a remediation container task that carries links back to the originating review and reviewed targets.
+The following are **complete** and not part of this plan:
 
-| Stage | `build` | `fix` |
-|---|---|---|
-| **Prepare** | None | `create_fix_parent()` creates remediation container + links |
-| **Plan** | Already exists (plan file) | `run_plan_fix()` produces one for the fix-parent |
-| **Decompose** | `run_decompose()` | `run_decompose()` |
-| **Execute** | `run_code()` | `run_code()` |
-| **Review** | `run_review()` (optional, `--review`) | `run_review()` (built-in, quality loop) |
+- `workflow.rs` — `WorkflowStep` trait, `Workflow<S>`, `WorkflowContext`, `RunMode`
+- `BuildStep` enum in `build.rs` with `build_workflow()` and `drive_build()`
+- `FixStep` enum in `fix.rs` with `fix_workflow()` and quality loop
+- `ReviewStep` enum in `review.rs` with `review_workflow()`
+- Fix iteration logic in build's `drive_build()`
 
-Both call the same shared Rust functions — no subprocesses between stages. The `ScreenSession` (live TUI) is threaded through all stages for a seamless experience.
+### What remains (this plan)
 
-### Current pipeline (fix)
-
-```
-aiki fix <review-id>
-  └─ [inline] read review issues, check actionable
-  └─ [inline] create plan-fix task from "fix" template → run it
-  └─ [inline] decompose plan into subtasks
-  └─ run_loop(fix-parent)               ← calls loop internally
-  └─ [inline] create review, run quality loop
-```
-
-### New pipeline (fix as pure orchestrator)
-
-```
-aiki fix <review-id>
-  └─ create_fix_parent(<review-id>)     ← preserves remediates/fixes/subtask-of links
-  └─ run_plan_fix(<review-id>, <parent>)← shared function, produces plan for fix-parent
-  └─ run_decompose(<plan>, <parent>)    ← unchanged
-  └─ run_code(<parent>)                 ← renamed from run_loop
-  └─ run_review(<parent>)               ← unchanged
-  └─ quality loop (repeat if issues)
-```
-
-### `plan` subcommand dispatch
-
-```
-aiki plan ...
-  ├─ epic (default in help/docs; bare `aiki plan ...` still routes here)
-  │   └─ interactive plan authoring (existing behavior)
-  │
-  ├─ fix <review-task-id>
-  │   └─ run_plan_fix(): use fix-plan template
-  │      (read issues, group by file, produce structured plan)
-  │
-  ├─ bug <task-id> (future)
-  │   └─ run_plan_bug(): use "plan/bug" template
-  │      (investigate, reproduce, diagnose, produce plan)
-  │
-  └─ anything else
-      └─ treat as epic-plan input for backward compatibility
-```
+1. Rename `loop` → `code` (mechanical)
+2. Extract shared plan-fix function (two implementations → one)
+3. Docs cleanup
 
 ---
 
@@ -158,49 +103,88 @@ aiki plan ...
 
 ### Phase 1: Rename `loop` → `code` (clean break)
 
-1. Rename `cli/src/commands/loop_cmd.rs` → `cli/src/commands/code_cmd.rs`
-2. Rename structs: `LoopArgs` → `CodeArgs`, `LoopOptions` → `CodeOptions`
-3. Rename `run_loop()` → `run_code()`
-4. Update `main.rs`: `Commands::Code`, no alias
-5. Update help text: "Execute a parent task's subtasks via lanes"
-6. Update all callers in `build.rs` and `fix.rs`
-7. Rename `--loop-template` flag → `--code-template` in `build.rs` and `fix.rs`
-8. Rename template: `core/loop.md` → `core/code.md`
-9. Update task type labels (spawner creates "Loop: X" → "Code: X")
-10. Update `CLAUDE.md` references
+All items below are mechanical renames — no behavior changes.
 
-### Phase 2: Add `plan` subcommands
+**Module + structs:**
+1. Rename file: `cli/src/commands/loop_cmd.rs` → `cli/src/commands/code_cmd.rs`
+2. Update `cli/src/commands/mod.rs`: `pub mod loop_cmd;` → `pub mod code_cmd;`
+3. Rename structs: `LoopArgs` → `CodeArgs`, `LoopOptions` → `CodeOptions`
+4. Rename function: `run_loop()` → `run_code()`
 
-1. Refactor `plan.rs` command parsing carefully:
-   - Preserve bare `aiki plan <path-or-text...>` behavior
-   - Support documented `epic` and `fix` subcommands
-2. `aiki plan` (no subcommand) remains equivalent to epic authoring via compatibility dispatch, not strict clap-only parsing
-3. Extract `run_plan_fix()` shared function: takes review task ID and fix-parent ID, produces a plan file for that parent
-   - Derived from existing `plan.rs::run_fix()` plus `fix.rs::create_plan_fix_task()`
-   - v1: only `fix`; future `plan bug` is just a new subcommand + template
-4. If introducing `core/plan/fix.md`, update call sites to use the new template name as part of the refactor
-5. Output: plan file path, compatible with `decompose` input
+**Command registration (main.rs):**
+5. `Commands::Loop(commands::loop_cmd::LoopArgs)` → `Commands::Code(commands::code_cmd::CodeArgs)`
+6. Help text: `"Orchestrate a parent task's subtasks via lanes"` → `"Execute a parent task's subtasks via lanes"`
+7. Match arm: `Commands::Loop(args) => commands::loop_cmd::run(args)` → `Commands::Code(args) => commands::code_cmd::run(args)`
 
-### Phase 3: Refactor `fix` to pure orchestrator
+**Callers — build.rs:**
+8. Import: `use super::loop_cmd::{run_loop, LoopOptions};` → `use super::code_cmd::{run_code, CodeOptions};`
+9. CLI flag: `--loop-template` → `--code-template` (both `BuildArgs` and `BuildOpts`)
+10. `BuildStep::Loop` → `BuildStep::Code` (enum variant + all match arms)
+11. Step name: `"loop"` → `"code"`
+12. `run_loop_step()` → `run_code_step()`; body uses `CodeOptions` and `run_code()`
 
-1. Keep `create_fix_parent()` in `fix.rs` or move it to shared code, but preserve its current links and task semantics
-2. Remove only the duplicated plan-fix task creation logic from `fix.rs`
-3. Replace it with a call to `run_plan_fix(review_id, fix_parent_id, ...)`
-4. Quality loop stays in `fix.rs` (that's the orchestration logic)
-5. Remove `core/fix.md` once all in-tree call sites have been migrated to the new template location/name
+**Callers — fix.rs:**
+13. Import: `use super::loop_cmd::{run_loop, LoopOptions};` → `use super::code_cmd::{run_code, CodeOptions};`
+14. `FixStep::Loop` → `FixStep::Code` (enum variant + all match arms)
+15. Step name: `"loop"` → `"code"`
+16. All `LoopOptions` → `CodeOptions`, `run_loop()` → `run_code()` in fix pipeline functions
+17. `loop_template` field names → `code_template` in `FixOpts` and related structs
 
-### Phase 4: Cleanup
+**Callers — main.rs (build subcommand inline args):**
+18. `--loop-template` flag in `Commands::Build` → `--code-template`
+19. `loop_template` field → `code_template` in the inline build args
 
-1. Update docs, AGENTS.md references
-2. Update any task name patterns that reference "Loop:" or "Fix:"
+**Template:**
+20. Rename `cli/src/tasks/templates/core/loop.md` → `cli/src/tasks/templates/core/code.md`
+21. Update default template name in `code_cmd.rs`: `"loop"` → `"code"`
+
+**Task labels:**
+22. Update task kind/name patterns: anywhere that generates `"Loop: X"` → `"Code: X"`
+
+**Tests:**
+23. Update test assertions that reference `"loop"` step name → `"code"`
+24. Update test helper field names: `loop_template` → `code_template`
+25. Run `cargo test -p aiki-cli` — all tests must pass
+
+### Phase 2: Extract shared `run_plan_fix()`
+
+Currently there are two separate implementations of plan-fix task creation:
+- `plan.rs::run_fix()` (line 700) — used by `aiki plan fix <review-id>`
+- `fix.rs::create_plan_fix_task()` (line 1069) — used by `FixStep::Fix` in the quality loop
+
+These do similar but different things. Extract a single shared function.
+
+**Extract shared function:**
+1. Create `pub fn run_plan_fix(cwd, review_id, fix_parent_id, assignee, template, ...)` — either in `fix.rs` (where the fix-parent context lives) or in a shared module
+2. This function: creates plan-fix task from template, runs it, returns plan file path
+3. Must handle: template resolution, data injection (review ID, fix-parent ID), task creation, agent run, plan file path construction
+
+**Update callers:**
+4. `fix.rs` `FixStep::Fix::run()` — replace inline `create_plan_fix_task()` + `run_task_with_show_tui()` with call to `run_plan_fix()`
+5. `plan.rs::run_fix()` — replace its bespoke implementation with call to `run_plan_fix()`
+6. `plan.rs` dispatch at line 84 still calls its local `run_fix()` wrapper (which handles output formatting), but the core logic delegates to the shared function
+
+**Cleanup:**
+7. Remove `plan.rs::run_fix()` body (replaced by thin wrapper around shared function)
+8. Remove `fix.rs::create_plan_fix_task()` if fully subsumed
+9. Verify `aiki plan fix <review-id>` and `aiki fix <review-id>` both work end-to-end
+
+### Phase 3: Docs cleanup
+
+1. Rename `cli/docs/sdlc/loop.md` → `cli/docs/sdlc/code.md`
+2. Update references in: `cli/docs/sdlc.md`, `cli/docs/sdlc/build.md`, `cli/docs/sdlc/decompose.md`, `cli/docs/sdlc/fix.md`, `cli/docs/getting-started.md`, `cli/docs/aiki-for-clawbots.md`, `cli/docs/tasks/templates/spawn.md`
+3. Update `AGENTS.md` references (if any)
+4. Update any task name patterns that reference "Loop:" in docs
 
 ---
 
 ## Resolved Questions
 
 1. ~~**Deprecation period for `loop`?**~~ No — clean break, no alias.
-2. ~~**Shared function vs subprocess?**~~ Shared function (`run_plan_fix()`, `run_code()`). Consistent pattern, supports `ScreenSession` passthrough.
+2. ~~**Shared function vs subprocess?**~~ Shared function (`run_code()`). Consistent pattern, supports `ScreenSession` passthrough.
 3. ~~**Bug report input format**~~ Deferred. v1 only supports `plan fix` (review tasks). Bug reports are future `plan bug` subcommand — just a new clap variant + template.
-4. ~~**New command vs extend existing?**~~ Subcommands under `plan`. The output is a plan — `aiki plan fix` reads naturally. Explicit subcommands avoid input-type ambiguity.
+4. ~~**New command vs extend existing?**~~ Subcommands under `plan`. The output is a plan — `aiki plan fix` reads naturally.
+5. ~~**Fix orchestrator refactor?**~~ Completed by workflow-steps. `FixStep` enum + `Workflow<FixStep>` in `fix.rs` handles the full pipeline.
+6. ~~**Plan subcommand parsing refactor?**~~ Dispatch routing already exists in `plan.rs`. The real work is extracting a shared `run_plan_fix()` from the two separate implementations in `plan.rs` and `fix.rs`.
 
 ---

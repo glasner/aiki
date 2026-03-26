@@ -18,7 +18,7 @@ Send desktop notifications automatically when long-running aiki CLI commands com
 
 ## Problem
 
-Long-running commands (`aiki task run`, `aiki build`, `aiki task wait`) block in the terminal while an agent works. Users switch to other windows and lose track of when work finishes. Today there's no built-in way to get notified — you either watch the terminal or check back manually.
+Long-running commands (`aiki run`, `aiki build`, `aiki task wait`) block in the terminal while an agent works. Users switch to other windows and lose track of when work finishes. Today there's no built-in way to get notified — you either watch the terminal or check back manually.
 
 The flow engine has example `notify:` actions in docs (`workflow-hook-commands.md`, `slack-notify` plugin) but these are user-authored hooks. This spec covers **built-in CLI notifications** — zero setup, just works.
 
@@ -30,7 +30,7 @@ The flow engine has example `notify:` actions in docs (`workflow-hook-commands.m
 
 | Command | When | Message |
 |---------|------|---------|
-| `aiki task run <id>` | Agent session completes | "Task completed: {task_name}" or "Task failed: {task_name}" |
+| `aiki run <id>` | Agent session completes | "Task completed: {task_name}" or "Task failed: {task_name}" |
 | `aiki task wait <id>` | Polled task reaches terminal state | "Task ready: {task_name}" |
 | `aiki build <spec>` | Build orchestration finishes | "Build complete: {spec_name}" or "Build failed: {spec_name}" |
 | `aiki review <id> --start` | Review finishes | "Review complete: {task_name}" |
@@ -198,5 +198,5 @@ if duration > Duration::from_secs(2) && std::io::stdout().is_terminal() {
 
 ## Resolved Questions
 
-1. **`aiki task run --async` does not notify.** Only synchronous (blocking) commands send desktop notifications. Async has no parent process watching — a different mechanism (e.g., `task.closed` hook) would be needed later if desired.
+1. **`aiki run --async` does not notify.** Only synchronous (blocking) commands send desktop notifications. Async has no parent process watching — a different mechanism (e.g., `task.closed` hook) would be needed later if desired.
 2. **No `--notify` flag.** Notifications are automatic for TTY contexts only. No flag to force them in non-TTY/CI.
