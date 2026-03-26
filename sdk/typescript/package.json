@@ -1,0 +1,43 @@
+{
+  "name": "@aiki/sdk",
+  "version": "0.1.0",
+  "description": "TypeScript SDK for integrating AI coding agents with Aiki",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./opencode": {
+      "types": "./dist/opencode/index.d.ts",
+      "import": "./dist/opencode/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "check": "tsc --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "keywords": [
+    "aiki",
+    "ai",
+    "coding-agent",
+    "opencode",
+    "hooks",
+    "provenance"
+  ],
+  "license": "MPL-2.0",
+  "engines": {
+    "node": ">=18"
+  },
+  "devDependencies": {
+    "@types/node": "^25.5.0",
+    "typescript": "^5.7.0"
+  }
+}
