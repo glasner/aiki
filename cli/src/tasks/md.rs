@@ -166,11 +166,7 @@ pub fn format_action_started(task: &Task, show_name: bool) -> String {
     } else {
         format!("Started {}", short_id(&task.id))
     };
-    let mut md = format!(
-        "{}\n---\nRun `aiki task comment add {}` to leave updates as you go\n",
-        header,
-        short_id(&task.id),
-    );
+    let mut md = format!("{}\n", header);
 
     if let Some(ref instructions) = task.instructions {
         md.push('\n');
