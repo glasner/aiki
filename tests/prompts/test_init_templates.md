@@ -300,7 +300,7 @@ Note: PASS if the deleted template was restored with correct content while user-
 
 ## Phase 6: Template Usability — Can Templates Be Referenced
 
-Test that the installed templates are usable via `aiki task run --template`.
+Test that the installed templates are usable via `aiki run --template`.
 
 ### 6.0 List available templates
 

@@ -27,6 +27,7 @@ mod tools;
 mod tui;
 mod utils;
 mod validation;
+mod workflow;
 
 use clap::{Parser, Subcommand};
 use error::Result;
@@ -56,11 +57,11 @@ For Humans:
   build       Build from a plan file (decompose and execute all subtasks)
   review      Create and run code review tasks
   fix         Create and run followup tasks from review comments
+  run         Spawn an agent session for a task
 
 For Agents:
   epic        Manage epics (create from plan files, show status, list)
   task        Manage tasks
-  run         Spawn an agent session for a task
   explore     Explore a scope (plan, code, task, or session)
   decompose   Decompose a plan into subtasks under a target task
   loop        Orchestrate a parent task's subtasks via lanes
@@ -136,6 +137,9 @@ enum Commands {
         /// Return after spawn instead of blocking until session ends
         #[arg(long = "async")]
         run_async: bool,
+        /// Force direct run on reserved/in-progress tasks by resetting state
+        #[arg(long)]
+        force: bool,
         /// Pick next ready session (needs-context chain or standalone task)
         #[arg(long)]
         next_session: bool,
@@ -337,13 +341,24 @@ fn run() -> Result<()> {
         Commands::Run {
             id,
             run_async,
+            force,
             next_session,
             lane,
             agent,
             template,
             data,
             output,
-        } => commands::run::run(id, run_async, next_session, lane, agent, template, data, output),
+        } => commands::run::run(
+            id,
+            run_async,
+            force,
+            next_session,
+            lane,
+            agent,
+            template,
+            data,
+            output,
+        ),
         Commands::Session { command } => commands::session::run(command),
         Commands::Task { command } => commands::task::run(command),
         Commands::Event { command } => match command {

@@ -585,7 +585,9 @@ fn resolve_codex_info_from_socket() -> Option<SocketPeerInfo> {
 fn process_event(event: CodexOtelEvent, context: &CodexOtelContext) {
     match event {
         CodexOtelEvent::ConversationStarts { conversation_id } => {
-            debug_log(|| format!("OTel: conversation_starts: {}", conversation_id));
+            // Superseded by native `sessionStart` hook. Retained as fallback for
+            // sessions that started before native hooks were installed.
+            debug_log(|| format!("OTel: conversation_starts (fallback): {}", conversation_id));
 
             // Resolve Codex PID and cwd from socket peer if OTel didn't provide them.
             // This avoids the .jsonl race condition for cwd and gives us PID for session tracking.
@@ -619,9 +621,10 @@ fn process_event(event: CodexOtelEvent, context: &CodexOtelContext) {
             conversation_id,
             prompt,
         } => {
+            // Superseded by native `userPromptSubmit` hook. Retained as fallback.
             debug_log(|| {
                 format!(
-                    "OTel: user_prompt: conv={}, prompt_len={}",
+                    "OTel: user_prompt (fallback): conv={}, prompt_len={}",
                     conversation_id,
                     prompt.as_ref().map_or(0, |p| p.len())
                 )

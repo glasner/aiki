@@ -28,11 +28,23 @@ Run the following command to explore the task's changes. The `--start` flag assi
 aiki explore {{data.scope.id}} --start
 ```
 
+Then check for prior exclusions (issues closed as won't-do in earlier rounds):
+
+```bash
+aiki task list --wont-do --descendant-of {{data.scope.id}}
+```
+
+If any won't-do tasks are listed, note them — these are explicitly out of scope.
+
 ## Review & Record Issues
 ---
 slug: criteria
 needs-context: subtasks.explore
 ---
+
+**Before recording an issue**, check the won't-do list from the explore phase.
+Do NOT re-raise issues that were previously closed as won't-do unless you have
+new evidence that the original dismissal was wrong.
 
 Evaluate the implementation against the criteria below. **As you find each issue, record it immediately** before moving to the next criterion.
 

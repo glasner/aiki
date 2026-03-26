@@ -209,40 +209,23 @@ impl AgentSpawnOptions {
                 .collect::<Vec<_>>()
                 .join("\n");
             format!(
-                r#"You are assigned a session chain of {count} tasks. Work autonomously through ALL tasks in sequence.
+                r#"You are assigned a chain of {count} tasks. Work through ALL of them in order.
 
-SCOPE: Work through these tasks in order. Do NOT start, pick up, or work on any other tasks from the backlog.
-
-Tasks (in order):
+Tasks:
 {chain_list}
 
-WORKFLOW:
-1. Run `aiki task start {first}` to begin the first task
-2. Run `aiki task show {first}` to read the task details and instructions
-3. Complete the task, then close it: `aiki task close <id> --summary "what I did"`
-4. After closing each task, run `aiki task` to see the next ready task
-5. Start the next task and repeat until ALL {count} tasks are closed
-
-CRITICAL: Do NOT stop after completing one task — continue through ALL tasks in the chain. Each task builds on the context from previous ones. Only stop if you are genuinely blocked on something."#,
+SCOPE: Only these tasks. Do not pick up other work from the backlog.
+EXIT: After closing the last task in the chain, exit immediately — do not close parent/sibling tasks or look for more work."#,
                 count = chain.len(),
                 chain_list = chain_list,
-                first = first,
             )
         } else {
             // Single task prompt (existing behavior)
             format!(
-                r#"You are assigned task `{id}`. Work autonomously until ALL work is complete.
+                r#"You are assigned task `{id}`. Work autonomously until it is closed.
 
-SCOPE: ONLY work on task `{id}` and its subtasks. Do NOT start, pick up, or work on any other tasks from the backlog. Ignore the ready queue entirely — it is not your concern. When your task (and all its subtasks) are closed, you are done.
-
-WORKFLOW:
-1. Run `aiki task start {id}` to begin
-2. Run `aiki task show {id}` to read the task details and instructions
-3. Complete each subtask's work, then close it: `aiki task close <id> --summary "what I did"`
-4. Closing a subtask auto-starts the next one — read the <started> block in the close output for your next task and its instructions
-5. When ALL subtasks are closed, the parent task auto-starts for you to do a final review
-
-CRITICAL: Do NOT stop and ask "what should I do next?" - work through ALL subtasks in sequence. When the parent auto-starts, do a final review and close it. Only stop if you are genuinely blocked on something."#,
+SCOPE: Only task `{id}` and its subtasks. Do not pick up other work from the backlog.
+EXIT: After closing your task, exit immediately — do not look for more work."#,
                 id = self.task_id
             )
         }

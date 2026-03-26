@@ -147,11 +147,11 @@ Use this as the default template-writing standard for claw agents.
 
 ### Namespaced template examples (`tu/intel/...`)
 ```bash
-aiki task run --template tu/intel/new-target \
+aiki run --template tu/intel/new-target \
   --data target_slug=acme \
   --data target_name="Acme"
 
-aiki task run --template tu/intel/weekly-synthesis \
+aiki run --template tu/intel/weekly-synthesis \
   --data target_slug=acme
 ```
 

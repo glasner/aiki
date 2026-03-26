@@ -63,10 +63,21 @@ in_test_block() {
   ' "$file"
 }
 
+scan_paths=(
+  "cli/src/tasks/"
+  "cli/src/tui/live_screen.rs"
+)
+
+existing_paths=()
+for path in "${scan_paths[@]}"; do
+  if [ -e "$path" ]; then
+    existing_paths+=("$path")
+  fi
+done
+
 matches=$(
   grep -rn --include='*.rs' -E 'eprintln!|eprint!|writeln!\(stderr|write!\(stderr' \
-    cli/src/tasks/ \
-    cli/src/tui/live_screen.rs \
+    "${existing_paths[@]}" \
   | grep -v 'stderr-ok' \
   || true
 )

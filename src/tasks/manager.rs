@@ -303,6 +303,32 @@ pub fn all_subtasks_closed(graph: &super::graph::TaskGraph, parent_id: &str) -> 
     !subtasks.is_empty() && subtasks.iter().all(|t| t.status == TaskStatus::Closed)
 }
 
+/// Get all descendants of a parent (recursive, using graph edge lookups)
+///
+/// Returns all descendants (subtasks, grandsubtasks, etc.) regardless of status,
+/// in depth-first order.
+#[must_use]
+pub fn get_all_descendants<'a>(
+    graph: &'a super::graph::TaskGraph,
+    parent_id: &str,
+) -> Vec<&'a Task> {
+    let mut result = Vec::new();
+    collect_all_descendants(graph, parent_id, &mut result);
+    result
+}
+
+/// Helper for recursive descent - collects all descendants depth-first (using graph edge lookups)
+fn collect_all_descendants<'a>(
+    graph: &'a super::graph::TaskGraph,
+    parent_id: &str,
+    result: &mut Vec<&'a Task>,
+) {
+    for subtask in get_subtasks(graph, parent_id) {
+        collect_all_descendants(graph, &subtask.id, result);
+        result.push(subtask);
+    }
+}
+
 /// Get all unclosed descendants of a parent (recursive, using graph edge lookups)
 ///
 /// Returns all descendants (subtasks, grandsubtasks, etc.) that are not closed,

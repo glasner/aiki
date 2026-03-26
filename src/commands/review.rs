@@ -10,7 +10,6 @@
 use clap::Subcommand;
 use std::collections::HashMap;
 use std::env;
-use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
 use crate::output_utils;
@@ -27,10 +26,7 @@ use crate::tasks::{
     find_task, materialize_graph, read_events, reassign_task, start_task_core,
     write_link_event_with_autorun, Task, TaskComment, TaskStatus,
 };
-use crate::tui;
-use crate::tui::app::WindowState;
-use crate::tui::render::render_to_string;
-use crate::tui::theme::{detect_mode, Theme};
+use crate::workflow::{RunMode, Step, StepResult, Workflow, WorkflowContext};
 
 /// What kind of review scope this is
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -274,25 +270,6 @@ pub fn format_locations(locations: &[Location]) -> String {
     format!("({})", parts.join(", "))
 }
 
-/// Sort order for severity values (lower = higher priority).
-fn severity_order(severity: &str) -> u8 {
-    match severity {
-        "high" => 0,
-        "medium" => 1,
-        "low" => 2,
-        _ => 1,
-    }
-}
-
-/// Get severity from a comment's data, defaulting to "medium".
-fn comment_severity(comment: &TaskComment) -> &str {
-    comment
-        .data
-        .get("severity")
-        .map(|s| s.as_str())
-        .unwrap_or("medium")
-}
-
 /// Parse and validate a severity value for clap's value_parser.
 fn parse_severity(s: &str) -> std::result::Result<String, String> {
     match s {
@@ -483,6 +460,80 @@ pub struct CreateReviewResult {
     /// The review scope (typed, replaces loose scope_name/scope_id)
     #[allow(dead_code)]
     pub scope: ReviewScope,
+}
+
+
+/// Standalone review step: create review, run it, count issues.
+pub(crate) fn run_standalone_review_step(
+    ctx: &mut WorkflowContext,
+    scope: ReviewScope,
+    template: Option<String>,
+    agent: Option<String>,
+    fix_template: Option<String>,
+    autorun: bool,
+) -> anyhow::Result<StepResult> {
+    let result = create_review(
+        &ctx.cwd,
+        CreateReviewParams {
+            scope,
+            agent_override: agent,
+            template,
+            fix_template,
+            autorun,
+        },
+    )?;
+    let review_id = result.review_task_id;
+    ctx.task_id = Some(review_id.clone());
+
+    let options = TaskRunOptions::new().quiet();
+    task_run(&ctx.cwd, &review_id, options)?;
+
+    let events = read_events(&ctx.cwd)?;
+    let graph = materialize_graph(&events);
+    let issue_count = find_task(&graph.tasks, &review_id)
+        .map(|t| {
+            t.data
+                .get("issue_count")
+                .and_then(|c| c.parse::<usize>().ok())
+                .unwrap_or(0)
+        })
+        .unwrap_or(0);
+
+    let message = if issue_count > 0 {
+        format!("Found {} issues", issue_count)
+    } else {
+        "approved".to_string()
+    };
+
+    Ok(StepResult {
+        message,
+        task_id: Some(review_id),
+    })
+}
+
+/// Assemble a review workflow from a pre-resolved scope and options.
+pub fn review_workflow(
+    cwd: PathBuf,
+    scope: ReviewScope,
+    template: Option<String>,
+    agent: Option<String>,
+    fix_template: Option<String>,
+    autorun: bool,
+) -> Workflow {
+    Workflow {
+        steps: vec![Step::Review {
+            scope: Some(scope),
+            template,
+            agent,
+            fix_template,
+            autorun,
+        }],
+        ctx: WorkflowContext {
+            task_id: None,
+            plan_path: None,
+            cwd,
+        },
+    }
 }
 
 /// Check if a string looks like it could be a task ID, prefix, or subtask ID.
@@ -763,7 +814,7 @@ fn run_review(
         None
     };
 
-    // Detect target and resolve scope at CLI layer
+    // Detect target and resolve scope at CLI layer (BEFORE workflow assembly)
     let (scope, _worker) = match detect_target(cwd, target.as_deref(), code) {
         Ok(r) => r,
         Err(AikiError::NothingToReview) => {
@@ -779,31 +830,26 @@ fn run_review(
         ));
     }
 
-    // Create review task using shared logic
-    let fix_template_for_async = fix_template.clone();
-    let result = match create_review(
-        cwd,
-        CreateReviewParams {
-            scope,
-            agent_override,
-            template: template_name,
-            fix_template,
-            autorun,
-        },
-    ) {
-        Ok(r) => r,
-        Err(AikiError::NothingToReview) => {
-            return Ok(());
-        }
-        Err(e) => return Err(e),
-    };
-
-    let review_id = result.review_task_id;
-
     let output_id = matches!(output_format, Some(OutputFormat::Id));
 
-    // Handle execution mode
+    // --start path: create review task but don't run it (NOT a workflow)
     if start {
+        let result = match create_review(
+            cwd,
+            CreateReviewParams {
+                scope,
+                agent_override,
+                template: template_name,
+                fix_template,
+                autorun,
+            },
+        ) {
+            Ok(r) => r,
+            Err(AikiError::NothingToReview) => return Ok(()),
+            Err(e) => return Err(e),
+        };
+        let review_id = result.review_task_id;
+
         // Reassign task to current agent (caller takes over)
         if let Some(session) = find_active_session(cwd) {
             reassign_task(cwd, &review_id, session.agent_type.as_str())?;
@@ -813,11 +859,34 @@ fn run_review(
         if !output_id {
             output_review_started(cwd, &review_id)?;
         }
-    } else if run_async {
-        // Spawn background process: aiki review --_continue-async <review-id> [--fix-template T] [--agent ...]
+        if output_id {
+            println!("{}", review_id);
+        }
+        return Ok(());
+    }
+
+    // --async path: create review task and spawn background process
+    if run_async {
+        let fix_template_for_spawn = fix_template.clone();
+        let result = match create_review(
+            cwd,
+            CreateReviewParams {
+                scope,
+                agent_override,
+                template: template_name,
+                fix_template,
+                autorun,
+            },
+        ) {
+            Ok(r) => r,
+            Err(AikiError::NothingToReview) => return Ok(()),
+            Err(e) => return Err(e),
+        };
+        let review_id = result.review_task_id;
+
         let spawn_args = build_async_review_args(
             &review_id,
-            fix_template_for_async.as_deref(),
+            fix_template_for_spawn.as_deref(),
             agent.as_deref(),
             autorun,
         );
@@ -827,108 +896,33 @@ fn run_review(
         if !output_id {
             output_review_async(cwd, &review_id)?;
         }
-    } else {
-        // Sync path: blocking review (+ optional fix)
-        let show_tui = std::io::stdout().is_terminal() && !output_id;
+        if output_id {
+            println!("{}", review_id);
+        }
+        return Ok(());
+    }
 
-        if show_tui {
-            let target = result.scope.id.clone();
+    // Sync path: blocking review (+ optional fix)
+    {
+        let has_fix = fix_template.is_some();
+        let wf = review_workflow(
+            cwd.to_path_buf(),
+            scope,
+            template_name,
+            agent_override,
+            fix_template.clone(),
+            autorun,
+        );
+        let ctx = wf.run(RunMode::Text)?;
+        let review_id = ctx
+            .task_id
+            .expect("Review step should set task_id in context");
+
+        // Post-workflow: check for issues, maybe run fix
+        let has_issues = {
             let events = read_events(cwd)?;
             let graph = materialize_graph(&events);
-            let (width, _) = crossterm::terminal::size().unwrap_or((80, 24));
-            let model = tui::app::Model {
-                graph: std::sync::Arc::new(graph),
-                screen: tui::app::Screen::Review {
-                    review_id: review_id.clone(),
-                    target,
-                },
-                window: WindowState::new(width),
-                entries: Vec::new(),
-                finished: false,
-                detached: false,
-            };
-
-            let worker_review_id = review_id.clone();
-            let worker_fix_template = fix_template_for_async.clone();
-            let worker_agent = agent.clone();
-            let worker = move |status: tui::app::WorkerStatus, cwd: PathBuf| -> anyhow::Result<()> {
-                status.start("review");
-
-                // Look up agent name for display
-                status.update("Resolving agent...");
-                if let Ok(events) = read_events(&cwd) {
-                    let tasks = materialize_graph(&events).tasks;
-                    if let Ok(task) = find_task(&tasks, &worker_review_id) {
-                        if let Some(assignee) = &task.assignee {
-                            if let Some(agent_type) = AgentType::from_str(assignee) {
-                                status.agent(agent_type.display_name());
-                            }
-                        }
-                    }
-                }
-
-                status.update("creating isolated workspace...");
-                status.task(&worker_review_id);
-                status.update("starting session...");
-
-                // Run the review (blocks until agent finishes)
-                let options = TaskRunOptions::new().quiet();
-                match task_run(&cwd, &worker_review_id, options) {
-                    Ok(()) => {
-                        status.done("Review complete");
-                    }
-                    Err(e) => {
-                        status.failed(&e.to_string());
-                        return Err(e.into());
-                    }
-                }
-
-                // Handle fix if requested and issues were found
-                if worker_fix_template.is_some() {
-                    let events = read_events(&cwd)?;
-                    let graph = materialize_graph(&events);
-                    let has_issues = find_task(&graph.tasks, &worker_review_id)
-                        .map(|t| {
-                            t.data
-                                .get("issue_count")
-                                .and_then(|c| c.parse::<usize>().ok())
-                                .unwrap_or(0)
-                                > 0
-                        })
-                        .unwrap_or(false);
-
-                    if has_issues {
-                        super::fix::run_fix(
-                            &cwd,
-                            &worker_review_id,
-                            false,
-                            None,
-                            worker_fix_template,
-                            None,
-                            None,
-                            None,
-                            worker_agent,
-                            autorun,
-                            false,
-                            Some(super::OutputFormat::Id), // prevent nested TUI in worker thread
-                        )?;
-                    }
-                }
-
-                status.finish();
-                Ok(())
-            };
-
-            tui::app::run_with_worker(model, cwd, worker)?;
-        } else {
-            // Non-TTY: run blocking with text output
-            let options = TaskRunOptions::new();
-            task_run(cwd, &review_id, options)?;
-
-            // Check data.issue_count to determine if issues were found
-            let events = read_events(cwd)?;
-            let graph = materialize_graph(&events);
-            let has_issues = find_task(&graph.tasks, &review_id)
+            find_task(&graph.tasks, &review_id)
                 .map(|t| {
                     t.data
                         .get("issue_count")
@@ -936,37 +930,29 @@ fn run_review(
                         .unwrap_or(0)
                         > 0
                 })
-                .unwrap_or(false);
+                .unwrap_or(false)
+        };
 
-            if fix_template_for_async.is_some() && has_issues {
-                super::fix::run_fix(
-                    cwd,
-                    &review_id,
-                    false,                          // not async
-                    None,                           // no continue-async
-                    fix_template_for_async.clone(), // forward caller's fix template
-                    None,                           // default decompose template
-                    None,                           // default loop template
-                    None,                           // default review template
-                    agent.clone(),                  // pass through agent override
-                    autorun,
-                    false,                 // not --once
-                    output_format.clone(), // pass through caller's output format
-                )?;
-            }
-            if output_id {
-                println!("{}", review_id);
-            } else if !(fix_template_for_async.is_some() && has_issues) {
-                output_review_completed(cwd, &review_id)?;
-            }
+        if has_fix && has_issues {
+            super::fix::run_fix(
+                cwd,
+                &review_id,
+                false,
+                None,
+                fix_template,
+                None,
+                None,
+                None,
+                agent,
+                autorun,
+                false,
+                output_format,
+            )?;
+        } else if output_id {
+            println!("{}", review_id);
+        } else {
+            output_review_completed(cwd, &review_id)?;
         }
-    }
-
-    // For start-only and async branches, print the bare review ID when
-    // output=id is requested. The blocking branch (else) handles this inline
-    // to avoid run_fix() output contaminating stdout.
-    if output_id && (start || run_async) {
-        println!("{}", review_id);
     }
 
     Ok(())
@@ -985,8 +971,8 @@ fn run_continue_async(
     agent: Option<String>,
     autorun: bool,
 ) -> Result<()> {
-    // Run the review
-    let mut options = TaskRunOptions::new();
+    // Run the review (quiet — no TUI, background/workflow handles output)
+    let mut options = TaskRunOptions::new().quiet();
     if let Some(ref agent_str) = agent {
         if let Some(agent_type) = AgentType::from_str(agent_str) {
             options = options.with_agent(agent_type);
@@ -1039,96 +1025,42 @@ fn output_nothing_to_review() -> Result<()> {
     Ok(())
 }
 
-/// Render the workflow view for a review task.
-///
-/// For code/plan reviews, renders the review task's own subtask progress.
-/// For task reviews, follows the validates edge to find the epic and shows
-/// the full build pipeline.
-fn render_review_workflow(cwd: &Path, review_id: &str) -> Result<String> {
+/// Summarize a review task as a short text line (issue count or approved).
+fn review_summary(cwd: &Path, review_id: &str) -> Result<String> {
     let events = read_events(cwd)?;
     let graph = materialize_graph(&events);
-
-    let review_task = find_task(&graph.tasks, review_id)?;
-    let theme = Theme::from_mode(detect_mode());
-    let window = WindowState::new(80);
-
-    let scope_kind = review_task.data.get("scope.kind").map(|s| s.as_str());
-
-    // Code/plan reviews: render the review screen with scope.id as target
-    if matches!(scope_kind, Some("code") | Some("plan")) {
-        let target = review_task
-            .data
-            .get("scope.id")
-            .map(|s| s.as_str())
-            .unwrap_or("unknown");
-        let mut lines = tui::screens::review::view(&graph, review_id, target, &window);
-        return Ok(render_to_string(&mut lines, &theme));
-    }
-
-    // Task/session reviews: find the epic via validates edge, show build pipeline
-    let epic = graph
-        .edges
-        .targets(review_id, "validates")
-        .first()
-        .and_then(|id| graph.tasks.get(id.as_str()));
-
-    let plan_path = epic
-        .and_then(|e| e.data.get("plan"))
-        .or_else(|| review_task.data.get("scope.id"))
-        .map(|s| s.as_str())
-        .unwrap_or("unknown");
-
-    if let Some(epic) = epic {
-        let mut lines = tui::screens::build::view(&graph, &epic.id, plan_path, &window);
-        Ok(render_to_string(&mut lines, &theme))
+    let task = find_task(&graph.tasks, review_id)?;
+    let issue_count = task
+        .data
+        .get("issue_count")
+        .and_then(|c| c.parse::<usize>().ok())
+        .unwrap_or(0);
+    if issue_count > 0 {
+        Ok(format!("Found {} issues", issue_count))
     } else {
-        let mut lines =
-            tui::screens::review::view(&graph, review_id, plan_path, &window);
-        Ok(render_to_string(&mut lines, &theme))
+        Ok("approved".to_string())
     }
 }
 
 /// Output review started message (for --start mode)
-fn output_review_started(cwd: &Path, review_id: &str) -> Result<()> {
-    let rendered = render_review_workflow(cwd, review_id)?;
-    output_utils::emit(|| {
-        let status = format!("Started: {review_id}\n");
-        if rendered.trim().is_empty() {
-            format!("{status}Review started — run `aiki task show {review_id}` for details.\n")
-        } else {
-            format!("{status}{rendered}")
-        }
-    });
+fn output_review_started(_cwd: &Path, review_id: &str) -> Result<()> {
+    output_utils::emit(|| format!("Started: {review_id}\n"));
     Ok(())
 }
 
 /// Output review async message (for --async mode)
-fn output_review_async(cwd: &Path, review_id: &str) -> Result<()> {
-    let rendered = render_review_workflow(cwd, review_id)?;
-    output_utils::emit(|| {
-        let status = format!("Dispatched: {review_id}\n");
-        if rendered.trim().is_empty() {
-            format!("{status}Review dispatched — run `aiki task show {review_id}` for details.\n")
-        } else {
-            format!("{status}{rendered}")
-        }
-    });
+fn output_review_async(_cwd: &Path, review_id: &str) -> Result<()> {
+    output_utils::emit(|| format!("Dispatched: {review_id}\n"));
     Ok(())
 }
 
 /// Output review completed message (for blocking mode)
 fn output_review_completed(cwd: &Path, review_id: &str) -> Result<()> {
-    let rendered = render_review_workflow(cwd, review_id)?;
+    let summary = review_summary(cwd, review_id)?;
     let hint = format!("\n---\nRun `aiki fix {}` to remediate.\n", review_id);
     output_utils::emit(|| {
-        let status = format!("Completed: {review_id}\n");
-        if rendered.trim().is_empty() {
-            format!(
-                "{status}Review completed — run `aiki task show {review_id}` for details.{hint}"
-            )
-        } else {
-            format!("{status}{rendered}{hint}")
-        }
+        let status = format!("Completed: {review_id} — {summary}\n");
+        format!("{status}{hint}")
     });
     Ok(())
 }
@@ -1230,11 +1162,32 @@ fn run_issue_list(cwd: &Path, review_id: &str) -> Result<()> {
         )));
     }
 
-    let theme = Theme::from_mode(detect_mode());
-    let window = WindowState::new(80);
-    let mut lines = tui::screens::review_show::view(&graph, review_id, &window);
-
-    output_utils::emit(|| render_to_string(&mut lines, &theme));
+    let issues = get_issue_comments(task);
+    if issues.is_empty() {
+        output_utils::emit(|| "No issues found.\n".to_string());
+    } else {
+        output_utils::emit(|| {
+            let mut out = format!("{} issues:\n", issues.len());
+            for (i, issue) in issues.iter().enumerate() {
+                let severity = issue
+                    .data
+                    .get("severity")
+                    .map(|s| s.as_str())
+                    .unwrap_or("medium");
+                out.push_str(&format!("  {}. [{}] {}\n", i + 1, severity, issue.text));
+                // Show file locations if present
+                if let Some(files) = issue.data.get("files") {
+                    for file in files.split(',') {
+                        let file = file.trim();
+                        if !file.is_empty() {
+                            out.push_str(&format!("     {}\n", file));
+                        }
+                    }
+                }
+            }
+            out
+        });
+    }
 
     Ok(())
 }
@@ -1318,11 +1271,47 @@ fn show_review(cwd: &Path, task_id: &str) -> Result<()> {
         )));
     }
 
-    let theme = Theme::from_mode(detect_mode());
-    let window = WindowState::new(80);
-    let mut lines = tui::screens::review_show::view(&graph, task_id, &window);
+    let issues = get_issue_comments(task);
+    let status_str = match task.status {
+        TaskStatus::Open => "open",
+        TaskStatus::Reserved => "reserved",
+        TaskStatus::InProgress => "in_progress",
+        TaskStatus::Stopped => "stopped",
+        TaskStatus::Closed => "closed",
+    };
+    let scope_kind = task
+        .data
+        .get("scope.kind")
+        .map(|s| s.as_str())
+        .unwrap_or("unknown");
+    let scope_id = task
+        .data
+        .get("scope.id")
+        .map(|s| s.as_str())
+        .unwrap_or("");
 
-    output_utils::emit(|| render_to_string(&mut lines, &theme));
+    output_utils::emit(|| {
+        let mut out = format!("Review: {}\n", task_id);
+        out.push_str(&format!("Status: {}\n", status_str));
+        out.push_str(&format!("Scope: {} {}\n", scope_kind, scope_id));
+        if let Some(agent) = task.agent_label() {
+            out.push_str(&format!("Agent: {}\n", agent));
+        }
+        if issues.is_empty() {
+            out.push_str("Result: approved\n");
+        } else {
+            out.push_str(&format!("Issues: {}\n", issues.len()));
+            for (i, issue) in issues.iter().enumerate() {
+                let severity = issue
+                    .data
+                    .get("severity")
+                    .map(|s| s.as_str())
+                    .unwrap_or("medium");
+                out.push_str(&format!("  {}. [{}] {}\n", i + 1, severity, issue.text));
+            }
+        }
+        out
+    });
 
     Ok(())
 }
@@ -1445,6 +1434,27 @@ mod tests {
             task_ids: vec![],
         };
         assert_eq!(scope.name(), "Session");
+    }
+
+    #[test]
+    fn test_review_workflow_is_single_step() {
+        let scope = ReviewScope {
+            kind: ReviewScopeKind::Task,
+            id: "abc123".to_string(),
+            task_ids: vec![],
+        };
+
+        let wf = review_workflow(
+            PathBuf::from("."),
+            scope,
+            Some("review/code".to_string()),
+            Some("codex".to_string()),
+            Some("fix".to_string()),
+            true,
+        );
+
+        assert_eq!(wf.steps.len(), 1);
+        assert_eq!(wf.steps[0].name(), "review");
     }
 
     #[test]

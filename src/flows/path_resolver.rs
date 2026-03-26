@@ -130,8 +130,21 @@ mod tests {
 
     #[test]
     fn test_find_project_root_not_found() {
-        let temp_dir = TempDir::new().unwrap();
-        // No .aiki/ directory created
+        let temp_dir = tempfile::Builder::new()
+            .prefix("aiki-no-project-")
+            .tempdir_in("/tmp")
+            .unwrap();
+        // No .aiki/ directory created in this temp dir or its immediate parent chain.
+        // Using /tmp avoids false positives when $TMPDIR itself lives inside an Aiki project.
+        let mut current = temp_dir.path();
+        while current != Path::new("/") {
+            assert!(
+                !current.join(".aiki").is_dir(),
+                "test setup invalid: found unexpected .aiki at {}",
+                current.display()
+            );
+            current = current.parent().unwrap_or(Path::new("/"));
+        }
 
         let result = PathResolver::with_start_dir(temp_dir.path());
         assert!(matches!(result, Err(AikiError::NotInAikiProject { .. })));

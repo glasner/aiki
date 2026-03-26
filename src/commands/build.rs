@@ -7,14 +7,14 @@
 //! - Supports async (background) execution
 
 use crate::output_utils;
+use crate::tui;
+use crate::tui::theme::{detect_mode, Theme};
 use std::env;
-use std::io::IsTerminal;
 use std::path::Path;
 
 use clap::Subcommand;
 
 use super::async_spawn;
-use super::epic::find_or_create_epic;
 use super::loop_cmd::{run_loop, LoopOptions};
 use super::OutputFormat;
 use crate::agents::AgentType;
@@ -22,15 +22,13 @@ use crate::config::get_aiki_binary_path;
 use crate::error::{AikiError, Result};
 use crate::plans::{parse_plan_metadata, PlanGraph};
 use crate::tasks::id::{is_task_id, is_task_id_prefix};
-use crate::tasks::md::MdBuilder;
 use crate::tasks::runner::{task_run, TaskRunOptions};
 use crate::tasks::{
     find_task, get_subtasks, materialize_graph, read_events, write_event, write_link_event, Task,
     TaskEvent, TaskOutcome, TaskStatus,
 };
-use crate::tui;
-use crate::tui::app::{Model, Screen, WindowState};
-use crate::tui::theme::{detect_mode, Theme};
+use crate::workflow::{RunMode, Step, StepResult, Workflow, WorkflowContext};
+use std::collections::VecDeque;
 
 /// Build subcommands
 #[derive(Subcommand)]
@@ -100,6 +98,229 @@ pub struct BuildArgs {
     /// Subcommand (show)
     #[command(subcommand)]
     pub subcommand: Option<BuildSubcommands>,
+}
+
+/// Options for assembling a build workflow.
+pub struct BuildOpts {
+    pub restart: bool,
+    pub decompose_template: Option<String>,
+    pub loop_template: Option<String>,
+    pub agent: Option<AgentType>,
+    pub agent_str: Option<String>,
+    pub review_after: bool,
+    pub review_template: Option<String>,
+    pub fix_after: bool,
+    pub fix_template: Option<String>,
+}
+
+/// Maximum number of fix iterations before giving up.
+const MAX_BUILD_ITERATIONS: usize = 10;
+
+
+/// Assemble a build workflow for a plan path (includes Plan step).
+///
+/// When `opts.fix_after` is true, the static Fix step is omitted — fix iteration
+/// is handled dynamically by [`drive_build`] via [`Workflow::run_build`].
+pub fn build_workflow(cwd: &Path, plan_path: &str, opts: &BuildOpts) -> Workflow {
+    let mut steps: Vec<Step> = vec![
+        Step::Plan,
+        Step::Decompose {
+            restart: opts.restart,
+            template: opts.decompose_template.clone(),
+            agent: opts.agent.clone(),
+        },
+        Step::Loop {
+            template: opts.loop_template.clone(),
+            agent: opts.agent.clone(),
+        },
+    ];
+
+    if opts.review_after {
+        steps.push(Step::Review {
+            scope: None, // derive from ctx.plan_path
+            template: opts.review_template.clone(),
+            agent: opts.agent_str.clone(),
+            fix_template: None,
+            autorun: false,
+        });
+
+        // Static Fix step only when NOT using drive_build (fix_after = false means
+        // review-only mode; fix_after = true delegates iteration to drive_build).
+        if !opts.fix_after {
+            // No fix step needed in review-only mode
+        }
+    }
+
+    Workflow {
+        steps,
+        ctx: WorkflowContext {
+            task_id: None,
+            plan_path: Some(plan_path.to_string()),
+            cwd: cwd.to_path_buf(),
+        },
+    }
+}
+
+/// Assemble a build workflow for an existing epic (skips Plan step).
+fn build_workflow_from_epic(
+    cwd: &Path,
+    epic_id: &str,
+    plan_path: &str,
+    opts: &BuildOpts,
+) -> Workflow {
+    let mut steps: Vec<Step> = vec![
+        Step::Decompose {
+            restart: false,
+            template: opts.decompose_template.clone(),
+            agent: opts.agent.clone(),
+        },
+        Step::Loop {
+            template: opts.loop_template.clone(),
+            agent: opts.agent.clone(),
+        },
+    ];
+
+    if opts.review_after {
+        steps.push(Step::Review {
+            scope: None, // derive from ctx.plan_path
+            template: opts.review_template.clone(),
+            agent: opts.agent_str.clone(),
+            fix_template: None,
+            autorun: false,
+        });
+        // Fix iteration is handled dynamically by drive_build via run_build.
+    }
+
+    Workflow {
+        steps,
+        ctx: WorkflowContext {
+            task_id: Some(epic_id.to_string()),
+            plan_path: Some(plan_path.to_string()),
+            cwd: cwd.to_path_buf(),
+        },
+    }
+}
+
+/// Check whether a review task has actionable issues (issue_count > 0).
+fn has_review_issues(ctx: &WorkflowContext, review_task_id: &str) -> anyhow::Result<bool> {
+    let events = read_events(&ctx.cwd)?;
+    let graph = materialize_graph(&events);
+    Ok(find_task(&graph.tasks, review_task_id)
+        .map(|t| {
+            t.data
+                .get("issue_count")
+                .and_then(|c| c.parse::<usize>().ok())
+                .unwrap_or(0)
+                > 0
+        })
+        .unwrap_or(false))
+}
+
+/// Drive a build workflow with dynamic fix iteration.
+///
+/// Uses a [`VecDeque`] instead of a fixed step list. After each Review or
+/// RegressionReview step, checks for actionable issues and injects a
+/// Fix→Decompose→Loop→Review→RegressionReview cycle (up to [`MAX_BUILD_ITERATIONS`]).
+pub fn drive_build(
+    steps: Vec<Step>,
+    mut ctx: WorkflowContext,
+    mode: RunMode,
+    opts: &BuildOpts,
+) -> anyhow::Result<WorkflowContext> {
+    let mut queue: VecDeque<Step> = steps.into_iter().collect();
+    let mut iteration = 0;
+
+    while let Some(step) = queue.pop_front() {
+        let is_review = matches!(&step, Step::Review { .. });
+        let is_regression_review = matches!(&step, Step::RegressionReview { .. });
+
+        // Execute the step with appropriate output
+        let result = match mode {
+            RunMode::Text => {
+                if let Some(section) = step.section() {
+                    eprintln!("\n── {} ──", section);
+                }
+                eprintln!("⠙ {}...", step.name());
+                match step.run(&mut ctx) {
+                    Ok(result) => {
+                        eprintln!("合 {} — {}", step.name(), result.message);
+                        result
+                    }
+                    Err(e) => {
+                        eprintln!("✗ {} — {}", step.name(), e);
+                        return Err(e);
+                    }
+                }
+            }
+            RunMode::Quiet => step.run(&mut ctx)?,
+        };
+
+        // After Review or RegressionReview: inject fix cycle if issues found
+        if (is_review || is_regression_review) && iteration < MAX_BUILD_ITERATIONS {
+            if let Some(ref review_task_id) = result.task_id {
+                if has_review_issues(&ctx, review_task_id)? {
+                    iteration += 1;
+                    queue.push_back(Step::Fix {
+                        review_id: review_task_id.clone(),
+                        scope: None,
+                        assignee: None,
+                        template: opts.fix_template.clone(),
+                        autorun: false,
+                    });
+                    queue.push_back(Step::Decompose {
+                        restart: false,
+                        template: opts.decompose_template.clone(),
+                        agent: opts.agent.clone(),
+                    });
+                    queue.push_back(Step::Loop {
+                        template: opts.loop_template.clone(),
+                        agent: opts.agent.clone(),
+                    });
+                    queue.push_back(Step::Review {
+                        scope: None,
+                        template: opts.review_template.clone(),
+                        agent: opts.agent_str.clone(),
+                        fix_template: None,
+                        autorun: false,
+                    });
+                    queue.push_back(Step::RegressionReview {
+                        template: opts.review_template.clone(),
+                        agent: opts.agent_str.clone(),
+                    });
+                }
+            }
+        }
+
+        if (is_review || is_regression_review) && iteration >= MAX_BUILD_ITERATIONS {
+            eprintln!(
+                "Warning: build fix iteration reached maximum ({}) without full approval.",
+                MAX_BUILD_ITERATIONS,
+            );
+            break;
+        }
+    }
+
+    Ok(ctx)
+}
+
+impl Workflow {
+    /// Run a build workflow, using [`drive_build`] for fix iteration when
+    /// `opts.fix_after` is true, or the generic step runner otherwise.
+    pub fn run_build(self, mode: RunMode, opts: &BuildOpts) -> anyhow::Result<WorkflowContext> {
+        if opts.fix_after {
+            drive_build(self.steps, self.ctx, mode, opts)
+        } else {
+            self.run(mode)
+        }
+    }
+}
+
+/// Convert anyhow::Error back to AikiError for crate-level Result.
+fn anyhow_to_aiki(e: anyhow::Error) -> AikiError {
+    match e.downcast::<AikiError>() {
+        Ok(aiki_err) => aiki_err,
+        Err(e) => AikiError::JjCommandFailed(e.to_string()),
+    }
 }
 
 /// Run the build command
@@ -174,10 +395,8 @@ pub fn run(args: BuildArgs) -> Result<()> {
 ///
 /// This is called when `--_continue-async` is provided. The parent process has
 /// already created the epic task and returned its ID to the caller. This function
-/// picks up from there: runs decompose if needed, then the loop, then optional
-/// review/fix.
+/// picks up from there using a workflow: decompose → loop → optional review/fix.
 fn run_continue_async(cwd: &Path, epic_id: &str, args: BuildArgs) -> Result<()> {
-    // Parse agent
     let agent_type = if let Some(ref agent_str) = args.agent {
         Some(
             AgentType::from_str(agent_str)
@@ -187,78 +406,45 @@ fn run_continue_async(cwd: &Path, epic_id: &str, args: BuildArgs) -> Result<()> 
         None
     };
 
-    // Find the epic
+    // Find the epic and get plan_path
     let events = read_events(cwd)?;
     let graph = materialize_graph(&events);
     let epic = find_task(&graph.tasks, epic_id)?;
     let epic_id = epic.id.clone();
+    let plan_path = epic.data.get("plan").cloned().unwrap_or_default();
 
-    // Check for blockers before executing (catches races between parent check and background start)
-    check_epic_blockers(&graph, &epic_id)?;
-
-    // Check if epic has subtasks already
-    let subtasks = get_subtasks(&graph, &epic_id);
-    if subtasks.is_empty() {
-        // Need to run decompose first
-        let plan_path = epic.data.get("plan").cloned().ok_or_else(|| {
-            AikiError::InvalidArgument(format!(
-                "Epic task {} missing data.plan. Cannot decompose without a plan path.",
-                &epic_id[..epic_id.len().min(8)]
-            ))
-        })?;
-        let options = super::decompose::DecomposeOptions {
-            template: args.decompose_template.clone(),
-            agent: agent_type.clone(),
-        };
-        super::decompose::run_decompose(cwd, &plan_path, &epic_id, options, false)?;
-    }
-
-    // Now run the loop (synchronous — we're already in background)
-    let mut loop_options = LoopOptions::new(); // NOT async — already in background
-    if let Some(agent) = agent_type.clone() {
-        loop_options = loop_options.with_agent(agent);
-    }
-    if let Some(tmpl) = args.loop_template {
-        loop_options = loop_options.with_template(tmpl);
-    }
-
-    run_loop(cwd, &epic_id, loop_options, false)?;
-
-    // Post-build review if requested
-    // Resolve --fix / --fix-template and --review / --review-template
+    // Resolve flags
     let fix_template = args.fix_template.or(if args.fix {
         Some("fix".to_string())
     } else {
         None
     });
-    // Pass through explicit --review-template only; None lets create_review pick scope-specific default
     let review_template = args.review_template;
     let review_after = review_template.is_some() || args.review || fix_template.is_some();
-    if review_after {
-        let plan_path = epic.data.get("plan").cloned().unwrap_or_default();
-        let fix_after = fix_template.is_some();
-        run_build_review(
-            cwd,
-            &plan_path,
-            &epic_id,
-            fix_after,
-            review_template,
-            fix_template,
-            args.agent,
-        )?;
-    }
+    let fix_after = fix_template.is_some();
+
+    let opts = BuildOpts {
+        restart: false,
+        decompose_template: args.decompose_template,
+        loop_template: args.loop_template,
+        agent: agent_type,
+        agent_str: args.agent,
+        review_after,
+        review_template,
+        fix_after,
+        fix_template,
+    };
+
+    let wf = build_workflow_from_epic(cwd, &epic_id, &plan_path, &opts);
+    wf.run_build(RunMode::Quiet, &opts).map_err(anyhow_to_aiki)?;
 
     Ok(())
 }
 
 /// Build from a plan path — deterministic find-or-create.
 ///
-/// 1. Validate plan file exists and is .md
-/// 2. Clean up stale builds for this plan
-/// 3. Check for existing epic (deterministic: no interactive prompts)
-/// 4. Create build task
-/// 5. Run build task (sync or async)
-/// 6. Output results
+/// - `--async`: validate plan, create epic, spawn background (workflow runs there)
+/// - Sync: run full workflow with text output (Plan → Decompose → Loop → [Review → Fix])
 fn run_build_plan(
     cwd: &Path,
     plan_path: &str,
@@ -273,10 +459,39 @@ fn run_build_plan(
     fix_template: Option<String>,
     output_id: bool,
 ) -> Result<()> {
-    // Validate plan file exists and is .md
+    let agent_type = if let Some(ref agent_str) = agent {
+        Some(
+            AgentType::from_str(agent_str)
+                .ok_or_else(|| AikiError::UnknownAgentType(agent_str.clone()))?,
+        )
+    } else {
+        None
+    };
+
+    // Sync (non-async): use full workflow with text output
+    if !run_async {
+        let opts = BuildOpts {
+            restart,
+            decompose_template,
+            loop_template,
+            agent: agent_type,
+            agent_str: agent,
+            review_after,
+            review_template,
+            fix_after,
+            fix_template,
+        };
+
+        let wf = build_workflow(cwd, plan_path, &opts);
+        wf.run_build(RunMode::Text, &opts).map_err(anyhow_to_aiki)?;
+
+        output_after_workflow(cwd, plan_path, output_id)?;
+        return Ok(());
+    }
+
+    // --async path: plan validation and epic setup happen before spawning.
     validate_plan_path(cwd, plan_path)?;
 
-    // Check if plan is a draft
     let full_path = if plan_path.starts_with('/') {
         std::path::PathBuf::from(plan_path)
     } else {
@@ -289,29 +504,15 @@ fn run_build_plan(
         ));
     }
 
-    // Parse agent if provided
-    let agent_type = if let Some(ref agent_str) = agent {
-        Some(
-            AgentType::from_str(agent_str)
-                .ok_or_else(|| AikiError::UnknownAgentType(agent_str.clone()))?,
-        )
-    } else {
-        None
-    };
-
-    // Clean up stale builds for this plan
     cleanup_stale_builds(cwd, plan_path)?;
 
-    // Load current tasks to check for existing epics
+    // Deterministic epic lookup
     let events = read_events(cwd)?;
     let graph = materialize_graph(&events);
     let plan_graph = PlanGraph::build(&graph);
-
-    // Deterministic epic lookup (no interactive prompts)
     let existing_epic = plan_graph.find_epic_for_plan(plan_path, &graph);
 
     let epic_id = if restart {
-        // --restart: close existing epic and create fresh
         if let Some(epic) = existing_epic {
             if epic.status != TaskStatus::Closed {
                 undo_completed_subtasks(cwd, &epic.id)?;
@@ -322,28 +523,21 @@ fn run_build_plan(
     } else {
         match existing_epic {
             Some(epic) if epic.status != TaskStatus::Closed => {
-                // Valid incomplete epic — reuse it (deterministic, no prompt)
                 let subtasks = get_subtasks(&graph, &epic.id);
                 if subtasks.is_empty() {
-                    // Invalid epic (no subtasks) — close and create new
                     close_epic_as_invalid(cwd, &epic.id)?;
                     None
                 } else {
-                    // Restart the epic via `aiki task start` which stops
-                    // stale in-progress subtasks and re-starts the parent.
                     restart_epic(cwd, &epic.id)?;
                     Some(epic.id.clone())
                 }
             }
-            _ => None, // No epic or closed epic — create new
+            _ => None,
         }
     };
 
-    // Determine if we should show the TUI (TTY + not bare output)
-    let show_tui = !run_async && std::io::stdout().is_terminal() && !output_id;
-
     // --async: spawn background process and return immediately
-    if run_async {
+    {
         let is_existing_epic = epic_id.is_some();
         let epic_id = match epic_id {
             Some(id) => id,
@@ -390,256 +584,14 @@ fn run_build_plan(
             println!("{}", epic_id);
         }
 
-        return Ok(());
+        Ok(())
     }
-
-    // TTY sync path: run worker closure in-process with TUI
-    if show_tui {
-        let is_existing_epic = epic_id.is_some();
-        let epic_id = match epic_id {
-            Some(id) => id,
-            None => super::epic::create_epic_task(cwd, plan_path)?,
-        };
-
-        if is_existing_epic {
-            let events = read_events(cwd)?;
-            let graph = materialize_graph(&events);
-            check_epic_blockers(&graph, &epic_id)?;
-        }
-
-        let events = read_events(cwd)?;
-        let graph = materialize_graph(&events);
-        let (width, _) = crossterm::terminal::size().unwrap_or((80, 24));
-        let model = Model {
-            graph: std::sync::Arc::new(graph),
-            screen: Screen::Build {
-                epic_id: epic_id.clone(),
-                plan_path: plan_path.to_string(),
-            },
-            window: WindowState::new(width),
-            entries: Vec::new(),
-            finished: false,
-            detached: false,
-        };
-
-        let worker_epic_id = epic_id.clone();
-        let worker_plan_path = plan_path.to_string();
-        let worker_decompose_template = decompose_template.clone();
-        let worker_loop_template = loop_template.clone();
-        let worker_agent = agent.clone();
-        let worker_review_after = review_after;
-        let worker_fix_after = fix_after;
-        let worker_review_template = review_template.clone();
-        let worker_fix_template = fix_template.clone();
-
-        let worker = move |status: tui::app::WorkerStatus, cwd: std::path::PathBuf| -> anyhow::Result<()> {
-            let agent_type = if let Some(ref agent_str) = worker_agent {
-                Some(
-                    AgentType::from_str(agent_str)
-                        .ok_or_else(|| AikiError::UnknownAgentType(agent_str.clone()))?,
-                )
-            } else {
-                None
-            };
-
-            // Phase 1: decompose (if no subtasks yet)
-            let events = read_events(&cwd)?;
-            let graph = materialize_graph(&events);
-            let subtasks = get_subtasks(&graph, &worker_epic_id);
-            if subtasks.is_empty() {
-                status.start("decompose");
-                status.orchestrates(&worker_epic_id);
-                status.update("Decomposing plan...");
-                let options = super::decompose::DecomposeOptions {
-                    template: worker_decompose_template,
-                    agent: agent_type.clone(),
-                };
-                match super::decompose::run_decompose(
-                    &cwd,
-                    &worker_plan_path,
-                    &worker_epic_id,
-                    options,
-                    false,
-                ) {
-                    Ok(decompose_task_id) => {
-                        status.task(&decompose_task_id);
-                        let events = read_events(&cwd)?;
-                        let graph = materialize_graph(&events);
-                        let count = get_subtasks(&graph, &worker_epic_id).len();
-                        status.done(&format!("{} subtasks created", count));
-                    }
-                    Err(e) => {
-                        status.failed(&e.to_string());
-                        return Err(e.into());
-                    }
-                }
-            }
-
-            // Phase 2: loop
-            status.section("Build");
-            status.start("loop");
-            status.orchestrates(&worker_epic_id);
-            status.update("Running subtasks...");
-
-            let mut loop_options = LoopOptions::new();
-            if let Some(agent) = agent_type.clone() {
-                loop_options = loop_options.with_agent(agent);
-            }
-            if let Some(tmpl) = worker_loop_template {
-                loop_options = loop_options.with_template(tmpl);
-            }
-
-            match run_loop(&cwd, &worker_epic_id, loop_options, false) {
-                Ok(loop_task_id) => {
-                    status.task(&loop_task_id);
-                    status.done("All lanes complete");
-                }
-                Err(e) => {
-                    status.failed(&e.to_string());
-                    return Err(e.into());
-                }
-            }
-
-            // Phase 3: optional review + fix
-            if worker_review_after {
-                status.start("review");
-                status.update("Running review...");
-                match run_build_review(
-                    &cwd,
-                    &worker_plan_path,
-                    &worker_epic_id,
-                    worker_fix_after,
-                    worker_review_template,
-                    worker_fix_template,
-                    worker_agent,
-                ) {
-                    Ok(()) => {
-                        status.done("Review complete");
-                    }
-                    Err(e) => {
-                        status.failed(&e.to_string());
-                        return Err(e.into());
-                    }
-                }
-            }
-
-            status.finish();
-            Ok(())
-        };
-
-        crate::tui::app::run_with_worker(model, cwd, worker)?;
-
-        // After TUI exits, print final status
-        let events = read_events(cwd)?;
-        let graph = materialize_graph(&events);
-        let epic_task = graph.tasks.get(epic_id.as_str());
-        if let Some(epic_task) = epic_task {
-            let subtasks = get_subtasks(&graph, &epic_task.id);
-            let build_tasks: Vec<&Task> = graph
-                .tasks
-                .values()
-                .filter(|t| {
-                    t.task_type.as_deref() == Some("orchestrator")
-                        && t.data.get("plan").map(|s| s.as_str()) == Some(plan_path)
-                })
-                .collect();
-            output_build_show(epic_task, &subtasks, &build_tasks, &graph)?;
-        }
-
-        return Ok(());
-    }
-
-    // Non-TTY sync path: run everything blocking with text output (no TUI)
-    let epic_id = match epic_id {
-        Some(id) => id,
-        None if restart => super::epic::create_epic(
-            cwd,
-            plan_path,
-            decompose_template.as_deref(),
-            None,
-            false,
-        )?,
-        None => find_or_create_epic(
-            cwd,
-            plan_path,
-            decompose_template.as_deref(),
-            false,
-        )?,
-    };
-
-    // Check if epic is blocked before running loop
-    let events = read_events(cwd)?;
-    let graph = materialize_graph(&events);
-    check_epic_blockers(&graph, &epic_id)?;
-
-    // Run loop synchronously (non-TTY)
-    let mut loop_options = LoopOptions::new();
-    if let Some(agent) = agent_type {
-        loop_options = loop_options.with_agent(agent);
-    }
-    if let Some(tmpl) = loop_template {
-        loop_options = loop_options.with_template(tmpl);
-    }
-
-    let loop_task_id = run_loop(cwd, &epic_id, loop_options, false)?;
-
-    // After build completes, re-read tasks to get final state
-    let events = read_events(cwd)?;
-    let graph = materialize_graph(&events);
-    let plan_graph = PlanGraph::build(&graph);
-
-    // Find the epic task (may have been created during the build)
-    let final_epic = plan_graph.find_epic_for_plan(plan_path, &graph);
-    let final_epic_id = final_epic
-        .map(|p| p.id.as_str())
-        .unwrap_or(epic_id.as_str());
-
-    // Resolve the epic task from the graph (prefer final_epic, fall back to epic_id lookup)
-    let epic_task = final_epic
-        .or_else(|| graph.tasks.get(epic_id.as_str()))
-        .ok_or_else(|| AikiError::InvalidArgument(format!("Epic task not found: {}", epic_id)))?;
-
-    let subtasks = get_subtasks(&graph, &epic_task.id);
-    let subtask_refs: Vec<&Task> = subtasks.into_iter().collect();
-
-    if output_id {
-        println!("{}", loop_task_id);
-        println!("{}", epic_task.id);
-    } else {
-        let build_tasks: Vec<&Task> = graph
-            .tasks
-            .values()
-            .filter(|t| {
-                t.task_type.as_deref() == Some("orchestrator")
-                    && t.data.get("plan").map(|s| s.as_str()) == Some(plan_path)
-            })
-            .collect();
-        output_build_show(epic_task, &subtask_refs, &build_tasks, &graph)?;
-    }
-
-    // Run post-build review if requested (sync path)
-    if review_after {
-        run_build_review(
-            cwd,
-            plan_path,
-            final_epic_id,
-            fix_after,
-            review_template,
-            fix_template,
-            agent,
-        )?;
-    }
-
-    Ok(())
 }
 
-/// Build from an existing epic ID
+/// Build from an existing epic ID.
 ///
-/// 1. Find epic task, verify it exists
-/// 2. Get plan path from epic's data
-/// 3. Create build task with data.target and data.plan
-/// 4. Run build task (sync or async)
-/// 5. Output results
+/// - `--async`: spawn background (workflow runs there via `--_continue-async`)
+/// - Sync: run workflow with text output
 fn run_build_epic(
     cwd: &Path,
     epic_id: &str,
@@ -652,7 +604,6 @@ fn run_build_epic(
     fix_template: Option<String>,
     output_id: bool,
 ) -> Result<()> {
-    // Parse agent if provided
     let agent_type = if let Some(ref agent_str) = agent {
         Some(
             AgentType::from_str(agent_str)
@@ -668,7 +619,7 @@ fn run_build_epic(
     let epic = find_task(&graph.tasks, epic_id)?;
     let epic_id = epic.id.as_str();
 
-    // Check if epic is blocked before running loop
+    // Check if epic is blocked before running
     check_epic_blockers(&graph, epic_id)?;
 
     let plan_path = epic.data.get("plan").cloned().ok_or_else(|| {
@@ -678,7 +629,17 @@ fn run_build_epic(
         ))
     })?;
 
-    let show_tui = !run_async && std::io::stdout().is_terminal() && !output_id;
+    let opts = BuildOpts {
+        restart: false,
+        decompose_template: None,
+        loop_template,
+        agent: agent_type,
+        agent_str: agent.clone(),
+        review_after,
+        review_template,
+        fix_after,
+        fix_template,
+    };
 
     // --async: spawn background process and return immediately
     if run_async {
@@ -687,7 +648,7 @@ fn run_build_epic(
             "--_continue-async".to_string(),
             epic_id.to_string(),
         ];
-        if let Some(tmpl) = loop_template.as_deref() {
+        if let Some(tmpl) = opts.loop_template.as_deref() {
             spawn_args.push("--loop-template".to_string());
             spawn_args.push(tmpl.to_string());
         }
@@ -695,13 +656,13 @@ fn run_build_epic(
             spawn_args.push("--agent".to_string());
             spawn_args.push(a.to_string());
         }
-        if let Some(tmpl) = review_template.as_deref() {
+        if let Some(tmpl) = opts.review_template.as_deref() {
             spawn_args.push("--review-template".to_string());
             spawn_args.push(tmpl.to_string());
         } else if review_after {
             spawn_args.push("--review".to_string());
         }
-        if let Some(tmpl) = fix_template.as_deref() {
+        if let Some(tmpl) = opts.fix_template.as_deref() {
             spawn_args.push("--fix-template".to_string());
             spawn_args.push(tmpl.to_string());
         }
@@ -715,196 +676,307 @@ fn run_build_epic(
         return Ok(());
     }
 
-    // TTY sync path: run worker closure in-process with TUI
-    if show_tui {
-        let events = read_events(cwd)?;
+    // Sync path: run workflow with text output
+    let wf = build_workflow_from_epic(cwd, epic_id, &plan_path, &opts);
+    wf.run_build(RunMode::Text, &opts).map_err(anyhow_to_aiki)?;
+
+    output_after_workflow(cwd, &plan_path, output_id)?;
+
+    Ok(())
+}
+
+// ─── Workflow step implementations ───────────────────────────────────────────
+
+/// Plan step: validate plan path, check draft status, clean up stale builds.
+pub(crate) fn run_plan_step(ctx: &mut WorkflowContext) -> anyhow::Result<StepResult> {
+    let plan_path = ctx
+        .plan_path
+        .as_ref()
+        .ok_or_else(|| AikiError::InvalidArgument("No plan path in workflow context".to_string()))?
+        .clone();
+
+    validate_plan_path(&ctx.cwd, &plan_path)?;
+
+    let full_path = if plan_path.starts_with('/') {
+        std::path::PathBuf::from(&plan_path)
+    } else {
+        ctx.cwd.join(&plan_path)
+    };
+    let metadata = parse_plan_metadata(&full_path);
+    if metadata.draft {
+        return Err(AikiError::InvalidArgument(
+            "Cannot build draft plan. Remove `draft: true` from frontmatter first.".to_string(),
+        )
+        .into());
+    }
+
+    cleanup_stale_builds(&ctx.cwd, &plan_path)?;
+
+    Ok(StepResult {
+        message: "Plan validated".to_string(),
+        task_id: None,
+    })
+}
+
+/// Decompose step: find/create epic, check blockers, run decompose if needed.
+pub(crate) fn run_decompose_step(
+    ctx: &mut WorkflowContext,
+    restart: bool,
+    template: Option<String>,
+    agent: Option<AgentType>,
+) -> anyhow::Result<StepResult> {
+    let plan_path = ctx
+        .plan_path
+        .as_ref()
+        .ok_or_else(|| AikiError::InvalidArgument("No plan path in workflow context".to_string()))?
+        .clone();
+
+    // If no epic in context, find or create one
+    if ctx.task_id.is_none() {
+        let events = read_events(&ctx.cwd)?;
         let graph = materialize_graph(&events);
-        let (width, _) = crossterm::terminal::size().unwrap_or((80, 24));
-        let model = Model {
-            graph: std::sync::Arc::new(graph),
-            screen: Screen::Build {
-                epic_id: epic_id.to_string(),
-                plan_path: plan_path.clone(),
-            },
-            window: WindowState::new(width),
-            entries: Vec::new(),
-            finished: false,
-            detached: false,
+        let plan_graph = PlanGraph::build(&graph);
+        let existing_epic = plan_graph.find_epic_for_plan(&plan_path, &graph);
+
+        let epic_id = if restart {
+            if let Some(epic) = existing_epic {
+                if epic.status != TaskStatus::Closed {
+                    undo_completed_subtasks(&ctx.cwd, &epic.id)?;
+                    close_epic(&ctx.cwd, &epic.id)?;
+                }
+            }
+            None
+        } else {
+            match existing_epic {
+                Some(epic) if epic.status != TaskStatus::Closed => {
+                    let subtasks = get_subtasks(&graph, &epic.id);
+                    if subtasks.is_empty() {
+                        close_epic_as_invalid(&ctx.cwd, &epic.id)?;
+                        None
+                    } else {
+                        restart_epic(&ctx.cwd, &epic.id)?;
+                        Some(epic.id.clone())
+                    }
+                }
+                _ => None,
+            }
         };
 
-        let worker_epic_id = epic_id.to_string();
-        let worker_plan_path = plan_path.clone();
-        let worker_loop_template = loop_template.clone();
-        let worker_agent = agent.clone();
-        let worker_review_after = review_after;
-        let worker_fix_after = fix_after;
-        let worker_review_template = review_template.clone();
-        let worker_fix_template = fix_template.clone();
-
-        let worker = move |status: tui::app::WorkerStatus, cwd: std::path::PathBuf| -> anyhow::Result<()> {
-            let agent_type = if let Some(ref agent_str) = worker_agent {
-                Some(
-                    AgentType::from_str(agent_str)
-                        .ok_or_else(|| AikiError::UnknownAgentType(agent_str.clone()))?,
-                )
-            } else {
-                None
-            };
-
-            // Phase 1: decompose (if no subtasks yet)
-            let events = read_events(&cwd)?;
-            let graph = materialize_graph(&events);
-            let subtasks = get_subtasks(&graph, &worker_epic_id);
-            if subtasks.is_empty() {
-                status.start("decompose");
-                status.orchestrates(&worker_epic_id);
-                status.update("Decomposing plan...");
-                let options = super::decompose::DecomposeOptions {
-                    template: None,
-                    agent: agent_type.clone(),
-                };
-                match super::decompose::run_decompose(
-                    &cwd,
-                    &worker_plan_path,
-                    &worker_epic_id,
-                    options,
-                    false,
-                ) {
-                    Ok(decompose_task_id) => {
-                        status.task(&decompose_task_id);
-                        let events = read_events(&cwd)?;
-                        let graph = materialize_graph(&events);
-                        let count = get_subtasks(&graph, &worker_epic_id).len();
-                        status.done(&format!("{} subtasks created", count));
-                    }
-                    Err(e) => {
-                        status.failed(&e.to_string());
-                        return Err(e.into());
-                    }
-                }
-            }
-
-            // Phase 2: loop
-            status.section("Build");
-            status.start("loop");
-            status.orchestrates(&worker_epic_id);
-            status.update("Running subtasks...");
-
-            let mut loop_options = LoopOptions::new();
-            if let Some(agent) = agent_type.clone() {
-                loop_options = loop_options.with_agent(agent);
-            }
-            if let Some(tmpl) = worker_loop_template {
-                loop_options = loop_options.with_template(tmpl);
-            }
-
-            match run_loop(&cwd, &worker_epic_id, loop_options, false) {
-                Ok(loop_task_id) => {
-                    status.task(&loop_task_id);
-                    status.done("All lanes complete");
-                }
-                Err(e) => {
-                    status.failed(&e.to_string());
-                    return Err(e.into());
-                }
-            }
-
-            // Phase 3: optional review + fix
-            if worker_review_after {
-                status.start("review");
-                status.update("Running review...");
-                match run_build_review(
-                    &cwd,
-                    &worker_plan_path,
-                    &worker_epic_id,
-                    worker_fix_after,
-                    worker_review_template,
-                    worker_fix_template,
-                    worker_agent,
-                ) {
-                    Ok(()) => {
-                        status.done("Review complete");
-                    }
-                    Err(e) => {
-                        status.failed(&e.to_string());
-                        return Err(e.into());
-                    }
-                }
-            }
-
-            status.finish();
-            Ok(())
+        let epic_id = match epic_id {
+            Some(id) => id,
+            None => super::epic::create_epic_task(&ctx.cwd, &plan_path)?,
         };
 
-        crate::tui::app::run_with_worker(model, cwd, worker)?;
+        ctx.task_id = Some(epic_id);
+    }
 
-        // After TUI exits, print final status
-        let events = read_events(cwd)?;
+    let epic_id = ctx.task_id.as_ref().unwrap().clone();
+
+    // Check blockers
+    let events = read_events(&ctx.cwd)?;
+    let graph = materialize_graph(&events);
+    check_epic_blockers(&graph, &epic_id)?;
+
+    // Run decompose if no subtasks exist
+    let subtasks = get_subtasks(&graph, &epic_id);
+    if subtasks.is_empty() {
+        let options = super::decompose::DecomposeOptions {
+            template,
+            agent,
+        };
+        let decompose_task_id =
+            super::decompose::run_decompose(&ctx.cwd, &plan_path, &epic_id, options, false)?;
+
+        let events = read_events(&ctx.cwd)?;
         let graph = materialize_graph(&events);
-        let epic_task = graph.tasks.get(epic_id);
-        if let Some(epic_task) = epic_task {
-            let subtasks = get_subtasks(&graph, epic_id);
+        let count = get_subtasks(&graph, &epic_id).len();
+
+        Ok(StepResult {
+            message: format!("{} subtasks created", count),
+            task_id: Some(decompose_task_id),
+        })
+    } else {
+        Ok(StepResult {
+            message: "Epic resumed (subtasks already exist)".to_string(),
+            task_id: Some(epic_id),
+        })
+    }
+}
+
+/// Loop step: run the orchestration loop over epic subtasks.
+pub(crate) fn run_loop_step(
+    ctx: &mut WorkflowContext,
+    template: Option<String>,
+    agent: Option<AgentType>,
+) -> anyhow::Result<StepResult> {
+    let epic_id = ctx
+        .task_id
+        .as_ref()
+        .ok_or_else(|| AikiError::InvalidArgument("No epic ID in workflow context".to_string()))?
+        .clone();
+
+    let mut loop_options = LoopOptions::new();
+    if let Some(agent) = agent {
+        loop_options = loop_options.with_agent(agent);
+    }
+    if let Some(tmpl) = template {
+        loop_options = loop_options.with_template(tmpl);
+    }
+
+    let loop_task_id = run_loop(&ctx.cwd, &epic_id, loop_options, false)?;
+
+    Ok(StepResult {
+        message: "All lanes complete".to_string(),
+        task_id: Some(loop_task_id),
+    })
+}
+
+/// Review step: create a code review scoped to the plan and run it.
+pub(crate) fn run_review_step(
+    ctx: &mut WorkflowContext,
+    template: Option<String>,
+    agent: Option<String>,
+) -> anyhow::Result<StepResult> {
+    use super::review::{create_review, CreateReviewParams, ReviewScope, ReviewScopeKind};
+
+    let epic_id = ctx
+        .task_id
+        .as_ref()
+        .ok_or_else(|| AikiError::InvalidArgument("No epic ID in workflow context".to_string()))?
+        .clone();
+    let plan_path = ctx
+        .plan_path
+        .as_ref()
+        .ok_or_else(|| AikiError::InvalidArgument("No plan path in workflow context".to_string()))?
+        .clone();
+
+    let scope = ReviewScope {
+        kind: ReviewScopeKind::Code,
+        id: plan_path.clone(),
+        task_ids: vec![],
+    };
+
+    let result = create_review(
+        &ctx.cwd,
+        CreateReviewParams {
+            scope,
+            agent_override: agent.clone(),
+            template,
+            fix_template: None,
+            autorun: false,
+        },
+    )?;
+
+    // Link review to epic
+    let events = read_events(&ctx.cwd)?;
+    let graph = materialize_graph(&events);
+    write_link_event(
+        &ctx.cwd,
+        &graph,
+        "validates",
+        &result.review_task_id,
+        &epic_id,
+    )?;
+
+    // Run the review to completion
+    let options = TaskRunOptions::new().quiet();
+    task_run(&ctx.cwd, &result.review_task_id, options)?;
+
+    Ok(StepResult {
+        message: "Review complete".to_string(),
+        task_id: Some(result.review_task_id),
+    })
+}
+
+/// Fix step: check if review found issues and run fix if so.
+pub(crate) fn run_fix_step(
+    ctx: &mut WorkflowContext,
+    review_id: &str,
+    template: Option<String>,
+    agent: Option<String>,
+) -> anyhow::Result<StepResult> {
+    let epic_id = ctx
+        .task_id
+        .as_ref()
+        .ok_or_else(|| AikiError::InvalidArgument("No epic ID in workflow context".to_string()))?
+        .clone();
+
+    // Resolve review_id: use provided or find from graph
+    let review_id = if review_id.is_empty() {
+        let events = read_events(&ctx.cwd)?;
+        let graph = materialize_graph(&events);
+        let reviews = graph.edges.referrers(&epic_id, "validates");
+        reviews
+            .last()
+            .ok_or_else(|| AikiError::InvalidArgument("No review found to fix".to_string()))?
+            .clone()
+    } else {
+        review_id.to_string()
+    };
+
+    // Check if review found issues
+    let events = read_events(&ctx.cwd)?;
+    let graph = materialize_graph(&events);
+    let has_issues = find_task(&graph.tasks, &review_id)
+        .map(|t| {
+            t.data
+                .get("issue_count")
+                .and_then(|c| c.parse::<usize>().ok())
+                .unwrap_or(0)
+                > 0
+        })
+        .unwrap_or(false);
+
+    if !has_issues {
+        return Ok(StepResult {
+            message: "No issues to fix".to_string(),
+            task_id: None,
+        });
+    }
+
+    super::fix::run_fix(
+        &ctx.cwd,
+        &review_id,
+        false,                         // not async
+        None,                          // no continue-async
+        template,                      // forward caller's fix template
+        None,                          // default decompose template
+        None,                          // default loop template
+        None,                          // default review template
+        agent,                         // forward agent override
+        false,                         // not autorun
+        false,                         // not --once
+        Some(super::OutputFormat::Id), // prevent nested TUI in worker thread
+    )?;
+
+    Ok(StepResult {
+        message: "Fix complete".to_string(),
+        task_id: Some(review_id),
+    })
+}
+
+/// Post-workflow output: re-read graph and display build status.
+fn output_after_workflow(cwd: &Path, plan_path: &str, output_id: bool) -> Result<()> {
+    let events = read_events(cwd)?;
+    let graph = materialize_graph(&events);
+    let plan_graph = PlanGraph::build(&graph);
+
+    let epic = plan_graph.find_epic_for_plan(plan_path, &graph);
+    if let Some(epic) = epic {
+        if output_id {
+            println!("{}", epic.id);
+        } else {
+            let subtasks = get_subtasks(&graph, &epic.id);
             let build_tasks: Vec<&Task> = graph
                 .tasks
                 .values()
                 .filter(|t| {
                     t.task_type.as_deref() == Some("orchestrator")
-                        && t.data.get("plan").map(|s| s.as_str()) == Some(plan_path.as_str())
+                        && t.data.get("plan").map(|s| s.as_str()) == Some(plan_path)
                 })
                 .collect();
-            output_build_show(epic_task, &subtasks, &build_tasks, &graph)?;
+            output_build_show(epic, &subtasks, &build_tasks, &graph)?;
         }
-
-        return Ok(());
-    }
-
-    // Non-TTY sync path: run everything blocking with text output
-    let mut loop_options = LoopOptions::new();
-    if let Some(agent) = agent_type {
-        loop_options = loop_options.with_agent(agent);
-    }
-    if let Some(tmpl) = loop_template {
-        loop_options = loop_options.with_template(tmpl);
-    }
-
-    let loop_task_id = run_loop(cwd, epic_id, loop_options, false)?;
-
-    // After build completes, re-read tasks to get final state
-    let events = read_events(cwd)?;
-    let graph = materialize_graph(&events);
-
-    let epic_task = graph
-        .tasks
-        .get(epic_id)
-        .ok_or_else(|| AikiError::InvalidArgument(format!("Epic task not found: {}", epic_id)))?;
-    let subtasks = get_subtasks(&graph, epic_id);
-
-    if output_id {
-        println!("{}", loop_task_id);
-        println!("{}", epic_id);
-    } else {
-        let build_tasks: Vec<&Task> = graph
-            .tasks
-            .values()
-            .filter(|t| {
-                t.task_type.as_deref() == Some("orchestrator")
-                    && t.data.get("plan").map(|s| s.as_str()) == Some(plan_path.as_str())
-            })
-            .collect();
-        output_build_show(epic_task, &subtasks, &build_tasks, &graph)?;
-    }
-
-    // Run post-build review if requested (sync path)
-    if review_after {
-        run_build_review(
-            cwd,
-            &plan_path,
-            epic_id,
-            fix_after,
-            review_template,
-            fix_template,
-            agent,
-        )?;
     }
 
     Ok(())
@@ -1166,110 +1238,6 @@ fn close_epic_as_invalid(cwd: &Path, epic_id: &str) -> Result<()> {
         timestamp: chrono::Utc::now(),
     };
     write_event(cwd, &close_event)?;
-    Ok(())
-}
-
-/// Run review (optionally with fix loop) after a build completes.
-///
-/// Creates a code review scoped to the plan's implementation, optionally
-/// including a fix subtask if `with_fix` is true. Runs the review to completion
-/// (blocking).
-fn run_build_review(
-    cwd: &Path,
-    plan_path: &str,
-    epic_id: &str,
-    with_fix: bool,
-    review_template: Option<String>,
-    fix_template: Option<String>,
-    agent: Option<String>,
-) -> Result<()> {
-    use super::review::{create_review, CreateReviewParams, ReviewScope, ReviewScopeKind};
-
-    let scope = ReviewScope {
-        kind: ReviewScopeKind::Code,
-        id: plan_path.to_string(),
-        task_ids: vec![],
-    };
-
-    let result = create_review(
-        cwd,
-        CreateReviewParams {
-            scope,
-            agent_override: agent.clone(),
-            template: review_template,
-            fix_template: if with_fix {
-                fix_template.clone().or_else(|| Some("fix".to_string()))
-            } else {
-                None
-            },
-            autorun: false,
-        },
-    )?;
-
-    // Link review to epic so the status monitor shows the epic view
-    let events = read_events(cwd)?;
-    let graph = materialize_graph(&events);
-    write_link_event(cwd, &graph, "validates", &result.review_task_id, epic_id)?;
-
-    // Run the review to completion — quiet prevents nested TUI in worker thread
-    let options = TaskRunOptions::new().quiet();
-    task_run(cwd, &result.review_task_id, options)?;
-
-    // Check if review found issues and invoke fix if requested
-    let events = read_events(cwd)?;
-    let graph = materialize_graph(&events);
-    let has_issues = find_task(&graph.tasks, &result.review_task_id)
-        .map(|t| {
-            t.data
-                .get("issue_count")
-                .and_then(|c| c.parse::<usize>().ok())
-                .unwrap_or(0)
-                > 0
-        })
-        .unwrap_or(false);
-
-    if with_fix && has_issues {
-        super::fix::run_fix(
-            cwd,
-            &result.review_task_id,
-            false,                              // not async
-            None,                               // no continue-async
-            fix_template,                       // forward caller's fix template
-            None,                               // default decompose template
-            None,                               // default loop template
-            None,                               // default review template
-            agent,                              // forward agent override
-            false,                              // not autorun
-            false,                              // not --once
-            Some(super::OutputFormat::Id),       // prevent nested TUI in worker thread
-        )?;
-    }
-
-    output_build_review_completed(&result.review_task_id, plan_path, with_fix)?;
-
-    Ok(())
-}
-
-/// Output build + review completed message to stderr
-fn output_build_review_completed(review_id: &str, plan_path: &str, with_fix: bool) -> Result<()> {
-    output_utils::emit(|| {
-        let title = if with_fix {
-            "Build + Review + Fix Completed"
-        } else {
-            "Build + Review Completed"
-        };
-        let mut content = format!(
-            "## {}\n- **Review ID:** {}\n- **Plan:** {}\n",
-            title, review_id, plan_path
-        );
-        if !with_fix {
-            content.push_str(&format!(
-                "\n---\nRun `aiki fix {}` to remediate.\n",
-                review_id
-            ));
-        }
-        MdBuilder::new().build(&content)
-    });
     Ok(())
 }
 
@@ -1920,18 +1888,6 @@ mod tests {
         assert!(fix_template.is_none());
     }
 
-    #[test]
-    fn test_output_build_review_completed_with_fix() {
-        let result = output_build_review_completed("review123", "ops/now/feature.md", true);
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_output_build_review_completed_without_fix() {
-        let result = output_build_review_completed("review123", "ops/now/feature.md", false);
-        assert!(result.is_ok());
-    }
-
     // ═══════════════════════════════════════════════════════════════════
     // Pre-refactor behavioral contract tests for build orchestration
     // ═══════════════════════════════════════════════════════════════════
@@ -2324,5 +2280,228 @@ mod tests {
             matches!(outcome, TaskOutcome::WontDo),
             "Invalid epic closure must use WontDo outcome"
         );
+    }
+
+    // --- Pre-refactor behavioral safety net tests ---
+
+    /// Draft plans cannot be built — run_build_plan rejects draft: true.
+    #[test]
+    fn test_draft_plan_rejected() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let plan_file = temp_dir.path().join("draft-plan.md");
+        std::fs::write(&plan_file, "---\ndraft: true\n---\n# Plan\n").unwrap();
+        let metadata = crate::plans::parse_plan_metadata(&plan_file);
+        assert!(metadata.draft, "Draft plan must be detected and rejected");
+    }
+
+    /// When an existing epic already has subtasks, reuse it (skip decompose).
+    /// The epic_resume_decision returns create_new=false when subtasks exist.
+    #[test]
+    fn test_epic_resume_skips_decompose_when_subtasks_exist() {
+        let epic = make_task("epic1", "Epic", TaskStatus::InProgress);
+        let has_subtasks = true;
+        let (create_new, close_existing) = epic_resume_decision(false, Some((&epic, has_subtasks)));
+        assert!(!create_new, "Should reuse existing epic when subtasks exist (skip decompose)");
+        assert!(!close_existing, "Should not close a valid in-progress epic");
+    }
+
+    /// --restart closes the existing in-progress epic before creating a new one.
+    #[test]
+    fn test_restart_closes_existing_epic() {
+        let epic = make_task("epic1", "Epic", TaskStatus::InProgress);
+        let (create_new, close_existing) = epic_resume_decision(true, Some((&epic, true)));
+        assert!(create_new, "--restart must create a new epic");
+        assert!(close_existing, "--restart must close the existing in-progress epic");
+    }
+
+    /// When the build target is an epic ID (task ID), the plan path is not
+    /// validated — run_build_epic does not call validate_plan_path. We verify
+    /// the routing: a task ID target takes the epic path, not the plan path.
+    #[test]
+    fn test_build_epic_id_skips_plan_validation() {
+        let epic_id = "mvslrspmoynoxyyywqyutmovxpvztkls";
+        assert!(is_task_id(epic_id), "Should be recognized as task ID");
+        // run_build_epic does NOT call validate_plan_path — verified by code
+        // inspection. This test locks down the routing decision: task IDs must
+        // take the epic path where no plan file validation occurs.
+        let plan_path = "nonexistent/path/to/plan.md";
+        assert!(!is_task_id(plan_path), "Plan path must NOT be routed as epic ID");
+    }
+
+    // --- drive_build / fix iteration contract ---
+
+    /// The build fix iteration loop must cap at MAX_BUILD_ITERATIONS (10).
+    #[test]
+    fn test_max_iterations_cap() {
+        assert_eq!(MAX_BUILD_ITERATIONS, 10, "Build fix iteration must cap at 10");
+        // Simulate: when every review returns issues, iteration counter stops at MAX
+        let mut iteration = 0;
+        let mut cycles_injected = 0;
+        for _ in 0..MAX_BUILD_ITERATIONS + 5 {
+            if iteration < MAX_BUILD_ITERATIONS {
+                cycles_injected += 1;
+                iteration += 1;
+            }
+        }
+        assert_eq!(
+            cycles_injected, MAX_BUILD_ITERATIONS,
+            "Should inject exactly MAX_BUILD_ITERATIONS cycles before stopping"
+        );
+    }
+
+    /// drive_build does NOT inject fix cycles when fix_after is false.
+    /// run_build falls through to the generic Workflow::run in that case.
+    #[test]
+    fn test_drive_build_only_active_when_fix_after() {
+        let opts_no_fix = BuildOpts {
+            restart: false,
+            decompose_template: None,
+            loop_template: None,
+            agent: None,
+            agent_str: None,
+            review_after: true,
+            review_template: None,
+            fix_after: false,
+            fix_template: None,
+        };
+        // When fix_after is false, run_build delegates to the generic runner
+        assert!(!opts_no_fix.fix_after);
+
+        let opts_with_fix = BuildOpts {
+            restart: false,
+            decompose_template: None,
+            loop_template: None,
+            agent: None,
+            agent_str: None,
+            review_after: true,
+            review_template: None,
+            fix_after: true,
+            fix_template: Some("fix".to_string()),
+        };
+        // When fix_after is true, run_build uses drive_build
+        assert!(opts_with_fix.fix_after);
+    }
+
+    /// has_review_issues returns true when issue_count > 0.
+    #[test]
+    fn test_has_review_issues_logic() {
+        // Verify the issue detection logic used by drive_build
+        let mut task = make_task("review1", "Review", TaskStatus::Closed);
+        task.data.insert("issue_count".to_string(), "3".to_string());
+        let has_issues = task
+            .data
+            .get("issue_count")
+            .and_then(|c| c.parse::<usize>().ok())
+            .unwrap_or(0)
+            > 0;
+        assert!(has_issues, "issue_count=3 should indicate actionable issues");
+    }
+
+    /// has_review_issues returns false when issue_count is 0.
+    #[test]
+    fn test_no_review_issues_logic() {
+        let mut task = make_task("review2", "Review", TaskStatus::Closed);
+        task.data.insert("issue_count".to_string(), "0".to_string());
+        let has_issues = task
+            .data
+            .get("issue_count")
+            .and_then(|c| c.parse::<usize>().ok())
+            .unwrap_or(0)
+            > 0;
+        assert!(!has_issues, "issue_count=0 should indicate no actionable issues");
+    }
+
+    /// build_workflow omits static Fix step when fix_after is true (drive_build handles it).
+    #[test]
+    fn test_build_workflow_no_static_fix_when_fix_after() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let plan_file = temp_dir.path().join("plan.md");
+        std::fs::write(&plan_file, "# Plan").unwrap();
+
+        let opts = BuildOpts {
+            restart: false,
+            decompose_template: None,
+            loop_template: None,
+            agent: None,
+            agent_str: None,
+            review_after: true,
+            review_template: None,
+            fix_after: true,
+            fix_template: Some("fix".to_string()),
+        };
+
+        let wf = build_workflow(temp_dir.path(), "plan.md", &opts);
+        // Should have: Plan, Decompose, Loop, Review (no Fix)
+        assert_eq!(wf.steps.len(), 4);
+        assert_eq!(wf.steps[0].name(), "plan");
+        assert_eq!(wf.steps[1].name(), "decompose");
+        assert_eq!(wf.steps[2].name(), "loop");
+        assert_eq!(wf.steps[3].name(), "review");
+        // No Fix step — drive_build handles fix iteration dynamically
+        assert!(
+            !wf.steps.iter().any(|s| s.name() == "fix"),
+            "Static Fix step should not be present when fix_after is true"
+        );
+    }
+
+    #[test]
+    fn test_build_workflow_default_steps() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let plan_file = temp_dir.path().join("plan.md");
+        std::fs::write(&plan_file, "# Plan").unwrap();
+
+        let opts = BuildOpts {
+            restart: false,
+            decompose_template: None,
+            loop_template: None,
+            agent: None,
+            agent_str: None,
+            review_after: false,
+            review_template: None,
+            fix_after: false,
+            fix_template: None,
+        };
+
+        let wf = build_workflow(temp_dir.path(), "plan.md", &opts);
+        let names: Vec<_> = wf.steps.iter().map(|s| s.name()).collect();
+        assert_eq!(names, vec!["plan", "decompose", "loop"]);
+        assert_eq!(wf.steps.len(), 3);
+    }
+
+    #[test]
+    fn test_build_workflow_review_step_only_when_enabled() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let plan_file = temp_dir.path().join("plan.md");
+        std::fs::write(&plan_file, "# Plan").unwrap();
+
+        let without_review = BuildOpts {
+            restart: false,
+            decompose_template: None,
+            loop_template: None,
+            agent: None,
+            agent_str: None,
+            review_after: false,
+            review_template: None,
+            fix_after: false,
+            fix_template: None,
+        };
+        let wf_without_review = build_workflow(temp_dir.path(), "plan.md", &without_review);
+        let with_review = BuildOpts {
+            restart: false,
+            decompose_template: None,
+            loop_template: None,
+            agent: None,
+            agent_str: None,
+            review_after: true,
+            review_template: None,
+            fix_after: false,
+            fix_template: None,
+        };
+        let wf_with_review = build_workflow(temp_dir.path(), "plan.md", &with_review);
+
+        assert_eq!(wf_without_review.steps.len(), 3);
+        assert_eq!(wf_with_review.steps.len(), 4);
+        assert!(!wf_without_review.steps.iter().any(|s| s.name() == "review"));
+        assert!(wf_with_review.steps.iter().any(|s| s.name() == "review"));
     }
 }

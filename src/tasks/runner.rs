@@ -133,6 +133,20 @@ struct PreparedTaskRun {
     spawn_options: AgentSpawnOptions,
 }
 
+/// Roll back a task claim if spawn failed and the task is still in Reserved status.
+///
+/// Re-reads the event log to check the current status rather than relying on a
+/// stale boolean captured at prepare time. This avoids emitting spurious Released
+/// events when the task has already transitioned to InProgress.
+///
+/// If reading the event log fails, assumes the task may still be Reserved and
+/// emits a Released event as a safe default (a spurious Released on a
+/// non-Reserved task is a harmless no-op).
+fn rollback_if_still_reserved(cwd: &Path, task_id: &str, error: &crate::error::AikiError) {
+    let reason = format!("Spawn failed: {}", error);
+    crate::commands::run::try_rollback_reserved(cwd, task_id, &reason);
+}
+
 /// Loading phases shown during task run preparation.
 ///
 /// Maps to spec states 1.0a–1.0d in screen-states.md.
@@ -369,7 +383,13 @@ pub fn task_run(cwd: &Path, task_id: &str, options: TaskRunOptions) -> Result<()
     // Spawn agent session and optionally monitor with TUI
     let result = if show_tui {
         // Spawn agent in background, then run TUI to monitor via JJ events
-        let _handle = prepared.runtime.spawn_background(&prepared.spawn_options)?;
+        let _handle = match prepared.runtime.spawn_background(&prepared.spawn_options) {
+            Ok(handle) => handle,
+            Err(e) => {
+                rollback_if_still_reserved(cwd, task_id, &e);
+                return Err(e);
+            }
+        };
 
         let events = read_events(cwd)?;
         let graph = materialize_graph(&events);
@@ -387,7 +407,13 @@ pub fn task_run(cwd: &Path, task_id: &str, options: TaskRunOptions) -> Result<()
         let effect = crate::tui::app::run(model, cwd)?;
         map_tui_effect(cwd, task_id, effect)?
     } else {
-        prepared.runtime.spawn_blocking(&prepared.spawn_options)?
+        match prepared.runtime.spawn_blocking(&prepared.spawn_options) {
+            Ok(result) => result,
+            Err(e) => {
+                rollback_if_still_reserved(cwd, task_id, &e);
+                return Err(e);
+            }
+        }
     };
 
     handle_session_result(cwd, task_id, result, quiet)?;
@@ -413,7 +439,13 @@ pub fn task_run_on_session(
 
     if show_tui {
         // Spawn agent in background, then run TUI to monitor via JJ events
-        let _handle = prepared.runtime.spawn_background(&prepared.spawn_options)?;
+        let _handle = match prepared.runtime.spawn_background(&prepared.spawn_options) {
+            Ok(handle) => handle,
+            Err(e) => {
+                rollback_if_still_reserved(cwd, task_id, &e);
+                return Err(e);
+            }
+        };
 
         let events = read_events(cwd)?;
         let graph = materialize_graph(&events);
@@ -433,8 +465,13 @@ pub fn task_run_on_session(
         map_tui_effect(cwd, task_id, effect)
     } else {
         // Non-TUI: block until the agent exits
-        let result = prepared.runtime.spawn_blocking(&prepared.spawn_options)?;
-        Ok(result)
+        match prepared.runtime.spawn_blocking(&prepared.spawn_options) {
+            Ok(result) => Ok(result),
+            Err(e) => {
+                rollback_if_still_reserved(cwd, task_id, &e);
+                Err(e)
+            }
+        }
     }
 }
 
@@ -635,14 +672,7 @@ pub fn task_run_async(
         Ok(h) => h,
         Err(e) => {
             // Compensate: emit Released so the task doesn't get stuck in Reserved
-            if task.status == TaskStatus::Reserved {
-                let rollback = TaskEvent::Released {
-                    task_ids: vec![task_id.to_string()],
-                    reason: Some(format!("Spawn failed: {}", e)),
-                    timestamp: chrono::Utc::now(),
-                };
-                let _ = write_event(cwd, &rollback); // best-effort
-            }
+            rollback_if_still_reserved(cwd, task_id, &e);
             return Err(e);
         }
     };
@@ -1132,4 +1162,10 @@ mod tests {
             ),
         }
     }
+
+    // Status-based rollback logic (try_rollback_reserved) is tested in
+    // commands::run::tests — covers Reserved (with default and custom reason),
+    // InProgress, Closed, Open, and absent-from-graph (None path).
+    // rollback_if_still_reserved is a thin wrapper that delegates to
+    // try_rollback_reserved in run.rs.
 }

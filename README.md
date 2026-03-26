@@ -1,3 +1,5 @@
+45
+23
 # Aiki: Structured AI coding with safe defaults
 
 Aiki gives teams a practical way to let AI edit code without losing control.

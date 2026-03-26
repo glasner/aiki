@@ -203,7 +203,7 @@ aiki task link new-impl --supersedes old-impl
 
 ### `spawned-by`
 
-Provenance link from a spawned task to the task that spawned it. Set automatically when `aiki task run` creates a child agent task.
+Provenance link from a spawned task to the task that spawned it. Set automatically when `aiki run` creates a child agent task.
 
 - **Cardinality:** max 1 forward (a task is spawned by one parent), unlimited reverse
 - **Task-only:** yes

@@ -196,11 +196,16 @@ pub struct SpanEvent {
 // ============================================================================
 
 /// Parsed Codex OTel event
+///
+/// Note: `ConversationStarts` and `UserPrompt` are now superseded by native
+/// Codex hooks (`sessionStart` and `userPromptSubmit`). The OTLP path retains
+/// these variants as a fallback but the native hooks are authoritative.
+/// The `ToolResult` variant remains required — no native hook covers post-tool events.
 #[derive(Debug, Clone)]
 pub enum CodexOtelEvent {
-    /// `codex.conversation_starts` - New session started
+    /// `codex.conversation_starts` - Session started (superseded by native `sessionStart` hook)
     ConversationStarts { conversation_id: String },
-    /// `codex.user_prompt` - Turn started (user submitted prompt)
+    /// `codex.user_prompt` - Turn started (superseded by native `userPromptSubmit` hook)
     UserPrompt {
         conversation_id: String,
         prompt: Option<String>,

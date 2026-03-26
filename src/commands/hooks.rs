@@ -33,7 +33,7 @@ fn handle_event(agent: provenance::AgentType, event: &str, payload: Option<&str>
     match agent {
         AgentType::ClaudeCode => Ok(editors::claude_code::handle(event)?),
         AgentType::Cursor => Ok(editors::cursor::handle(event)?),
-        AgentType::Codex => Ok(editors::codex::handle(event, payload)?),
+        AgentType::Codex => Ok(editors::codex::handle_stdin(event)?),
         _ => Err(AikiError::UnsupportedAgentType(format!("{:?}", agent))),
     }
 }
