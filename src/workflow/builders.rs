@@ -6,7 +6,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::agents::AgentType;
-use crate::commands::review::ReviewScope;
+use crate::workflow::ReviewScope;
 
 use super::{Step, Workflow, WorkflowContext};
 

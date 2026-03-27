@@ -1,7 +1,11 @@
 use std::path::Path;
 
 use crate::error::{AikiError, Result};
-use crate::tasks::{materialize_graph, read_events, write_event, TaskEvent, TaskOutcome, TaskStatus};
+use crate::plans::parse_plan_metadata;
+use crate::tasks::{
+    materialize_graph, read_events, write_event, TaskEvent, TaskOutcome, TaskStatus,
+};
+use crate::workflow::{StepResult, WorkflowContext};
 
 /// Validate that the plan path is a .md file and exists
 pub(crate) fn validate_plan_path(cwd: &Path, plan_path: &str) -> Result<()> {
@@ -73,6 +77,37 @@ pub(crate) fn cleanup_stale_builds(cwd: &Path, plan_path: &str) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Plan step: validate plan path, check draft status, clean up stale builds.
+pub(crate) fn run_plan_step(ctx: &mut WorkflowContext) -> anyhow::Result<StepResult> {
+    let plan_path = ctx
+        .plan_path
+        .as_ref()
+        .ok_or_else(|| AikiError::InvalidArgument("No plan path in workflow context".to_string()))?
+        .clone();
+
+    validate_plan_path(&ctx.cwd, &plan_path)?;
+
+    let full_path = if plan_path.starts_with('/') {
+        std::path::PathBuf::from(&plan_path)
+    } else {
+        ctx.cwd.join(&plan_path)
+    };
+    let metadata = parse_plan_metadata(&full_path);
+    if metadata.draft {
+        return Err(AikiError::InvalidArgument(
+            "Cannot build draft plan. Remove `draft: true` from frontmatter first.".to_string(),
+        )
+        .into());
+    }
+
+    cleanup_stale_builds(&ctx.cwd, &plan_path)?;
+
+    Ok(StepResult {
+        message: "Plan validated".to_string(),
+        task_id: None,
+    })
 }
 
 #[cfg(test)]

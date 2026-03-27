@@ -107,9 +107,9 @@ pub use builtin::default_plugin_templates;
 #[allow(unused_imports)]
 pub use resolver::{
     convert_data, create_review_task_from_template, create_subtask_entries_from_template,
-    create_tasks_from_template, find_templates_dir, has_inline_loops,
-    has_subtask_refs, list_templates, load_template, load_template_quiet, normalize_template_ref,
-    parse_priority, substitute_parent_id, SubtaskEntry, PARENT_ID_PLACEHOLDER,
+    create_tasks_from_template, find_templates_dir, has_inline_loops, has_subtask_refs,
+    list_templates, load_template, load_template_quiet, normalize_template_ref, parse_priority,
+    substitute_parent_id, SubtaskEntry, PARENT_ID_PLACEHOLDER,
 };
 pub use types::TaskTemplate;
 pub use variables::{

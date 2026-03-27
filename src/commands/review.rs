@@ -26,16 +26,15 @@ use crate::tasks::{
     TaskStatus,
 };
 use crate::workflow::builders::review_workflow;
-use crate::workflow::{RunMode, StepResult, Workflow, WorkflowContext};
-
-// Re-export review domain types and helpers from their canonical location.
-pub(crate) use crate::workflow::steps::review::{
-    CreateReviewParams, CreateReviewResult, Location, ReviewScope, ReviewScopeKind,
-};
-pub(crate) use crate::workflow::steps::review::{
+use crate::workflow::orchestrate::{is_review_task, run_fix};
+#[cfg(test)]
+use crate::workflow::steps::review::looks_like_task_id;
+use crate::workflow::steps::review::{
     build_async_review_args, create_review, detect_target, format_locations, get_issue_comments,
-    looks_like_task_id, parse_locations,
+    parse_locations, CreateReviewParams, CreateReviewResult, Location, ReviewScope,
+    ReviewScopeKind,
 };
+use crate::workflow::RunMode;
 
 /// Parse and validate a severity value for clap's value_parser.
 fn parse_severity(s: &str) -> std::result::Result<String, String> {
@@ -204,54 +203,6 @@ pub fn run(args: ReviewArgs) -> Result<()> {
     )
 }
 
-/// Standalone review step: create review, run it, count issues.
-pub(crate) fn run_standalone_review_step(
-    ctx: &mut WorkflowContext,
-    scope: ReviewScope,
-    template: Option<String>,
-    agent: Option<String>,
-    fix_template: Option<String>,
-    autorun: bool,
-) -> anyhow::Result<StepResult> {
-    let result = create_review(
-        &ctx.cwd,
-        CreateReviewParams {
-            scope,
-            agent_override: agent,
-            template,
-            fix_template,
-            autorun,
-        },
-    )?;
-    let review_id = result.review_task_id;
-    ctx.task_id = Some(review_id.clone());
-
-    let options = TaskRunOptions::new().quiet();
-    task_run(&ctx.cwd, &review_id, options)?;
-
-    let events = read_events(&ctx.cwd)?;
-    let graph = materialize_graph(&events);
-    let issue_count = find_task(&graph.tasks, &review_id)
-        .map(|t| {
-            t.data
-                .get("issue_count")
-                .and_then(|c| c.parse::<usize>().ok())
-                .unwrap_or(0)
-        })
-        .unwrap_or(0);
-
-    let message = if issue_count > 0 {
-        format!("Found {} issues", issue_count)
-    } else {
-        "approved".to_string()
-    };
-
-    Ok(StepResult {
-        message,
-        task_id: Some(review_id),
-    })
-}
-
 /// Core review implementation
 fn run_review(
     cwd: &Path,
@@ -402,7 +353,7 @@ fn run_review(
         };
 
         if has_fix && has_issues {
-            super::fix::run_fix(
+            run_fix(
                 cwd,
                 &review_id,
                 false,
@@ -466,7 +417,7 @@ fn run_continue_async(
         .unwrap_or(false);
 
     if has_issues {
-        super::fix::run_fix(
+        run_fix(
             cwd,
             review_id,
             false,
@@ -540,7 +491,7 @@ fn run_issue_add(
     let task = find_task(&tasks, review_id)?;
 
     // Validate it's a review task
-    if !super::fix::is_review_task(task) {
+    if !is_review_task(task) {
         return Err(AikiError::InvalidArgument(format!(
             "Task {} is not a review task.",
             review_id
@@ -604,7 +555,7 @@ fn run_issue_list(cwd: &Path, review_id: &str) -> Result<()> {
     let task = find_task(&graph.tasks, review_id)?;
 
     // Validate it's a review task
-    if !super::fix::is_review_task(task) {
+    if !is_review_task(task) {
         return Err(AikiError::InvalidArgument(format!(
             "Task {} is not a review task.",
             review_id

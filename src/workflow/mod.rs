@@ -5,9 +5,10 @@ pub mod steps;
 use std::path::PathBuf;
 
 use anyhow::Result;
+use std::collections::VecDeque;
 
 use crate::agents::AgentType;
-use crate::commands::{fix, review};
+use crate::workflow::builders::BuildOpts;
 
 pub use steps::review::{
     CreateReviewParams, CreateReviewResult, Location, ReviewScope, ReviewScopeKind,
@@ -113,37 +114,18 @@ impl Step {
 
     pub fn run(&self, ctx: &mut WorkflowContext) -> Result<StepResult> {
         match self {
-            Step::Plan => steps::build::run_plan_step(ctx),
+            Step::Plan => steps::plan::run_plan_step(ctx),
 
             Step::Decompose {
                 restart,
                 template,
                 agent,
-            } => steps::build::run_decompose_step(ctx, *restart, template.clone(), agent.clone()),
+            } => {
+                steps::decompose::run_decompose_step(ctx, *restart, template.clone(), agent.clone())
+            }
 
             Step::Loop { template, agent } => {
-                if agent.is_some() {
-                    steps::build::run_loop_step(ctx, template.clone(), agent.clone())
-                } else {
-                    let task_id = match ctx.task_id {
-                        Some(ref id) => id.clone(),
-                        None => {
-                            return Ok(StepResult {
-                                message: "skipped".to_string(),
-                                task_id: None,
-                            })
-                        }
-                    };
-                    let mut opts = crate::commands::loop_cmd::LoopOptions::new();
-                    if let Some(ref tmpl) = template {
-                        opts = opts.with_template(tmpl.clone());
-                    }
-                    crate::commands::loop_cmd::run_loop(&ctx.cwd, &task_id, opts, false)?;
-                    Ok(StepResult {
-                        message: "subtasks executed".to_string(),
-                        task_id: Some(task_id),
-                    })
-                }
+                steps::r#loop::run_loop_step(ctx, template.clone(), agent.clone())
             }
 
             Step::Review {
@@ -152,7 +134,7 @@ impl Step {
                 agent,
                 fix_template,
                 autorun,
-            } => review::run_standalone_review_step(
+            } => steps::review::run_standalone_review_step(
                 ctx,
                 scope.clone(),
                 template.clone(),
@@ -166,7 +148,7 @@ impl Step {
                 template,
                 agent,
                 ..
-            } => steps::build::run_review_step(ctx, template.clone(), agent.clone()),
+            } => steps::review::run_review_step(ctx, template.clone(), agent.clone()),
 
             Step::Fix {
                 review_id,
@@ -176,7 +158,7 @@ impl Step {
                 autorun,
             } => {
                 if let Some(scope) = scope {
-                    fix::run_fix_plan_step(
+                    steps::fix::run_fix_plan_step(
                         ctx,
                         review_id,
                         scope,
@@ -185,33 +167,18 @@ impl Step {
                         *autorun,
                     )
                 } else {
-                    steps::build::run_fix_step(ctx, review_id, template.clone(), None)
+                    steps::fix::run_fix_step(ctx, review_id, template.clone(), None)
                 }
             }
 
             Step::RegressionReview { template, agent } => {
-                fix::run_regression_review_step(ctx, template.clone(), agent.clone())
+                steps::fix::run_regression_review_step(ctx, template.clone(), agent.clone())
             }
 
             #[cfg(test)]
             Step::_Test { handler, .. } => handler(ctx),
         }
     }
-}
-
-/// Count issues from a review task's data.
-pub fn count_issues(
-    tasks: &crate::tasks::types::FastHashMap<String, crate::tasks::Task>,
-    review_task_id: &str,
-) -> usize {
-    crate::tasks::find_task(tasks, review_task_id)
-        .map(|t| {
-            t.data
-                .get("issue_count")
-                .and_then(|c| c.parse::<usize>().ok())
-                .unwrap_or(0)
-        })
-        .unwrap_or(0)
 }
 
 /// Controls how workflow execution reports progress.
@@ -227,6 +194,79 @@ pub enum RunMode {
 pub struct Workflow {
     pub steps: Vec<Step>,
     pub ctx: WorkflowContext,
+}
+
+/// Maximum number of fix iterations before giving up.
+pub(crate) const MAX_BUILD_ITERATIONS: usize = 10;
+
+/// Drive a build workflow with dynamic fix iteration.
+///
+/// Uses a [`VecDeque`] instead of a fixed step list. After each Review or
+/// RegressionReview step, checks for actionable issues and injects a
+/// Fix step (up to [`MAX_BUILD_ITERATIONS`]).
+pub fn drive_build(
+    steps: Vec<Step>,
+    mut ctx: WorkflowContext,
+    mode: RunMode,
+    opts: &BuildOpts,
+) -> anyhow::Result<WorkflowContext> {
+    let mut queue: VecDeque<Step> = steps.into_iter().collect();
+    let mut iteration = 0;
+
+    while let Some(step) = queue.pop_front() {
+        let is_review = matches!(&step, Step::Review { .. });
+        let is_regression_review = matches!(&step, Step::RegressionReview { .. });
+
+        let result = match mode {
+            RunMode::Text => {
+                if let Some(section) = step.section() {
+                    eprintln!("\n── {} ──", section);
+                }
+                eprintln!("⠙ {}...", step.name());
+                match step.run(&mut ctx) {
+                    Ok(result) => {
+                        eprintln!("合 {} — {}", step.name(), result.message);
+                        result
+                    }
+                    Err(e) => {
+                        eprintln!("✗ {} — {}", step.name(), e);
+                        return Err(e);
+                    }
+                }
+            }
+            RunMode::Quiet => step.run(&mut ctx)?,
+        };
+
+        if (is_review || is_regression_review) && iteration < MAX_BUILD_ITERATIONS {
+            if let Some(ref review_task_id) = result.task_id {
+                let events = crate::tasks::read_events(&ctx.cwd)?;
+                let graph = crate::tasks::materialize_graph(&events);
+                if crate::tasks::find_task(&graph.tasks, review_task_id)
+                    .map(crate::workflow::orchestrate::has_actionable_issues)
+                    .unwrap_or(false)
+                {
+                    iteration += 1;
+                    queue.push_back(Step::Fix {
+                        review_id: review_task_id.clone(),
+                        scope: None,
+                        assignee: None,
+                        template: opts.fix_template.clone(),
+                        autorun: false,
+                    });
+                }
+            }
+        }
+
+        if (is_review || is_regression_review) && iteration >= MAX_BUILD_ITERATIONS {
+            eprintln!(
+                "Warning: build fix iteration reached maximum ({}) without full approval.",
+                MAX_BUILD_ITERATIONS,
+            );
+            break;
+        }
+    }
+
+    Ok(ctx)
 }
 
 impl Workflow {
@@ -254,6 +294,16 @@ impl Workflow {
                 }
                 Ok(self.ctx)
             }
+        }
+    }
+
+    /// Run a build workflow, using [`drive_build`] for fix iteration when
+    /// `opts.fix_after` is true, or the generic step runner otherwise.
+    pub fn run_build(self, mode: RunMode, opts: &BuildOpts) -> anyhow::Result<WorkflowContext> {
+        if opts.fix_after {
+            drive_build(self.steps, self.ctx, mode, opts)
+        } else {
+            self.run(mode)
         }
     }
 }
