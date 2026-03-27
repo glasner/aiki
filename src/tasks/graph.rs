@@ -586,15 +586,6 @@ fn process_event(
             data,
             timestamp,
         } => {
-            // Index old-style dot-notation parent-child as subtask-of (backward compat).
-            if let Some(parent_id) = super::id::get_parent_id(task_id) {
-                edges.add(task_id, parent_id, "subtask-of");
-                // Index slug under the dot-notation parent
-                if let Some(s) = slug {
-                    slug_index.insert((parent_id.to_string(), s.clone()), task_id.clone());
-                }
-            }
-
             // Index old-style sources as sourced-from edges (backward compat).
             for source in sources {
                 edges.add(task_id, source, "sourced-from");
@@ -1762,11 +1753,11 @@ mod tests {
     }
 
     #[test]
-    fn test_backward_compat_dot_notation_as_subtask_of() {
+    fn test_subtask_links_must_be_explicit() {
         let events = vec![
             make_created("parent", "Parent task"),
             TaskEvent::Created {
-                task_id: "parent.1".to_string(),
+                task_id: "child-1".to_string(),
                 name: "First subtask".to_string(),
                 slug: None,
                 task_type: None,
@@ -1780,7 +1771,7 @@ mod tests {
                 timestamp: Utc::now(),
             },
             TaskEvent::Created {
-                task_id: "parent.2".to_string(),
+                task_id: "child-2".to_string(),
                 name: "Second subtask".to_string(),
                 slug: None,
                 task_type: None,
@@ -1796,12 +1787,9 @@ mod tests {
         ];
 
         let graph = materialize_graph(&events);
-        // Children should have subtask-of links to parent
-        assert_eq!(graph.edges.target("parent.1", "subtask-of"), Some("parent"));
-        assert_eq!(graph.edges.target("parent.2", "subtask-of"), Some("parent"));
-        // Parent should see its children via reverse lookup
-        let children = graph.children_of("parent");
-        assert_eq!(children.len(), 2);
+        assert_eq!(graph.edges.target("child-1", "subtask-of"), None);
+        assert_eq!(graph.edges.target("child-2", "subtask-of"), None);
+        assert!(graph.children_of("parent").is_empty());
     }
 
     /// Regression: source filtering depends on `graph.edges.targets(id, "sourced-from")`.
@@ -2076,12 +2064,11 @@ mod tests {
     }
 
     #[test]
-    fn test_slug_index_dot_notation() {
-        // Dot-notation subtask with slug should be indexed
+    fn test_slug_index_linked_subtask() {
         let events = vec![
             make_created("parent", "Parent"),
             TaskEvent::Created {
-                task_id: "parent.1".to_string(),
+                task_id: "child-build".to_string(),
                 name: "Build step".to_string(),
                 slug: Some("build".to_string()),
                 task_type: None,
@@ -2094,17 +2081,18 @@ mod tests {
                 data: HashMap::new(),
                 timestamp: Utc::now(),
             },
+            make_link("child-build", "parent", "subtask-of"),
         ];
 
         let graph = materialize_graph(&events);
         let found = graph.find_by_slug("parent", "build");
         assert!(found.is_some(), "Should find subtask by slug");
-        assert_eq!(found.unwrap().id, "parent.1");
+        assert_eq!(found.unwrap().id, "child-build");
     }
 
     #[test]
     fn test_slug_index_link_added() {
-        // Subtask linked via LinkAdded (not dot-notation) should also be indexed
+        // Subtask linked via LinkAdded should be indexed.
         let events = vec![
             make_created("parent", "Parent"),
             TaskEvent::Created {
@@ -2135,7 +2123,8 @@ mod tests {
         // Subtask without slug should not appear in slug_index
         let events = vec![
             make_created("parent", "Parent"),
-            make_created("parent.1", "No slug subtask"),
+            make_created("child-no-slug", "No slug subtask"),
+            make_link("child-no-slug", "parent", "subtask-of"),
         ];
 
         let graph = materialize_graph(&events);
@@ -2148,7 +2137,7 @@ mod tests {
         let events = vec![
             make_created("parent", "Parent"),
             TaskEvent::Created {
-                task_id: "parent.1".to_string(),
+                task_id: "child-build".to_string(),
                 name: "Build".to_string(),
                 slug: Some("build".to_string()),
                 task_type: None,
@@ -2161,8 +2150,9 @@ mod tests {
                 data: HashMap::new(),
                 timestamp: Utc::now(),
             },
+            make_link("child-build", "parent", "subtask-of"),
             TaskEvent::Created {
-                task_id: "parent.2".to_string(),
+                task_id: "child-test".to_string(),
                 name: "Test".to_string(),
                 slug: Some("test".to_string()),
                 task_type: None,
@@ -2175,15 +2165,16 @@ mod tests {
                 data: HashMap::new(),
                 timestamp: Utc::now(),
             },
+            make_link("child-test", "parent", "subtask-of"),
         ];
 
         let graph = materialize_graph(&events);
         assert_eq!(graph.slug_index.len(), 2);
         assert_eq!(
             graph.find_by_slug("parent", "build").unwrap().id,
-            "parent.1"
+            "child-build"
         );
-        assert_eq!(graph.find_by_slug("parent", "test").unwrap().id, "parent.2");
+        assert_eq!(graph.find_by_slug("parent", "test").unwrap().id, "child-test");
     }
 
     #[test]
@@ -2193,7 +2184,7 @@ mod tests {
             make_created("p1", "Parent 1"),
             make_created("p2", "Parent 2"),
             TaskEvent::Created {
-                task_id: "p1.1".to_string(),
+                task_id: "p1-child".to_string(),
                 name: "Build for P1".to_string(),
                 slug: Some("build".to_string()),
                 task_type: None,
@@ -2206,8 +2197,9 @@ mod tests {
                 data: HashMap::new(),
                 timestamp: Utc::now(),
             },
+            make_link("p1-child", "p1", "subtask-of"),
             TaskEvent::Created {
-                task_id: "p2.1".to_string(),
+                task_id: "p2-child".to_string(),
                 name: "Build for P2".to_string(),
                 slug: Some("build".to_string()),
                 task_type: None,
@@ -2220,11 +2212,12 @@ mod tests {
                 data: HashMap::new(),
                 timestamp: Utc::now(),
             },
+            make_link("p2-child", "p2", "subtask-of"),
         ];
 
         let graph = materialize_graph(&events);
-        assert_eq!(graph.find_by_slug("p1", "build").unwrap().id, "p1.1");
-        assert_eq!(graph.find_by_slug("p2", "build").unwrap().id, "p2.1");
+        assert_eq!(graph.find_by_slug("p1", "build").unwrap().id, "p1-child");
+        assert_eq!(graph.find_by_slug("p2", "build").unwrap().id, "p2-child");
     }
 
     #[test]
@@ -2232,7 +2225,7 @@ mod tests {
         let events = vec![
             make_created("parent", "Parent"),
             TaskEvent::Created {
-                task_id: "parent.1".to_string(),
+                task_id: "child-build".to_string(),
                 name: "Build step".to_string(),
                 slug: Some("build".to_string()),
                 task_type: None,
@@ -2245,6 +2238,7 @@ mod tests {
                 data: HashMap::new(),
                 timestamp: Utc::now(),
             },
+            make_link("child-build", "parent", "subtask-of"),
         ];
 
         let graph = materialize_graph(&events);
@@ -2267,7 +2261,7 @@ mod tests {
             make_created("p1", "Parent 1"),
             make_created("p2", "Parent 2"),
             TaskEvent::Created {
-                task_id: "p1.1".to_string(),
+                task_id: "p1-child".to_string(),
                 name: "Build for P1".to_string(),
                 slug: Some("build".to_string()),
                 task_type: None,
@@ -2280,6 +2274,7 @@ mod tests {
                 data: HashMap::new(),
                 timestamp: Utc::now(),
             },
+            make_link("p1-child", "p1", "subtask-of"),
         ];
 
         let graph = materialize_graph(&events);
@@ -2292,7 +2287,7 @@ mod tests {
         let events = vec![
             make_created("parent", "Parent"),
             TaskEvent::Created {
-                task_id: "parent.1".to_string(),
+                task_id: "child-build".to_string(),
                 name: "Build step".to_string(),
                 slug: Some("build".to_string()),
                 task_type: None,
@@ -2305,6 +2300,7 @@ mod tests {
                 data: HashMap::new(),
                 timestamp: Utc::now(),
             },
+            make_link("child-build", "parent", "subtask-of"),
         ];
 
         let graph = materialize_graph(&events);

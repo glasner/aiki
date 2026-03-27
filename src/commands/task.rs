@@ -1321,11 +1321,7 @@ fn run_list(
     // When set, restricts results to tasks in that needs-context chain.
     let thread_set: Option<HashSet<String>> = {
         let env_val = std::env::var("AIKI_THREAD").ok();
-        let thread_id = resolve_thread(
-            env_val.as_deref(),
-            filter_thread.as_deref(),
-            &graph,
-        )?;
+        let thread_id = resolve_thread(env_val.as_deref(), filter_thread.as_deref(), &graph)?;
 
         if let Some(tid) = thread_id {
             Some(resolve_thread_task_ids(&graph, &tid.head)?)
@@ -1732,15 +1728,13 @@ fn resolve_thread(
 ) -> Result<Option<crate::tasks::lanes::ThreadId>> {
     use crate::tasks::lanes::ThreadId;
     if let Some(env_val) = env_var {
-        Ok(Some(
-            ThreadId::parse(env_val)
-                .map_err(|e| AikiError::InvalidArgument(format!("AIKI_THREAD: {e}")))?,
-        ))
+        Ok(Some(ThreadId::parse(env_val).map_err(|e| {
+            AikiError::InvalidArgument(format!("AIKI_THREAD: {e}"))
+        })?))
     } else if let Some(flag_val) = flag {
-        Ok(Some(
-            ThreadId::resolve(flag_val, graph)
-                .map_err(|e| AikiError::InvalidArgument(format!("--thread: {e}")))?,
-        ))
+        Ok(Some(ThreadId::resolve(flag_val, graph).map_err(|e| {
+            AikiError::InvalidArgument(format!("--thread: {e}"))
+        })?))
     } else {
         Ok(None)
     }
@@ -2631,8 +2625,8 @@ pub(crate) fn cascade_close_tasks(
     //    close events, so consumers of task.closed see the correct values)
     for id in task_ids {
         if let Some(task) = tasks.get(id) {
-            if super::fix::is_review_task(task) {
-                let issue_count = super::review::get_issue_comments(task).len();
+            if crate::workflow::orchestrate::is_review_task(task) {
+                let issue_count = crate::workflow::steps::review::get_issue_comments(task).len();
                 let data_event = TaskEvent::Updated {
                     task_id: id.clone(),
                     name: None,
@@ -3130,8 +3124,8 @@ fn run_close(
     let mut review_data_events: Vec<TaskEvent> = Vec::new();
     for id in &explicit_ids {
         if let Some(task) = graph.tasks.get(id) {
-            if super::fix::is_review_task(task) {
-                let issue_count = super::review::get_issue_comments(task).len();
+            if crate::workflow::orchestrate::is_review_task(task) {
+                let issue_count = crate::workflow::steps::review::get_issue_comments(task).len();
 
                 // Guard: reject review close if summary claims issues but none were recorded
                 if issue_count == 0 && outcome != TaskOutcome::WontDo {
@@ -4279,7 +4273,7 @@ fn run_show(
         }
     }
 
-    // Add subtasks section with checklist format and relative IDs
+    // Add subtasks section with checklist format.
     if has_subtasks {
         let percentage = if total > 0 {
             (completed * 100) / total
@@ -4297,13 +4291,11 @@ fn run_show(
                 TaskStatus::Reserved => "[~]",
                 _ => "[ ]",
             };
-            // Show slug if present, otherwise use relative ID (.N)
+            // Show slug if present, otherwise use a short stable ID.
             let label = if let Some(ref slug) = subtask.slug {
                 slug.clone()
-            } else if let Some(dot_pos) = subtask.id.rfind('.') {
-                subtask.id[dot_pos..].to_string()
             } else {
-                subtask.id.clone()
+                short_id(&subtask.id).to_string()
             };
             content.push_str(&format!("{} {} {}\n", check, label, subtask.name));
         }
@@ -4899,7 +4891,7 @@ fn run_diff(cwd: &Path, id: String, summary: bool, stat: bool, name_only: bool) 
     let task = find_task_in_graph(&graph, &id)?;
     let id = task.id.clone(); // use canonical ID
 
-    // Build revset pattern for task, including both dot-notation and link-based subtasks
+    // Build revset pattern for task, including linked subtasks.
     let pattern = build_task_revset_pattern_with_graph(&id, &graph);
 
     // Check if any changes exist for this task
@@ -5027,10 +5019,7 @@ fn run_diff(cwd: &Path, id: String, summary: bool, stat: bool, name_only: bool) 
 /// NOTE: For link-based subtasks (connected via `subtask-of` edges),
 /// use `build_task_revset_pattern_with_graph`.
 fn build_task_revset_pattern(task_id: &str) -> String {
-    format!(
-        "description(substring:\"task={}\") ~ ::aiki/tasks",
-        task_id
-    )
+    format!("description(substring:\"task={}\") ~ ::aiki/tasks", task_id)
 }
 
 /// Build revset pattern for a task including all descendants via `subtask-of` links.
@@ -5659,8 +5648,6 @@ fn run_lane(cwd: &Path, id: String, all: bool) -> Result<()> {
                         };
                         let label = if let Some(ref slug) = task.slug {
                             slug.clone()
-                        } else if let Some(dot_pos) = task.id.rfind('.') {
-                            task.id[dot_pos..].to_string()
                         } else {
                             short_id(&task.id).to_string()
                         };
@@ -5714,8 +5701,6 @@ fn run_lane(cwd: &Path, id: String, all: bool) -> Result<()> {
                             };
                             let label = if let Some(ref slug) = task.slug {
                                 slug.clone()
-                            } else if let Some(dot_pos) = task.id.rfind('.') {
-                                task.id[dot_pos..].to_string()
                             } else {
                                 short_id(&task.id).to_string()
                             };
@@ -8065,8 +8050,8 @@ D src/old_file.ts
 
     mod thread_filtering {
         use crate::tasks::graph::{materialize_graph, TaskGraph};
-        use crate::tasks::types::{TaskEvent, TaskPriority};
         use crate::tasks::types::FastHashMap;
+        use crate::tasks::types::{TaskEvent, TaskPriority};
         use chrono::Utc;
         use std::collections::HashMap;
 

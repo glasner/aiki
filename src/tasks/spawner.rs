@@ -494,6 +494,16 @@ mod tests {
         materialize_graph(&[])
     }
 
+    fn make_link(from: &str, to: &str, kind: &str) -> TaskEvent {
+        TaskEvent::LinkAdded {
+            from: from.to_string(),
+            to: to.to_string(),
+            kind: kind.to_string(),
+            autorun: None,
+            timestamp: Utc::now(),
+        }
+    }
+
     #[test]
     fn test_evaluate_simple_not_approved() {
         let mut task = make_closed_task("spawner");
@@ -872,7 +882,7 @@ mod tests {
                 timestamp: Utc::now(),
             },
             TaskEvent::Created {
-                task_id: "parent.1".to_string(),
+                task_id: "review-subtask".to_string(),
                 name: "Review subtask".to_string(),
                 slug: Some("review".to_string()),
                 task_type: None,
@@ -889,9 +899,10 @@ mod tests {
                 },
                 timestamp: Utc::now(),
             },
+            make_link("review-subtask", "parent", "subtask-of"),
             TaskEvent::Closed {
                 session_id: None,
-                task_ids: vec!["parent.1".to_string()],
+                task_ids: vec!["review-subtask".to_string()],
                 outcome: TaskOutcome::Done,
                 summary: None,
                 turn_id: None,

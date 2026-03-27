@@ -161,7 +161,7 @@ Alternatively, install the agent globally:
         matches: String,
     },
 
-    #[error("Task '{root}' has no subtask '.{subtask}'")]
+    #[error("Task '{root}' has no subtask '{subtask}'")]
     SubtaskNotFound { root: String, subtask: String },
 
     #[error("Task ID prefix '{prefix}' is too short (minimum 3 characters)")]
@@ -413,7 +413,7 @@ mod tests {
             subtask: "99".to_string(),
         };
         let msg = err.to_string();
-        assert!(msg.contains("has no subtask '.99'"));
+        assert!(msg.contains("has no subtask '99'"));
     }
 
     #[test]

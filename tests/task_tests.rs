@@ -463,7 +463,7 @@ fn test_task_add_with_parent() {
 }
 
 #[test]
-fn test_task_hierarchical_id_format() {
+fn test_task_subtasks_use_independent_ids() {
     let temp_dir = tempfile::tempdir().unwrap();
     init_aiki_repo(temp_dir.path());
 
@@ -477,7 +477,7 @@ fn test_task_hierarchical_id_format() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let parent_id = extract_short_id(&stdout);
 
-    // Add first child — verify via list --all that subtask IDs contain parent prefix
+    // Add first child and verify the parent show output lists it as a subtask
     Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
         .current_dir(temp_dir.path())
         .args(["task", "add", "First child", "--parent", &parent_id])
