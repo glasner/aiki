@@ -242,7 +242,17 @@ pub fn run_decompose(
         task_run(cwd, &decompose_task_id, run_options.quiet())?;
     }
 
-    // 6. Return decompose task ID
+    // 6. Validate decompose actually created subtasks
+    let events = read_events(cwd)?;
+    let graph = materialize_graph(&events);
+    let subtasks = get_subtasks(&graph, target_id);
+    if subtasks.is_empty() {
+        return Err(AikiError::UnexpectedWorkflowResult(format!(
+            "Decompose produced no subtasks for target '{target_id}' from plan '{plan_path}'"
+        )));
+    }
+
+    // 7. Return decompose task ID
     Ok(decompose_task_id)
 }
 
