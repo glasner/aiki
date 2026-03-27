@@ -10,6 +10,7 @@ pub use claude_code::ClaudeCodeRuntime;
 pub use codex::CodexRuntime;
 
 use crate::error::Result;
+use crate::tasks::lanes::ThreadId;
 use std::io::Read;
 use std::path::Path;
 use std::process::{Child, ChildStderr, ChildStdout, ExitStatus};
@@ -19,11 +20,11 @@ use super::AgentType;
 /// Handle for a background agent process
 ///
 /// Returned when spawning an agent in background mode. Contains the
-/// task ID for later management (e.g., stopping the process).
+/// thread ID for later management (e.g., stopping the process).
 #[derive(Debug, Clone)]
 pub struct BackgroundHandle {
-    /// Task ID being worked on
-    pub task_id: String,
+    /// Thread being worked on
+    pub thread: ThreadId,
     /// Session UUID, resolved after spawn via event polling
     pub session_id: Option<String>,
 }
@@ -161,24 +162,20 @@ impl AgentSessionResult {
 pub struct AgentSpawnOptions {
     /// Working directory for the agent
     pub cwd: std::path::PathBuf,
-    /// Task ID to work on (first task in chain, or standalone)
-    pub task_id: String,
+    /// Thread to work on (single-task or multi-task chain)
+    pub thread: ThreadId,
     /// Parent session UUID for workspace isolation chaining
     pub parent_session_uuid: Option<String>,
-    /// Ordered chain of task IDs for needs-context sessions (head to tail).
-    /// When set, the agent works through all tasks in sequence within one session.
-    pub chain_task_ids: Option<Vec<String>>,
 }
 
 impl AgentSpawnOptions {
     /// Create new spawn options
     #[must_use]
-    pub fn new(cwd: impl AsRef<Path>, task_id: impl Into<String>) -> Self {
+    pub fn new(cwd: impl AsRef<Path>, thread: ThreadId) -> Self {
         Self {
             cwd: cwd.as_ref().to_path_buf(),
-            task_id: task_id.into(),
+            thread,
             parent_session_uuid: None,
-            chain_task_ids: None,
         }
     }
 
@@ -189,46 +186,19 @@ impl AgentSpawnOptions {
         self
     }
 
-    /// Set chain task IDs for needs-context session execution
-    #[must_use]
-    pub fn with_chain(mut self, chain: Vec<String>) -> Self {
-        self.chain_task_ids = Some(chain);
-        self
-    }
-
     /// Build the task prompt with instructions for autonomous work
     #[must_use]
     pub fn task_prompt(&self) -> String {
-        if let Some(ref chain) = self.chain_task_ids {
-            // Chain session: agent works through multiple tasks in sequence
-            let first = &chain[0];
-            let chain_list = chain
-                .iter()
-                .enumerate()
-                .map(|(i, id)| format!("{}. `{}`", i + 1, id))
-                .collect::<Vec<_>>()
-                .join("\n");
-            format!(
-                r#"You are assigned a chain of {count} tasks. Work through ALL of them in order.
+        format!(
+            r#"You are assigned thread `{thread}`. Work through all tasks in order.
 
-Tasks:
-{chain_list}
+SCOPE: Only tasks in this thread. Do not pick up other work.
+EXIT: When `aiki task list` returns no tasks, you are done — exit immediately.
+     Do not close parent/sibling tasks.
 
-SCOPE: Only these tasks. Do not pick up other work from the backlog.
-EXIT: After closing the last task in the chain, exit immediately — do not close parent/sibling tasks or look for more work."#,
-                count = chain.len(),
-                chain_list = chain_list,
-            )
-        } else {
-            // Single task prompt (existing behavior)
-            format!(
-                r#"You are assigned task `{id}`. Work autonomously until it is closed.
-
-SCOPE: Only task `{id}` and its subtasks. Do not pick up other work from the backlog.
-EXIT: After closing your task, exit immediately — do not look for more work."#,
-                id = self.task_id
-            )
-        }
+Run `aiki task list` to see your backlog."#,
+            thread = self.thread,
+        )
     }
 }
 
@@ -275,14 +245,17 @@ pub fn get_runtime(agent_type: AgentType) -> Option<Box<dyn AgentRuntime>> {
     }
 }
 
-/// Poll session state until a task-bound session is registered.
+/// Poll session state until a thread-bound session is registered.
 ///
 /// After spawning an agent, `session.started` is recorded in conversation
-/// history with the run task ID and session UUID. This function polls that log using
+/// history with the run thread ID and session UUID. This function polls that log using
 /// exponential backoff (100ms → 500ms, 30s total timeout).
-pub fn discover_session_id(cwd: &Path, task_id: &str) -> Result<String> {
-    use crate::history::storage::find_session_started_for_run_task;
-    use std::thread;
+///
+/// Conversation events live in the global JJ repo (`~/.aiki/`), not the
+/// project repo, so we read from `global_aiki_dir()`.
+pub fn discover_session_id(thread: &ThreadId) -> Result<String> {
+    use crate::history::storage::find_session_started_for_thread;
+    use std::thread as std_thread;
     use std::time::{Duration, Instant};
 
     // Session startup can take longer than the original 5s budget.
@@ -291,19 +264,19 @@ pub fn discover_session_id(cwd: &Path, task_id: &str) -> Result<String> {
     let mut delay = Duration::from_millis(100);
     let max_delay = Duration::from_millis(500);
 
+    let serialized = thread.serialize();
+    let global_dir = crate::global::global_aiki_dir();
+
     loop {
-        if let Some(session_id) = find_session_started_for_run_task(cwd, task_id)? {
+        if let Some(session_id) = find_session_started_for_thread(&global_dir, &serialized)? {
             return Ok(session_id);
         }
 
         if start.elapsed() >= timeout {
-            return Err(anyhow::anyhow!(
-                "Session UUID not discovered within timeout"
-            )
-            .into());
+            return Err(anyhow::anyhow!("Session UUID not discovered within timeout").into());
         }
 
-        thread::sleep(delay);
+        std_thread::sleep(delay);
         delay = (delay * 2).min(max_delay);
     }
 }
@@ -329,10 +302,12 @@ mod tests {
 
     #[test]
     fn test_spawn_options() {
-        let options = AgentSpawnOptions::new("/tmp", "task123");
+        let thread = ThreadId::single("task123".to_string());
+        let options = AgentSpawnOptions::new("/tmp", thread);
 
         assert_eq!(options.cwd.to_string_lossy(), "/tmp");
-        assert_eq!(options.task_id, "task123");
+        assert_eq!(options.thread.head, "task123");
+        assert!(options.thread.is_single());
     }
 
     #[test]

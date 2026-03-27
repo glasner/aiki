@@ -12,15 +12,17 @@ use crate::commands::task::{
 use crate::commands::OutputFormat;
 use crate::error::{AikiError, Result};
 use crate::tasks::{
+    lanes::ThreadId,
     manager::{find_task, resolve_task_id_in_graph},
+    materialize_graph,
     md::short_id,
     runner::{
-        resolve_next_session, resolve_next_session_in_lane, run_task_with_output,
-        SessionResolution, TaskRunOptions,
+        resolve_next_thread, resolve_next_thread_in_lane, run_task_with_output, TaskRunOptions,
+        ThreadResolution,
     },
     storage::{read_events, write_event},
     types::{TaskEvent, TaskStatus},
-    materialize_graph, MdBuilder,
+    MdBuilder,
 };
 
 /// Run the top-level `aiki run` command.
@@ -29,7 +31,7 @@ pub fn run(
     id: Option<String>,
     run_async: bool,
     force: bool,
-    next_session: bool,
+    next_thread: bool,
     lane: Option<String>,
     agent: Option<String>,
     template: Option<String>,
@@ -37,7 +39,18 @@ pub fn run(
     output: Option<OutputFormat>,
 ) -> Result<()> {
     let cwd = std::env::current_dir().map_err(|e| AikiError::Other(e.into()))?;
-    run_impl(&cwd, id, run_async, force, next_session, lane, agent, template, data, output)
+    run_impl(
+        &cwd,
+        id,
+        run_async,
+        force,
+        next_thread,
+        lane,
+        agent,
+        template,
+        data,
+        output,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -46,7 +59,7 @@ fn run_impl(
     id: Option<String>,
     run_async: bool,
     force: bool,
-    next_session: bool,
+    next_thread: bool,
     lane: Option<String>,
     agent: Option<String>,
     template: Option<String>,
@@ -93,7 +106,7 @@ fn run_impl(
         Some(task_id)
     } else if let Some(id_val) = id {
         Some(id_val)
-    } else if !next_session {
+    } else if !next_thread {
         return Err(AikiError::Other(anyhow::anyhow!(
             "Either task ID or --template must be provided"
         )));
@@ -103,11 +116,11 @@ fn run_impl(
 
     // Track whether we claimed a subtask (for rollback on failure)
     let mut claimed_id: Option<String> = None;
-    let mut chain_ids: Option<Vec<String>> = None;
+    let mut thread: Option<ThreadId> = None;
 
-    let actual_id = if next_session {
+    let actual_id = if next_thread {
         let id = id.ok_or_else(|| {
-            AikiError::InvalidArgument("--next-session requires a parent task ID".to_string())
+            AikiError::InvalidArgument("--next-thread requires a parent task ID".to_string())
         })?;
 
         let events = read_events(cwd)?;
@@ -121,13 +134,13 @@ fn run_impl(
         }
 
         let resolution = if let Some(ref lane_prefix) = lane {
-            resolve_next_session_in_lane(&graph, &parent_id, lane_prefix)?
+            resolve_next_thread_in_lane(&graph, &parent_id, lane_prefix)?
         } else {
-            resolve_next_session(&graph, &parent_id)
+            resolve_next_thread(&graph, &parent_id)
         };
 
         match resolution {
-            SessionResolution::Standalone(task) => {
+            ThreadResolution::Standalone(task) => {
                 if !output_id {
                     eprintln!("Running subtask {} ({})...", short_id(&task.id), task.name);
                 }
@@ -142,7 +155,7 @@ fn run_impl(
 
                 task.id.clone()
             }
-            SessionResolution::Chain(chain) => {
+            ThreadResolution::Chain(chain) => {
                 let head_id = chain[0].clone();
                 if !output_id {
                     let head_name = {
@@ -169,11 +182,15 @@ fn run_impl(
                 };
                 write_event(cwd, &reserved_event)?;
                 claimed_id = Some(head_id.clone());
-                chain_ids = Some(chain);
+                let tail_id = chain.last().unwrap().clone();
+                thread = Some(ThreadId {
+                    head: head_id.clone(),
+                    tail: tail_id,
+                });
 
                 head_id
             }
-            SessionResolution::AllComplete => {
+            ThreadResolution::AllComplete => {
                 if output_id {
                     // No output at all for -o id
                     std::process::exit(2);
@@ -185,7 +202,7 @@ fn run_impl(
                 println!("{}", md);
                 std::process::exit(2);
             }
-            SessionResolution::Blocked(unclosed) => {
+            ThreadResolution::Blocked(unclosed) => {
                 if output_id {
                     // No output for -o id on error
                     std::process::exit(1);
@@ -219,7 +236,7 @@ fn run_impl(
                     short_id(&parent_id),
                 )));
             }
-            SessionResolution::NoSubtasks => {
+            ThreadResolution::NoSubtasks => {
                 if output_id {
                     std::process::exit(1);
                 }
@@ -281,8 +298,8 @@ fn run_impl(
     if let Some(agent_type) = agent_override {
         options = options.with_agent(agent_type);
     }
-    if let Some(chain) = chain_ids {
-        options = options.with_chain(chain);
+    if let Some(t) = thread {
+        options = options.with_thread(t);
     }
 
     // Spawn the task
@@ -325,7 +342,11 @@ pub(crate) fn rollback_on_spawn_failure(
 /// (in run.rs) and `rollback_if_still_reserved` (in runner.rs).
 pub(crate) fn try_rollback_reserved(cwd: &Path, task_id: &str, reason: &str) {
     let current_status = match read_events(cwd) {
-        Ok(events) => match materialize_graph(&events).tasks.get(task_id).map(|t| t.status) {
+        Ok(events) => match materialize_graph(&events)
+            .tasks
+            .get(task_id)
+            .map(|t| t.status)
+        {
             Some(status) => status,
             None => return, // Task not in graph — nothing to roll back
         },
@@ -383,14 +404,16 @@ fn spawn_and_discover(
     // Always spawn async first to get the handle
     let handle = task_run_async(cwd, task_id, options)?;
 
+    let head_id = &handle.thread.head;
+
     if codex_fallback {
         if is_async {
             if output_id {
-                println!("{}", handle.task_id);
+                println!("{}", head_id);
             } else {
                 let md = MdBuilder::new().build(&format!(
                     "## Run Started\n- **Task:** {}\n- **Session:** pending Codex hook-based discovery\n- Task started asynchronously using temporary task-based fallback.\n",
-                    short_id(&handle.task_id),
+                    short_id(head_id),
                 ));
                 println!("{}", md);
             }
@@ -398,25 +421,25 @@ fn spawn_and_discover(
         }
 
         if output_id {
-            println!("{}", handle.task_id);
+            println!("{}", head_id);
         } else {
             let md = MdBuilder::new().build(&format!(
                 "## Running\n- **Task:** {}\n- **Session:** pending Codex hook-based discovery\n- Using temporary task-based fallback while Codex session start is unavailable.\n",
-                short_id(&handle.task_id),
+                short_id(head_id),
             ));
             eprintln!("{}", md);
         }
 
-        return wait_for_task_completion(cwd, &handle.task_id);
+        return wait_for_task_completion(cwd, head_id);
     }
 
     // Discover session UUID
-    let session_id = match discover_session_id(cwd, &handle.task_id) {
+    let session_id = match discover_session_id(&handle.thread) {
         Ok(sid) => sid,
         Err(_) if output_id => {
             // If we can't discover session ID but user wants bare ID, output task ID
             if output_id {
-                println!("{}", handle.task_id);
+                println!("{}", head_id);
             }
             if is_async {
                 return Ok(());
@@ -434,7 +457,7 @@ fn spawn_and_discover(
         } else {
             let md = MdBuilder::new().build(&format!(
                 "## Run Started\n- **Task:** {}\n- **Session:** {}\n- Task started asynchronously.\n",
-                short_id(&handle.task_id),
+                short_id(head_id),
                 session_id,
             ));
             println!("{}", md);
@@ -447,13 +470,13 @@ fn spawn_and_discover(
         } else {
             let md = MdBuilder::new().build(&format!(
                 "## Running\n- **Task:** {}\n- **Session:** {}\n",
-                short_id(&handle.task_id),
+                short_id(head_id),
                 session_id,
             ));
             eprintln!("{}", md);
         }
         // Wait for the task to reach terminal status
-        wait_for_task_completion(cwd, &handle.task_id)
+        wait_for_task_completion(cwd, head_id)
     }
 }
 
@@ -490,7 +513,10 @@ mod tests {
     #[test]
     fn rollback_when_still_reserved() {
         let result = rollback_claim_if_reserved("task-123", TaskStatus::Reserved, None);
-        assert!(result.is_some(), "Should return Released event when Reserved");
+        assert!(
+            result.is_some(),
+            "Should return Released event when Reserved"
+        );
         if let Some(TaskEvent::Released {
             task_ids, reason, ..
         }) = result
@@ -509,7 +535,10 @@ mod tests {
             TaskStatus::Reserved,
             Some("Spawn failed: connection refused"),
         );
-        assert!(result.is_some(), "Should return Released event when Reserved");
+        assert!(
+            result.is_some(),
+            "Should return Released event when Reserved"
+        );
         if let Some(TaskEvent::Released { reason, .. }) = result {
             assert_eq!(reason.unwrap(), "Spawn failed: connection refused");
         } else {
@@ -520,7 +549,10 @@ mod tests {
     #[test]
     fn no_rollback_when_in_progress() {
         let result = rollback_claim_if_reserved("task-123", TaskStatus::InProgress, None);
-        assert!(result.is_none(), "Should not rollback when agent already started");
+        assert!(
+            result.is_none(),
+            "Should not rollback when agent already started"
+        );
     }
 
     #[test]
