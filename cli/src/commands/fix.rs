@@ -312,6 +312,7 @@ fn read_task_id_from_stdin() -> Result<String> {
 mod tests {
     use super::*;
     use crate::workflow::builders::{fix_workflow, FixOpts};
+    use crate::workflow::{ReviewScope, ReviewScopeKind};
 
     #[test]
     fn test_extract_task_id_plain() {
