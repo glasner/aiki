@@ -10,7 +10,7 @@ draft: false
 
 **Related Files**:
 - [cli/src/tasks/templates/core/loop.md](../../cli/src/tasks/templates/core/loop.md) - Loop template that captures async task-run output
-- [cli/src/commands/task.rs](../../cli/src/commands/task.rs) - `task run --next-session` and parent auto-start logic
+- [cli/src/commands/task.rs](../../cli/src/commands/task.rs) - `task run --next-thread` and parent auto-start logic
 - [cli/src/tasks/runner.rs](../../cli/src/tasks/runner.rs) - Async task-run output formatting
 - [cli/src/commands/loop_cmd.rs](../../cli/src/commands/loop_cmd.rs) - Loop orchestration entry point
 - [cli/src/commands/build.rs](../../cli/src/commands/build.rs) - Build orchestrator caller
@@ -25,7 +25,7 @@ The most likely cause of the recent token spike is broken orchestration at the t
 The loop template currently does this:
 
 ```bash
-last_id=$(aiki run {{data.target}} --next-session --lane $lane --async)
+last_id=$(aiki run {{data.target}} --next-thread --lane $lane --async)
 ```
 
 That assumes `aiki run --async` prints a bare task ID to stdout. It does not. The current implementation emits formatted markdown output instead. As a result:
@@ -60,7 +60,7 @@ The cross-session validation is now strong:
 The loop template in `core/loop.md` expects a machine-readable task ID:
 
 ```bash
-last_id=$(aiki run {{data.target}} --next-session --lane $lane --async)
+last_id=$(aiki run {{data.target}} --next-thread --lane $lane --async)
 ```
 
 But `task run --async` currently routes through `run_task_async_with_output()` and prints a markdown block:
@@ -218,7 +218,7 @@ That means the same change set both:
 
 For loop/orchestrator workflows:
 
-1. `aiki run <parent> --next-session --lane <lane> --async` must return a bare canonical task ID in machine-readable mode.
+1. `aiki run <parent> --next-thread --lane <lane> --async` must return a bare canonical task ID in machine-readable mode.
 2. The loop must wait on real task IDs only.
 3. When all lane sessions are complete, the loop task must close itself exactly once.
 4. Parent auto-start for finalization must not race with a still-live loop task.
@@ -233,7 +233,7 @@ For loop/orchestrator workflows:
 Make the loop template explicitly request ID output:
 
 ```bash
-last_id=$(aiki run {{data.target}} --next-session --lane $lane --async --output id)
+last_id=$(aiki run {{data.target}} --next-thread --lane $lane --async --output id)
 ```
 
 If `task run` does not yet support `--output id`, add it.
@@ -311,7 +311,7 @@ This reduces context bloat in Claude sessions that invoke orchestration commands
 
 ### Phase 3: Add regression tests
 
-1. Test that `aiki run <parent> --next-session --async --output id` prints only a canonical ID
+1. Test that `aiki run <parent> --next-thread --async --output id` prints only a canonical ID
 2. Test that loop orchestration can start lane sessions and wait on them successfully
 3. Test that when the final subtask closes:
    - parent auto-starts for finalization
@@ -336,7 +336,7 @@ This reduces context bloat in Claude sessions that invoke orchestration commands
 
 ### Unit / integration tests
 
-- `task run --next-session --async --output id` returns exactly one 32-char lowercase ID
+- `task run --next-thread --async --output id` returns exactly one 32-char lowercase ID
 - loop template uses only valid IDs in `wait_ids`
 - orchestrator closes after all lanes complete
 - parent finalization does not overlap with a dangling loop task

@@ -56,7 +56,7 @@ pub fn record_session_start(
         session_id: session.uuid().to_string(),
         agent_type: session.agent_type(),
         timestamp,
-        run_task_id: session.task().map(str::to_string),
+        run_thread_id: session.thread().map(|t| t.serialize()),
         repo_id: repo_id.map(String::from),
         cwd: event_cwd.map(String::from),
         session_mode: Some(session.mode()),

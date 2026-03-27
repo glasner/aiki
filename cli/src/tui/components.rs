@@ -23,25 +23,53 @@ pub enum ChildStyle {
 
 impl ChildLine {
     pub fn active(text: &str) -> Self {
-        Self { text: text.to_string(), meta: None, style: ChildStyle::Active }
+        Self {
+            text: text.to_string(),
+            meta: None,
+            style: ChildStyle::Active,
+        }
     }
     pub fn active_with_elapsed(text: &str, elapsed: Option<String>) -> Self {
-        Self { text: text.to_string(), meta: elapsed, style: ChildStyle::Active }
+        Self {
+            text: text.to_string(),
+            meta: elapsed,
+            style: ChildStyle::Active,
+        }
     }
     pub fn done(text: &str, elapsed: Option<String>) -> Self {
-        Self { text: text.to_string(), meta: elapsed, style: ChildStyle::Done }
+        Self {
+            text: text.to_string(),
+            meta: elapsed,
+            style: ChildStyle::Done,
+        }
     }
     pub fn error(text: &str, elapsed: Option<String>) -> Self {
-        Self { text: text.to_string(), meta: elapsed, style: ChildStyle::Error }
+        Self {
+            text: text.to_string(),
+            meta: elapsed,
+            style: ChildStyle::Error,
+        }
     }
     pub fn warning(text: &str) -> Self {
-        Self { text: text.to_string(), meta: None, style: ChildStyle::Warning }
+        Self {
+            text: text.to_string(),
+            meta: None,
+            style: ChildStyle::Warning,
+        }
     }
     pub fn normal(text: &str, elapsed: Option<String>) -> Self {
-        Self { text: text.to_string(), meta: elapsed, style: ChildStyle::Normal }
+        Self {
+            text: text.to_string(),
+            meta: elapsed,
+            style: ChildStyle::Normal,
+        }
     }
     pub fn bold(text: &str) -> Self {
-        Self { text: text.to_string(), meta: None, style: ChildStyle::Bold }
+        Self {
+            text: text.to_string(),
+            meta: None,
+            style: ChildStyle::Bold,
+        }
     }
 }
 

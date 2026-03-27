@@ -167,7 +167,7 @@ fn lane_to_data(
     all_lanes: &[crate::tasks::lanes::Lane],
 ) -> LaneData {
     let all_task_ids: Vec<&str> = lane
-        .sessions
+        .threads
         .iter()
         .flat_map(|s| s.task_ids.iter())
         .map(|s| s.as_str())

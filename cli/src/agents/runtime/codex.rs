@@ -6,7 +6,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use super::{
-    AgentRuntime, AgentSessionResult, AgentSpawnOptions, BackgroundHandle, MonitoredChild,
+    build_spawn_env, AgentRuntime, AgentSessionResult, AgentSpawnOptions, BackgroundHandle,
+    MonitoredChild,
 };
 use crate::error::{AikiError, Result};
 
@@ -79,15 +80,8 @@ impl AgentRuntime for CodexRuntime {
         let mut cmd = Command::new("codex");
         cmd.current_dir(&options.cwd)
             .args(["exec", "--full-auto", &prompt])
-            // Pass thread ID so task commands stay scoped in blocking runs too
-            .env("AIKI_THREAD", &options.thread.serialize())
-            // Mark as background so task.closed hook doesn't auto-end this session
-            .env("AIKI_SESSION_MODE", "background");
+            .envs(build_spawn_env(options, "background"));
         apply_jj_flags(&mut cmd, &options.cwd);
-        // Propagate parent session UUID for workspace isolation chaining
-        if let Some(ref uuid) = options.parent_session_uuid {
-            cmd.env("AIKI_PARENT_SESSION_UUID", uuid);
-        }
         let output = cmd.output();
 
         match output {
@@ -128,19 +122,12 @@ impl AgentRuntime for CodexRuntime {
         let mut cmd = Command::new("codex");
         cmd.current_dir(&options.cwd)
             .args(["exec", "--full-auto", &prompt])
-            // Pass thread ID so session system can track this as a thread-driven session
-            .env("AIKI_THREAD", &options.thread.serialize())
-            // Mark as background session for mode detection
-            .env("AIKI_SESSION_MODE", "background")
+            .envs(build_spawn_env(options, "background"))
             // Detach stdin/stdout/stderr so process runs independently
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
         apply_jj_flags(&mut cmd, &options.cwd);
-        // Propagate parent session UUID for workspace isolation chaining
-        if let Some(ref uuid) = options.parent_session_uuid {
-            cmd.env("AIKI_PARENT_SESSION_UUID", uuid);
-        }
         let child = cmd.spawn();
 
         match child {
@@ -163,10 +150,7 @@ impl AgentRuntime for CodexRuntime {
         let mut cmd = Command::new("codex");
         cmd.current_dir(&options.cwd)
             .args(["exec", "--full-auto", &prompt])
-            // Pass thread ID so session system can track this as a thread-driven session
-            .env("AIKI_THREAD", &options.thread.serialize())
-            // Mark as monitored session for mode detection
-            .env("AIKI_SESSION_MODE", "monitored")
+            .envs(build_spawn_env(options, "monitored"))
             // Detach stdin so process runs independently
             .stdin(Stdio::null())
             // Capture stdout/stderr so failures surface the real CLI message
@@ -174,10 +158,6 @@ impl AgentRuntime for CodexRuntime {
             // Capture stderr so we can report errors when the agent fails
             .stderr(Stdio::piped());
         apply_jj_flags(&mut cmd, &options.cwd);
-        // Propagate parent session UUID for workspace isolation chaining
-        if let Some(ref uuid) = options.parent_session_uuid {
-            cmd.env("AIKI_PARENT_SESSION_UUID", uuid);
-        }
         let child = cmd.spawn();
 
         match child {

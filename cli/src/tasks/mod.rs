@@ -170,6 +170,30 @@ pub fn reopen_if_closed(
     Ok(())
 }
 
+/// Close a task as won't-do with a summary comment.
+pub fn close_task_as_wont_do(cwd: &Path, task_id: &str, summary: &str) -> Result<()> {
+    let timestamp = chrono::Utc::now();
+
+    let comment_event = TaskEvent::CommentAdded {
+        task_ids: vec![task_id.to_string()],
+        text: summary.to_string(),
+        data: std::collections::HashMap::new(),
+        timestamp: timestamp - chrono::Duration::milliseconds(1),
+    };
+    write_event(cwd, &comment_event)?;
+
+    let close_event = TaskEvent::Closed {
+        task_ids: vec![task_id.to_string()],
+        outcome: TaskOutcome::WontDo,
+        summary: Some(summary.to_string()),
+        session_id: None,
+        turn_id: None,
+        timestamp,
+    };
+    write_event(cwd, &close_event)?;
+    Ok(())
+}
+
 /// Reassign a task to a new agent.
 ///
 /// Creates an Updated event to change the task's assignee field.

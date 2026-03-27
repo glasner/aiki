@@ -452,16 +452,12 @@ fn resolve_session_id(events: &[ConversationEvent], prefix: &str) -> Result<Stri
 
 /// Check if a session has ended by looking for a SessionEnd event.
 fn has_session_ended(events: &[ConversationEvent], session_id: &str) -> bool {
-    events.iter().any(|e| {
-        matches!(e, ConversationEvent::SessionEnd { session_id: sid, .. } if sid == session_id)
-    })
+    events.iter().any(
+        |e| matches!(e, ConversationEvent::SessionEnd { session_id: sid, .. } if sid == session_id),
+    )
 }
 
-fn run_wait(
-    ids: Vec<String>,
-    any: bool,
-    output_format: Option<super::OutputFormat>,
-) -> Result<()> {
+fn run_wait(ids: Vec<String>, any: bool, output_format: Option<super::OutputFormat>) -> Result<()> {
     use std::collections::HashSet;
     use std::time::{Duration, Instant};
 
@@ -503,9 +499,10 @@ fn run_wait(
 
             // Wait for workspace absorption
             {
-                let repo_root = crate::jj::get_repo_root(&std::env::current_dir().map_err(
-                    |e| AikiError::Other(anyhow::anyhow!("Failed to get cwd: {}", e)),
-                )?)?;
+                let repo_root =
+                    crate::jj::get_repo_root(&std::env::current_dir().map_err(|e| {
+                        AikiError::Other(anyhow::anyhow!("Failed to get cwd: {}", e))
+                    })?)?;
 
                 let absorption_start = Instant::now();
                 let mut absorption_delay_ms = WAIT_INITIAL_DELAY_MS;
@@ -535,9 +532,7 @@ fn run_wait(
                                 .join(session_id),
                         };
                         match crate::session::isolation::absorb_workspace(
-                            &repo_root,
-                            &workspace,
-                            None,
+                            &repo_root, &workspace, None,
                         ) {
                             Ok(_) => break,
                             Err(_) => {
@@ -573,8 +568,7 @@ fn run_wait(
             } else {
                 // Re-read events for accurate output after absorption
                 let events = history::storage::read_events(&aiki_dir)?;
-                let conversations =
-                    history::storage::list_conversations(&aiki_dir, None)?;
+                let conversations = history::storage::list_conversations(&aiki_dir, None)?;
                 let conv_map: HashMap<&str, &history::types::ConversationSummary> = conversations
                     .iter()
                     .map(|c| (c.session_id.as_str(), c))
@@ -587,9 +581,7 @@ fn run_wait(
                         let conv = conv_map.get(id.as_str());
                         SessionRow {
                             session_id: id.clone(),
-                            agent_type: conv
-                                .map(|c| c.agent_type)
-                                .unwrap_or(AgentType::Unknown),
+                            agent_type: conv.map(|c| c.agent_type).unwrap_or(AgentType::Unknown),
                             mode: conv
                                 .and_then(|c| c.session_mode)
                                 .unwrap_or(SessionMode::Interactive),

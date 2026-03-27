@@ -67,7 +67,8 @@ impl RepoManifest {
                 }
             }
             Err(_) => {
-                eprintln!( // stderr-ok: pre-TUI
+                eprintln!(
+                    // stderr-ok: pre-TUI
                     "Warning: corrupt manifest at {}, creating fresh manifest",
                     path.display()
                 );
@@ -78,7 +79,8 @@ impl RepoManifest {
         match serde_json::from_str::<RepoManifest>(&content) {
             Ok(manifest) => Ok(Some(manifest)),
             Err(_) => {
-                eprintln!( // stderr-ok: pre-TUI
+                eprintln!(
+                    // stderr-ok: pre-TUI
                     "Warning: corrupt manifest at {}, creating fresh manifest",
                     path.display()
                 );

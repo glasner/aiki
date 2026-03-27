@@ -346,9 +346,11 @@ task.started:
 # task.closed: Handle actions when a task is closed
 # Auto-ends interactive task-driven sessions when their driving task closes
 task.closed:
-    # Check if there's an interactive session driven by this task
-    # session.task.id is empty if no session found for this task
-    - if: event.task.id == session.task.id && session.mode == "interactive"
-      then:
-          - log: "Task {{event.task.id}} closed, ending task-driven session"
-          - session.end: "Task completed"
+    # Check if there's an interactive session driven by this thread
+    # session.thread.tail is empty if no session found for this task
+    # Only closing the *tail* task (last in the thread chain) triggers session end.
+    # For single-task threads (head == tail), behavior is identical to before.
+    # - if: event.task.id == session.thread.tail && session.mode == "interactive"
+    #   then:
+    #       - log: "Task {{event.task.id}} closed (thread tail), ending thread-driven session"
+    #       - session.end: "Task completed"

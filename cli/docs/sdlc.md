@@ -91,7 +91,7 @@ Reads a plan file and creates subtasks under a parent task. Each subtask contain
 
 ### [`loop`](sdlc/loop.md)
 
-Orchestrates subtask execution via parallel lanes. Derives lanes from `needs-context` chains and `depends-on` edges, running independent lanes concurrently and respecting ordering constraints. See [Loop](sdlc/loop.md) for details on lane derivation, sessions, and failure handling.
+Orchestrates subtask execution via parallel lanes. Derives lanes from `needs-context` chains and `depends-on` edges, running independent lanes concurrently and respecting ordering constraints. See [Loop](sdlc/loop.md) for details on lane derivation, threads, and failure handling.
 
 **Build pipeline:** `plan` → `decompose` → `loop`
 **Fix pipeline:** `fix` → `decompose` → `loop` → review → *(repeat until clean)*

@@ -860,11 +860,13 @@ fn process_event(
             for task_id in task_ids {
                 if let Some(task) = tasks.get_mut(task_id) {
                     if task.status != TaskStatus::Open {
-                        debug_log(|| format!(
+                        debug_log(|| {
+                            format!(
                             "warn: Reserved event for task {} in status {}, expected Open — skipping",
                             &task_id[..6],
                             task.status
-                        ));
+                        )
+                        });
                         continue;
                     }
                     task.status = TaskStatus::Reserved;
@@ -875,11 +877,13 @@ fn process_event(
             for task_id in task_ids {
                 if let Some(task) = tasks.get_mut(task_id) {
                     if task.status != TaskStatus::Reserved {
-                        debug_log(|| format!(
+                        debug_log(|| {
+                            format!(
                             "warn: Released event for task {} in status {}, expected Reserved — skipping",
                             &task_id[..6],
                             task.status
-                        ));
+                        )
+                        });
                         continue;
                     }
                     task.status = TaskStatus::Open;
@@ -2935,10 +2939,7 @@ mod tests {
 
     #[test]
     fn test_reserved_event_transitions_open_to_reserved() {
-        let events = vec![
-            make_created("A", "Task A"),
-            make_reserved(&["A"]),
-        ];
+        let events = vec![make_created("A", "Task A"), make_reserved(&["A"])];
         let graph = materialize_graph(&events);
         let task = graph.tasks.get("A").unwrap();
         assert_eq!(task.status, TaskStatus::Reserved);

@@ -5,6 +5,8 @@ use std::path::Path;
 /// Parsed metadata from a plan markdown file.
 #[derive(Debug, Clone)]
 pub struct PlanMetadata {
+    /// The path that was parsed
+    pub path: String,
     /// Title extracted from first H1 heading
     pub title: Option<String>,
     /// Whether the plan is marked as a draft in frontmatter
@@ -16,17 +18,21 @@ pub struct PlanMetadata {
 /// Extracts:
 /// - Title: first `# ` heading
 pub fn parse_plan_metadata(path: &Path) -> PlanMetadata {
+    let path_str = path.to_string_lossy().to_string();
     let content = match std::fs::read_to_string(path) {
         Ok(c) => c,
         Err(_) => {
             return PlanMetadata {
+                path: path_str,
                 title: None,
                 draft: false,
             }
         }
     };
 
-    parse_plan_content(&content)
+    let mut meta = parse_plan_content(&content);
+    meta.path = path_str;
+    meta
 }
 
 /// Strip YAML frontmatter from content, returning (frontmatter_yaml, body).
@@ -97,7 +103,11 @@ fn parse_plan_content(content: &str) -> PlanMetadata {
         }
     }
 
-    PlanMetadata { title, draft }
+    PlanMetadata {
+        path: String::new(),
+        title,
+        draft,
+    }
 }
 
 #[cfg(test)]

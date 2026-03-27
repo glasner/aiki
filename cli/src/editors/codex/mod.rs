@@ -1,6 +1,6 @@
 mod events;
-mod output;
 pub mod otel;
+mod output;
 pub mod session;
 
 use crate::error::Result;

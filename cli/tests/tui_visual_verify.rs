@@ -7,9 +7,7 @@
 //! Run with:  cargo test --test tui_visual_verify -- --nocapture
 
 use aiki::tasks::graph::EdgeStore;
-use aiki::tasks::types::{
-    FastHashMap, TaskComment, TaskOutcome, TaskPriority, TaskStatus,
-};
+use aiki::tasks::types::{FastHashMap, TaskComment, TaskOutcome, TaskPriority, TaskStatus};
 use aiki::tasks::{Task, TaskGraph};
 use aiki::tui::app::{Line, LineStyle, SubtaskStatus, WindowState};
 use aiki::tui::components::{self, ChildLine, LaneData, SubtaskData};
@@ -100,7 +98,8 @@ fn fix1_subtask_header_renders_bracket_format() {
         },
     ];
 
-    let mut lines = components::subtask_table(0, "lkji3d", "Epic: Mutex for Task Writes", &subtasks, false);
+    let mut lines =
+        components::subtask_table(0, "lkji3d", "Epic: Mutex for Task Writes", &subtasks, false);
     render_and_print("Subtask table with [id] header", &mut lines);
 
     // Structural assertion: header line uses SubtaskHeader, not PhaseHeader
@@ -148,7 +147,10 @@ fn fix2_subtask_text_color_per_status() {
     ];
 
     let mut lines = components::subtask_table(0, "abc123", "Color Test", &subtasks, false);
-    render_and_print("Subtask colors: done=dim, active=fg, pending=dim, failed=red", &mut lines);
+    render_and_print(
+        "Subtask colors: done=dim, active=fg, pending=dim, failed=red",
+        &mut lines,
+    );
 
     // Verify the Subtask lines have correct status variants
     let subtask_lines: Vec<_> = lines
@@ -217,7 +219,10 @@ fn fix3_lane_block_hierarchical_structure() {
     render_and_print("Active loop with 2 lanes", &mut lines);
 
     // Verify structure
-    assert!(matches!(lines[0].style, LineStyle::PhaseHeader { active: true }));
+    assert!(matches!(
+        lines[0].style,
+        LineStyle::PhaseHeader { active: true }
+    ));
     assert_eq!(lines[0].text, "loop");
 
     // Lane 1 header at indent 1
@@ -408,21 +413,25 @@ fn fix6_heavy_symbols() {
 
     // Verify the actual constant values
     assert_eq!(
-        theme::SYM_CHECK, "✔",
+        theme::SYM_CHECK,
+        "✔",
         "SYM_CHECK should be ✔ (U+2714 HEAVY CHECK MARK)"
     );
     assert_eq!(
-        theme::SYM_FAILED, "✘",
+        theme::SYM_FAILED,
+        "✘",
         "SYM_FAILED should be ✘ (U+2718 HEAVY BALLOT X)"
     );
 
     // Verify they are NOT the thin variants
     assert_ne!(
-        theme::SYM_CHECK, "✓",
+        theme::SYM_CHECK,
+        "✓",
         "SYM_CHECK should NOT be ✓ (U+2713 thin)"
     );
     assert_ne!(
-        theme::SYM_FAILED, "✗",
+        theme::SYM_FAILED,
+        "✗",
         "SYM_FAILED should NOT be ✗ (U+2717 thin)"
     );
 
@@ -454,8 +463,16 @@ fn fix6_heavy_symbols() {
     let mut lines = components::subtask_table(0, "sym001", "Symbol Weight Check", &subtasks, false);
     render_and_print("Heavy ✔ and ✘ in subtask table", &mut lines);
 
-    println!("SYM_CHECK = {:?} (U+{:04X})", theme::SYM_CHECK, theme::SYM_CHECK.chars().next().unwrap() as u32);
-    println!("SYM_FAILED = {:?} (U+{:04X})", theme::SYM_FAILED, theme::SYM_FAILED.chars().next().unwrap() as u32);
+    println!(
+        "SYM_CHECK = {:?} (U+{:04X})",
+        theme::SYM_CHECK,
+        theme::SYM_CHECK.chars().next().unwrap() as u32
+    );
+    println!(
+        "SYM_FAILED = {:?} (U+{:04X})",
+        theme::SYM_FAILED,
+        theme::SYM_FAILED.chars().next().unwrap() as u32
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -471,16 +488,23 @@ fn fix8_build_summary_renders_stats() {
 
     // Create a completed build epic with children that have agent data
     let mut graph = make_graph();
-    let mut epic = make_task("epic123456789012345678901234", "Epic: Build app", TaskStatus::Closed);
+    let mut epic = make_task(
+        "epic123456789012345678901234",
+        "Epic: Build app",
+        TaskStatus::Closed,
+    );
     epic.started_at = Some(Utc::now() - Duration::minutes(5));
     epic.closed_at = Some(Utc::now());
 
-    graph
-        .tasks
-        .insert(epic.id.clone(), epic);
+    graph.tasks.insert(epic.id.clone(), epic);
 
     let window = WindowState::new(80);
-    let mut lines = aiki::tui::screens::build::view(&graph, "epic123456789012345678901234", "ops/now/plan.md", &window);
+    let mut lines = aiki::tui::screens::build::view(
+        &graph,
+        "epic123456789012345678901234",
+        "ops/now/plan.md",
+        &window,
+    );
     render_and_print("Build complete summary", &mut lines);
 
     // Should contain the summary phase header
@@ -545,26 +569,40 @@ fn fix9_work_subtasks_exclude_infra_tasks() {
     graph.tasks.insert(review.id.clone(), review);
     graph.tasks.insert(fix.id.clone(), fix);
 
-    graph
-        .edges
-        .add("work1_23456789012345678901234", "epic123456789012345678901234", "subtask-of");
-    graph
-        .edges
-        .add("work2_23456789012345678901234", "epic123456789012345678901234", "subtask-of");
-    graph
-        .edges
-        .add("decomp123456789012345678901234", "epic123456789012345678901234", "subtask-of");
-    graph
-        .edges
-        .add("review123456789012345678901234", "epic123456789012345678901234", "subtask-of");
-    graph
-        .edges
-        .add("fix12345678901234567890123456", "epic123456789012345678901234", "subtask-of");
+    graph.edges.add(
+        "work1_23456789012345678901234",
+        "epic123456789012345678901234",
+        "subtask-of",
+    );
+    graph.edges.add(
+        "work2_23456789012345678901234",
+        "epic123456789012345678901234",
+        "subtask-of",
+    );
+    graph.edges.add(
+        "decomp123456789012345678901234",
+        "epic123456789012345678901234",
+        "subtask-of",
+    );
+    graph.edges.add(
+        "review123456789012345678901234",
+        "epic123456789012345678901234",
+        "subtask-of",
+    );
+    graph.edges.add(
+        "fix12345678901234567890123456",
+        "epic123456789012345678901234",
+        "subtask-of",
+    );
 
     let all = aiki::tui::screens::helpers::get_subtasks(&graph, "epic123456789012345678901234");
-    let work = aiki::tui::screens::helpers::get_work_subtasks(&graph, "epic123456789012345678901234");
+    let work =
+        aiki::tui::screens::helpers::get_work_subtasks(&graph, "epic123456789012345678901234");
 
-    println!("All subtasks: {} (includes decompose, review, fix)", all.len());
+    println!(
+        "All subtasks: {} (includes decompose, review, fix)",
+        all.len()
+    );
     println!("Work subtasks: {} (only actual work items)", work.len());
     for t in &work {
         println!("  - {} (type: {:?})", t.name, t.task_type);
@@ -588,29 +626,56 @@ fn composite_build_screen_mid_loop() {
 
     // Build a graph that shows: plan (done) → decompose (done) → subtask table → loop (active)
     let mut graph = make_graph();
-    let mut epic = make_task("epic_composite_45678901234567", "Epic: Mutex for Task Writes", TaskStatus::InProgress);
+    let mut epic = make_task(
+        "epic_composite_45678901234567",
+        "Epic: Mutex for Task Writes",
+        TaskStatus::InProgress,
+    );
     epic.started_at = Some(Utc::now() - Duration::minutes(3));
     graph.tasks.insert(epic.id.clone(), epic);
 
     // Decompose (done)
-    let mut decompose = make_task("decomp_comp_456789012345678", "Decompose plan", TaskStatus::Closed);
+    let mut decompose = make_task(
+        "decomp_comp_456789012345678",
+        "Decompose plan",
+        TaskStatus::Closed,
+    );
     decompose.task_type = Some("decompose".to_string());
     decompose.started_at = Some(Utc::now() - Duration::minutes(2));
     decompose.closed_at = Some(Utc::now() - Duration::seconds(90));
-    decompose.data.insert("agent_type".to_string(), "claude".to_string());
+    decompose
+        .data
+        .insert("agent_type".to_string(), "claude".to_string());
     graph.tasks.insert(decompose.id.clone(), decompose);
-    graph.edges.add("decomp_comp_456789012345678", "epic_composite_45678901234567", "subtask-of");
+    graph.edges.add(
+        "decomp_comp_456789012345678",
+        "epic_composite_45678901234567",
+        "subtask-of",
+    );
 
     // Work subtasks (various states)
-    let mut w1 = make_task("w1_comp_567890123456789012345", "Add get_repo_root helper", TaskStatus::Closed);
+    let mut w1 = make_task(
+        "w1_comp_567890123456789012345",
+        "Add get_repo_root helper",
+        TaskStatus::Closed,
+    );
     w1.started_at = Some(Utc::now() - Duration::seconds(120));
     w1.closed_at = Some(Utc::now() - Duration::seconds(64));
     graph.tasks.insert(w1.id.clone(), w1);
-    graph.edges.add("w1_comp_567890123456789012345", "epic_composite_45678901234567", "subtask-of");
+    graph.edges.add(
+        "w1_comp_567890123456789012345",
+        "epic_composite_45678901234567",
+        "subtask-of",
+    );
 
-    let mut w2 = make_task("w2_comp_567890123456789012345", "Lock task writes in storage.rs", TaskStatus::InProgress);
+    let mut w2 = make_task(
+        "w2_comp_567890123456789012345",
+        "Lock task writes in storage.rs",
+        TaskStatus::InProgress,
+    );
     w2.started_at = Some(Utc::now() - Duration::seconds(28));
-    w2.data.insert("agent_type".to_string(), "claude".to_string());
+    w2.data
+        .insert("agent_type".to_string(), "claude".to_string());
     w2.comments.push(TaskComment {
         id: Some("hb1".into()),
         text: "Writing lock function...".into(),
@@ -622,15 +687,35 @@ fn composite_build_screen_mid_loop() {
         },
     });
     graph.tasks.insert(w2.id.clone(), w2);
-    graph.edges.add("w2_comp_567890123456789012345", "epic_composite_45678901234567", "subtask-of");
+    graph.edges.add(
+        "w2_comp_567890123456789012345",
+        "epic_composite_45678901234567",
+        "subtask-of",
+    );
 
-    let w3 = make_task("w3_comp_567890123456789012345", "Lock conversation writes", TaskStatus::Open);
+    let w3 = make_task(
+        "w3_comp_567890123456789012345",
+        "Lock conversation writes",
+        TaskStatus::Open,
+    );
     graph.tasks.insert(w3.id.clone(), w3);
-    graph.edges.add("w3_comp_567890123456789012345", "epic_composite_45678901234567", "subtask-of");
+    graph.edges.add(
+        "w3_comp_567890123456789012345",
+        "epic_composite_45678901234567",
+        "subtask-of",
+    );
 
-    let w4 = make_task("w4_comp_567890123456789012345", "Delete advance_bookmark", TaskStatus::Open);
+    let w4 = make_task(
+        "w4_comp_567890123456789012345",
+        "Delete advance_bookmark",
+        TaskStatus::Open,
+    );
     graph.tasks.insert(w4.id.clone(), w4);
-    graph.edges.add("w4_comp_567890123456789012345", "epic_composite_45678901234567", "subtask-of");
+    graph.edges.add(
+        "w4_comp_567890123456789012345",
+        "epic_composite_45678901234567",
+        "subtask-of",
+    );
 
     let window = WindowState::new(80);
     let mut lines = aiki::tui::screens::build::view(
@@ -646,8 +731,12 @@ fn composite_build_screen_mid_loop() {
     assert!(lines.iter().any(|l| l.text.contains("Initial Build")));
     assert!(lines.iter().any(|l| l.text.contains("decompose")));
     // Subtask table should exist
-    assert!(lines.iter().any(|l| matches!(l.style, LineStyle::Separator)));
-    assert!(lines.iter().any(|l| matches!(l.style, LineStyle::SubtaskHeader)));
+    assert!(lines
+        .iter()
+        .any(|l| matches!(l.style, LineStyle::Separator)));
+    assert!(lines
+        .iter()
+        .any(|l| matches!(l.style, LineStyle::SubtaskHeader)));
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -659,9 +748,15 @@ fn composite_task_run_parent_with_subtasks() {
     print_section("COMPOSITE: task run — parent with subtasks in progress");
 
     let mut graph = make_graph();
-    let mut parent = make_task("parent_run_67890123456789012", "Fix review issues", TaskStatus::InProgress);
+    let mut parent = make_task(
+        "parent_run_67890123456789012",
+        "Fix review issues",
+        TaskStatus::InProgress,
+    );
     parent.started_at = Some(Utc::now() - Duration::seconds(45));
-    parent.data.insert("agent_type".to_string(), "claude".to_string());
+    parent
+        .data
+        .insert("agent_type".to_string(), "claude".to_string());
     parent.comments.push(TaskComment {
         id: Some("hb1".into()),
         text: "Working on subtask 1...".into(),
@@ -674,28 +769,61 @@ fn composite_task_run_parent_with_subtasks() {
     });
     graph.tasks.insert(parent.id.clone(), parent);
 
-    let mut s1 = make_task("sub1_run_678901234567890123456", "Fix null check in auth handler", TaskStatus::InProgress);
+    let mut s1 = make_task(
+        "sub1_run_678901234567890123456",
+        "Fix null check in auth handler",
+        TaskStatus::InProgress,
+    );
     s1.started_at = Some(Utc::now() - Duration::seconds(32));
     graph.tasks.insert(s1.id.clone(), s1);
-    graph.edges.add("sub1_run_678901234567890123456", "parent_run_67890123456789012", "subtask-of");
+    graph.edges.add(
+        "sub1_run_678901234567890123456",
+        "parent_run_67890123456789012",
+        "subtask-of",
+    );
 
-    let s2 = make_task("sub2_run_678901234567890123456", "Add missing error handling in API client", TaskStatus::Open);
+    let s2 = make_task(
+        "sub2_run_678901234567890123456",
+        "Add missing error handling in API client",
+        TaskStatus::Open,
+    );
     graph.tasks.insert(s2.id.clone(), s2);
-    graph.edges.add("sub2_run_678901234567890123456", "parent_run_67890123456789012", "subtask-of");
+    graph.edges.add(
+        "sub2_run_678901234567890123456",
+        "parent_run_67890123456789012",
+        "subtask-of",
+    );
 
-    let s3 = make_task("sub3_run_678901234567890123456", "Remove unused import in utils.rs", TaskStatus::Open);
+    let s3 = make_task(
+        "sub3_run_678901234567890123456",
+        "Remove unused import in utils.rs",
+        TaskStatus::Open,
+    );
     graph.tasks.insert(s3.id.clone(), s3);
-    graph.edges.add("sub3_run_678901234567890123456", "parent_run_67890123456789012", "subtask-of");
+    graph.edges.add(
+        "sub3_run_678901234567890123456",
+        "parent_run_67890123456789012",
+        "subtask-of",
+    );
 
     let window = WindowState::new(80);
-    let mut lines = aiki::tui::screens::task_run::view(&graph, "parent_run_67890123456789012", &window);
-    render_and_print("task run: parent with subtasks in progress (state 1.6)", &mut lines);
+    let mut lines =
+        aiki::tui::screens::task_run::view(&graph, "parent_run_67890123456789012", &window);
+    render_and_print(
+        "task run: parent with subtasks in progress (state 1.6)",
+        &mut lines,
+    );
 
     // Verify subtask table exists
-    assert!(lines.iter().any(|l| matches!(l.style, LineStyle::SubtaskHeader)));
     assert!(lines
         .iter()
-        .any(|l| matches!(l.style, LineStyle::Subtask { status: SubtaskStatus::Active })));
+        .any(|l| matches!(l.style, LineStyle::SubtaskHeader)));
+    assert!(lines.iter().any(|l| matches!(
+        l.style,
+        LineStyle::Subtask {
+            status: SubtaskStatus::Active
+        }
+    )));
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -720,7 +848,10 @@ fn progressive_dimming_works() {
         "decompose (claude)",
         None,
         true,
-        vec![ChildLine::active_with_elapsed("Reading plan...", Some("12s".into()))],
+        vec![ChildLine::active_with_elapsed(
+            "Reading plan...",
+            Some("12s".into()),
+        )],
     ));
 
     render_and_print("Before dimming", &mut lines);
@@ -744,8 +875,14 @@ fn review_screen_with_issues() {
     print_section("Review Screen: Issues + SYM_CHECK usage");
 
     let mut graph = make_graph();
-    let mut review = make_task("review_screen_789012345678901", "Review changes", TaskStatus::Closed);
-    review.data.insert("agent_type".to_string(), "codex".to_string());
+    let mut review = make_task(
+        "review_screen_789012345678901",
+        "Review changes",
+        TaskStatus::Closed,
+    );
+    review
+        .data
+        .insert("agent_type".to_string(), "codex".to_string());
     review.started_at = Some(Utc::now() - Duration::seconds(90));
     review.closed_at = Some(Utc::now());
     review.comments.push(TaskComment {
@@ -783,9 +920,7 @@ fn review_screen_with_issues() {
 
     // Should have issue lines
     assert!(lines.iter().any(|l| matches!(l.style, LineStyle::Issue)));
-    assert!(lines
-        .iter()
-        .any(|l| l.text.contains("acquire_named_lock")));
+    assert!(lines.iter().any(|l| l.text.contains("acquire_named_lock")));
 }
 
 #[test]
@@ -793,8 +928,14 @@ fn review_screen_approved() {
     print_section("Review Screen: Approved (uses SYM_CHECK)");
 
     let mut graph = make_graph();
-    let mut review = make_task("review_ok_67890123456789012345", "Review changes", TaskStatus::Closed);
-    review.data.insert("agent_type".to_string(), "claude".to_string());
+    let mut review = make_task(
+        "review_ok_67890123456789012345",
+        "Review changes",
+        TaskStatus::Closed,
+    );
+    review
+        .data
+        .insert("agent_type".to_string(), "claude".to_string());
     review.started_at = Some(Utc::now() - Duration::seconds(45));
     review.closed_at = Some(Utc::now());
     // No issue comments

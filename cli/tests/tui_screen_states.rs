@@ -8,9 +8,7 @@
 //! Run with: cargo test --test tui_screen_states
 
 use aiki::tasks::graph::EdgeStore;
-use aiki::tasks::types::{
-    FastHashMap, TaskComment, TaskOutcome, TaskPriority, TaskStatus,
-};
+use aiki::tasks::types::{FastHashMap, TaskComment, TaskOutcome, TaskPriority, TaskStatus};
 use aiki::tasks::{Task, TaskGraph};
 use aiki::tui::app::{LineStyle, SubtaskStatus, WindowState};
 use aiki::tui::render::apply_dimming;
@@ -69,7 +67,11 @@ fn assert_line_contains(lines: &[aiki::tui::app::Line], text: &str) {
         lines.iter().any(|l| l.text.contains(text)),
         "Expected a line containing {:?}, got:\n{}",
         text,
-        lines.iter().map(|l| format!("  {:?}", l.text)).collect::<Vec<_>>().join("\n"),
+        lines
+            .iter()
+            .map(|l| format!("  {:?}", l.text))
+            .collect::<Vec<_>>()
+            .join("\n"),
     );
 }
 
@@ -103,7 +105,10 @@ fn flow1_state_0a_loading() {
     // Should show loading spinner
     assert_eq!(lines.len(), 1);
     assert_line_contains(&lines, "Reading task graph");
-    assert!(matches!(lines[0].style, LineStyle::PhaseHeader { active: true }));
+    assert!(matches!(
+        lines[0].style,
+        LineStyle::PhaseHeader { active: true }
+    ));
 }
 
 /// State 1.0d: Session starting — task is Open
@@ -116,7 +121,10 @@ fn flow1_state_0d_session_starting() {
     let lines = aiki::tui::screens::task_run::view(&graph, "task1", &window());
 
     // Should show spinner + "starting session..."
-    assert!(matches!(lines[0].style, LineStyle::PhaseHeader { active: true }));
+    assert!(matches!(
+        lines[0].style,
+        LineStyle::PhaseHeader { active: true }
+    ));
     assert_line_contains(&lines, "starting session");
 }
 
@@ -126,7 +134,8 @@ fn flow1_state_1_active_leaf() {
     let mut graph = make_graph();
     let mut task = make_task("task1", "Fix auth bug", TaskStatus::InProgress);
     task.started_at = Some(Utc::now() - Duration::seconds(12));
-    task.data.insert("agent_type".to_string(), "claude-code".to_string());
+    task.data
+        .insert("agent_type".to_string(), "claude-code".to_string());
     task.comments.push(TaskComment {
         id: Some("hb1".into()),
         text: "Reading the existing implementation...".into(),
@@ -142,7 +151,10 @@ fn flow1_state_1_active_leaf() {
     let lines = aiki::tui::screens::task_run::view(&graph, "task1", &window());
 
     // Should have active phase header + heartbeat child
-    assert!(matches!(lines[0].style, LineStyle::PhaseHeader { active: true }));
+    assert!(matches!(
+        lines[0].style,
+        LineStyle::PhaseHeader { active: true }
+    ));
     assert_line_contains(&lines, "Reading the existing implementation");
 }
 
@@ -164,7 +176,10 @@ fn flow1_state_2_done_leaf() {
     // Should have hint
     assert_line_contains(&lines, "aiki task show");
     // Phase header should NOT be active
-    assert!(matches!(lines[0].style, LineStyle::PhaseHeader { active: false }));
+    assert!(matches!(
+        lines[0].style,
+        LineStyle::PhaseHeader { active: false }
+    ));
 }
 
 /// State 1.3: Failed leaf task
@@ -190,7 +205,9 @@ fn flow1_state_6_parent_subtasks_in_progress() {
 
     let mut parent = make_task("parent1", "Fix review issues", TaskStatus::InProgress);
     parent.started_at = Some(Utc::now() - Duration::seconds(45));
-    parent.data.insert("agent_type".to_string(), "claude-code".to_string());
+    parent
+        .data
+        .insert("agent_type".to_string(), "claude-code".to_string());
     graph.tasks.insert("parent1".to_string(), parent);
 
     let mut s1 = make_task("sub1", "Fix null check", TaskStatus::InProgress);
@@ -211,17 +228,25 @@ fn flow1_state_6_parent_subtasks_in_progress() {
     // Should have progress text
     assert_line_contains(&lines, "0/3 subtasks completed");
     // Should have subtask table
-    assert!(lines.iter().any(|l| matches!(l.style, LineStyle::SubtaskHeader)));
+    assert!(lines
+        .iter()
+        .any(|l| matches!(l.style, LineStyle::SubtaskHeader)));
     // Should have active subtask
     assert!(lines.iter().any(|l| matches!(
         l.style,
-        LineStyle::Subtask { status: SubtaskStatus::Active }
+        LineStyle::Subtask {
+            status: SubtaskStatus::Active
+        }
     )));
     // Should have pending subtasks
-    assert!(count_lines(&lines, |l| matches!(
-        l.style,
-        LineStyle::Subtask { status: SubtaskStatus::Pending | SubtaskStatus::PendingUnassigned }
-    )) >= 2);
+    assert!(
+        count_lines(&lines, |l| matches!(
+            l.style,
+            LineStyle::Subtask {
+                status: SubtaskStatus::Pending | SubtaskStatus::PendingUnassigned
+            }
+        )) >= 2
+    );
 }
 
 /// State 1.8: Parent task — all subtasks done
@@ -235,12 +260,17 @@ fn flow1_state_8_parent_all_done() {
     parent.summary = Some("3/3 subtasks completed".to_string());
     graph.tasks.insert("parent1".to_string(), parent);
 
-    for (i, name) in ["Fix null check", "Add error handling", "Remove import"].iter().enumerate() {
+    for (i, name) in ["Fix null check", "Add error handling", "Remove import"]
+        .iter()
+        .enumerate()
+    {
         let mut s = make_task(&format!("sub{}", i), name, TaskStatus::Closed);
         s.started_at = Some(Utc::now() - Duration::seconds(60));
         s.closed_at = Some(Utc::now() - Duration::seconds(10));
         graph.tasks.insert(format!("sub{}", i), s);
-        graph.edges.add(&format!("sub{}", i), "parent1", "subtask-of");
+        graph
+            .edges
+            .add(&format!("sub{}", i), "parent1", "subtask-of");
     }
 
     let lines = aiki::tui::screens::task_run::view(&graph, "parent1", &window());
@@ -248,10 +278,14 @@ fn flow1_state_8_parent_all_done() {
     // Should have completed header
     assert_line_contains(&lines, "task completed");
     // All subtasks should be done
-    let done_count = count_lines(&lines, |l| matches!(
-        l.style,
-        LineStyle::Subtask { status: SubtaskStatus::Done }
-    ));
+    let done_count = count_lines(&lines, |l| {
+        matches!(
+            l.style,
+            LineStyle::Subtask {
+                status: SubtaskStatus::Done
+            }
+        )
+    });
     assert_eq!(done_count, 3);
     // Should have hint
     assert_line_contains(&lines, "aiki task show");
@@ -291,15 +325,25 @@ fn flow1_state_9_parent_subtask_failed() {
     assert_line_contains(&lines, "task failed");
     assert!(matches!(lines[0].style, LineStyle::PhaseHeaderFailed));
     // Should have one failed subtask
-    assert_eq!(count_lines(&lines, |l| matches!(
-        l.style,
-        LineStyle::Subtask { status: SubtaskStatus::Failed }
-    )), 1);
+    assert_eq!(
+        count_lines(&lines, |l| matches!(
+            l.style,
+            LineStyle::Subtask {
+                status: SubtaskStatus::Failed
+            }
+        )),
+        1
+    );
     // Should have two done subtasks
-    assert_eq!(count_lines(&lines, |l| matches!(
-        l.style,
-        LineStyle::Subtask { status: SubtaskStatus::Done }
-    )), 2);
+    assert_eq!(
+        count_lines(&lines, |l| matches!(
+            l.style,
+            LineStyle::Subtask {
+                status: SubtaskStatus::Done
+            }
+        )),
+        2
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -334,7 +378,9 @@ fn flow2_state_4_decompose_active() {
     let mut decompose = make_task("decomp1", "Decompose plan", TaskStatus::InProgress);
     decompose.task_type = Some("decompose".to_string());
     decompose.started_at = Some(Utc::now() - Duration::seconds(32));
-    decompose.data.insert("agent_type".to_string(), "claude-code".to_string());
+    decompose
+        .data
+        .insert("agent_type".to_string(), "claude-code".to_string());
     decompose.comments.push(TaskComment {
         id: Some("hb1".into()),
         text: "Reading plan and creating subtasks...".into(),
@@ -352,13 +398,19 @@ fn flow2_state_4_decompose_active() {
 
     // Plan phase should be dimmed (earlier phase)
     apply_dimming(&mut lines);
-    assert!(lines[0].dimmed, "Plan phase should be dimmed when decompose is active");
+    assert!(
+        lines[0].dimmed,
+        "Plan phase should be dimmed when decompose is active"
+    );
 
     // Decompose should be active
     assert_line_contains(&lines, "decompose");
     let decompose_header = lines.iter().find(|l| l.text.contains("decompose")).unwrap();
     assert!(
-        matches!(decompose_header.style, LineStyle::PhaseHeader { active: true }),
+        matches!(
+            decompose_header.style,
+            LineStyle::PhaseHeader { active: true }
+        ),
         "Decompose header should be active"
     );
 }
@@ -378,10 +430,15 @@ fn flow2_state_5_decompose_done_subtasks() {
     graph.edges.add("decomp1", "epic1", "subtask-of");
 
     // Add work subtasks
-    for (i, name) in ["Add helper", "Lock writes", "Delete bookmark"].iter().enumerate() {
+    for (i, name) in ["Add helper", "Lock writes", "Delete bookmark"]
+        .iter()
+        .enumerate()
+    {
         let s = make_task(&format!("work{}", i), name, TaskStatus::Open);
         graph.tasks.insert(format!("work{}", i), s);
-        graph.edges.add(&format!("work{}", i), "epic1", "subtask-of");
+        graph
+            .edges
+            .add(&format!("work{}", i), "epic1", "subtask-of");
     }
 
     let lines = aiki::tui::screens::build::view(&graph, "epic1", "ops/now/plan.md", &window());
@@ -390,8 +447,12 @@ fn flow2_state_5_decompose_done_subtasks() {
     assert_line_contains(&lines, "decompose");
     assert_line_contains(&lines, "3 subtasks created");
     // Subtask table should be present
-    assert!(lines.iter().any(|l| matches!(l.style, LineStyle::SubtaskHeader)));
-    assert!(lines.iter().any(|l| matches!(l.style, LineStyle::Separator)));
+    assert!(lines
+        .iter()
+        .any(|l| matches!(l.style, LineStyle::SubtaskHeader)));
+    assert!(lines
+        .iter()
+        .any(|l| matches!(l.style, LineStyle::Separator)));
 }
 
 /// State 2.8: Mid-build — subtasks in various states
@@ -420,7 +481,8 @@ fn flow2_state_8_mid_build() {
     let mut w2 = make_task("w2", "Lock writes", TaskStatus::InProgress);
     w2.started_at = Some(Utc::now() - Duration::seconds(28));
     w2.claimed_by_session = Some("sess1".to_string());
-    w2.data.insert("agent_type".to_string(), "claude-code".to_string());
+    w2.data
+        .insert("agent_type".to_string(), "claude-code".to_string());
     graph.tasks.insert("w2".to_string(), w2);
     graph.edges.add("w2", "epic1", "subtask-of");
 
@@ -435,19 +497,36 @@ fn flow2_state_8_mid_build() {
     let lines = aiki::tui::screens::build::view(&graph, "epic1", "ops/now/plan.md", &window());
 
     // Subtask table should show mixed states
-    assert_eq!(count_lines(&lines, |l| matches!(
-        l.style,
-        LineStyle::Subtask { status: SubtaskStatus::Done }
-    )), 1, "Should have 1 done subtask");
-    assert_eq!(count_lines(&lines, |l| matches!(
-        l.style,
-        LineStyle::Subtask { status: SubtaskStatus::Active }
-    )), 1, "Should have 1 active subtask");
+    assert_eq!(
+        count_lines(&lines, |l| matches!(
+            l.style,
+            LineStyle::Subtask {
+                status: SubtaskStatus::Done
+            }
+        )),
+        1,
+        "Should have 1 done subtask"
+    );
+    assert_eq!(
+        count_lines(&lines, |l| matches!(
+            l.style,
+            LineStyle::Subtask {
+                status: SubtaskStatus::Active
+            }
+        )),
+        1,
+        "Should have 1 active subtask"
+    );
     // Pending subtasks (either Pending or PendingUnassigned)
-    assert!(count_lines(&lines, |l| matches!(
-        l.style,
-        LineStyle::Subtask { status: SubtaskStatus::Pending | SubtaskStatus::PendingUnassigned }
-    )) >= 2, "Should have at least 2 pending subtasks");
+    assert!(
+        count_lines(&lines, |l| matches!(
+            l.style,
+            LineStyle::Subtask {
+                status: SubtaskStatus::Pending | SubtaskStatus::PendingUnassigned
+            }
+        )) >= 2,
+        "Should have at least 2 pending subtasks"
+    );
 }
 
 /// State 2.10: Build complete
@@ -491,11 +570,18 @@ fn flow2_dimming_plan_dimmed_during_decompose() {
     // Plan phase (group 0) should be dimmed
     let plan_lines: Vec<_> = lines.iter().filter(|l| l.group == 0).collect();
     assert!(!plan_lines.is_empty(), "Should have plan phase lines");
-    assert!(plan_lines.iter().all(|l| l.dimmed), "All plan lines should be dimmed");
+    assert!(
+        plan_lines.iter().all(|l| l.dimmed),
+        "All plan lines should be dimmed"
+    );
 
     // Decompose phase should NOT be dimmed
-    let decompose_lines: Vec<_> = lines.iter()
-        .filter(|l| l.text.contains("decompose") || (l.group > 0 && !matches!(l.style, LineStyle::SectionHeader | LineStyle::Blank)))
+    let decompose_lines: Vec<_> = lines
+        .iter()
+        .filter(|l| {
+            l.text.contains("decompose")
+                || (l.group > 0 && !matches!(l.style, LineStyle::SectionHeader | LineStyle::Blank))
+        })
         .collect();
     // At least the decompose header should not be dimmed
     let header = lines.iter().find(|l| l.text.contains("decompose"));
@@ -521,7 +607,9 @@ fn flow3_review_with_issues() {
     review.task_type = Some("review".to_string());
     review.started_at = Some(Utc::now() - Duration::seconds(90));
     review.closed_at = Some(Utc::now());
-    review.data.insert("agent_type".to_string(), "codex".to_string());
+    review
+        .data
+        .insert("agent_type".to_string(), "codex".to_string());
     review.comments.push(TaskComment {
         id: Some("i1".into()),
         text: "acquire_named_lock uses wrong error variant".into(),
@@ -572,7 +660,9 @@ fn flow3_review_approved() {
     review.task_type = Some("review".to_string());
     review.started_at = Some(Utc::now() - Duration::minutes(11));
     review.closed_at = Some(Utc::now());
-    review.data.insert("agent_type".to_string(), "codex".to_string());
+    review
+        .data
+        .insert("agent_type".to_string(), "codex".to_string());
     graph.tasks.insert("review1".to_string(), review);
     graph.edges.add("review1", "epic1", "subtask-of");
 
@@ -599,7 +689,8 @@ fn build_view_never_shows_task_run_loading() {
     // Empty graph (no epic yet) — simulates the moment TUI starts
     // before JJ has propagated the epic task
     let graph = make_graph();
-    let lines = aiki::tui::screens::build::view(&graph, "nonexistent", "ops/now/plan.md", &window());
+    let lines =
+        aiki::tui::screens::build::view(&graph, "nonexistent", "ops/now/plan.md", &window());
 
     // Should still render plan phase (always present)
     assert_line_contains(&lines, "plan");
@@ -617,7 +708,10 @@ fn build_view_starts_with_plan_phase() {
     let lines = aiki::tui::screens::build::view(&graph, "epic1", "ops/now/plan.md", &window());
 
     // First line should be the plan phase header
-    assert!(lines[0].text.contains("plan"), "First line should be plan phase");
+    assert!(
+        lines[0].text.contains("plan"),
+        "First line should be plan phase"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -629,7 +723,9 @@ fn build_view_starts_with_plan_phase() {
 fn review_screen_active() {
     let mut graph = make_graph();
     let mut review = make_task("review1", "Review", TaskStatus::InProgress);
-    review.data.insert("agent_type".to_string(), "codex".to_string());
+    review
+        .data
+        .insert("agent_type".to_string(), "codex".to_string());
     review.started_at = Some(Utc::now() - Duration::seconds(15));
     review.comments.push(TaskComment {
         id: Some("hb1".into()),
@@ -655,7 +751,9 @@ fn review_screen_active() {
 fn review_screen_done_with_issues() {
     let mut graph = make_graph();
     let mut review = make_task("review1", "Review", TaskStatus::Closed);
-    review.data.insert("agent_type".to_string(), "codex".to_string());
+    review
+        .data
+        .insert("agent_type".to_string(), "codex".to_string());
     review.started_at = Some(Utc::now() - Duration::seconds(90));
     review.closed_at = Some(Utc::now());
     review.comments.push(TaskComment {
@@ -683,7 +781,9 @@ fn review_screen_done_with_issues() {
 fn review_screen_approved() {
     let mut graph = make_graph();
     let mut review = make_task("review1", "Review", TaskStatus::Closed);
-    review.data.insert("agent_type".to_string(), "codex".to_string());
+    review
+        .data
+        .insert("agent_type".to_string(), "codex".to_string());
     review.started_at = Some(Utc::now() - Duration::seconds(45));
     review.closed_at = Some(Utc::now());
     graph.tasks.insert("review1".to_string(), review);

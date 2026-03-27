@@ -45,20 +45,20 @@ MD
 
 Links between subtasks control how the orchestrator schedules work into parallel **lanes**. Use the right link type:
 
-**`--depends-on`** — The later task needs the earlier task's *output* but runs in a fresh agent session. Creates lane boundaries: fan-out points split into parallel lanes, fan-in points create lanes that wait on predecessors.
+**`--depends-on`** — The later task needs the earlier task's *output* but runs in a fresh thread. Creates lane boundaries: fan-out points split into parallel lanes, fan-in points create lanes that wait on predecessors.
 
 ```bash
-# implement-frontend can't start until plan is done, but doesn't need plan's session context
+# implement-frontend can't start until plan is done, but doesn't need plan's thread context
 aiki task link $FRONTEND_ID --depends-on $PLAN_ID
 aiki task link $BACKEND_ID --depends-on $PLAN_ID    # fan-out: frontend + backend run in parallel
 aiki task link $TESTS_ID --depends-on $FRONTEND_ID   # fan-in: tests waits on both
 aiki task link $TESTS_ID --depends-on $BACKEND_ID
 ```
 
-**`--needs-context`** — The later task must run in the *same agent session* as the earlier task (shared in-memory context). Forms linear chains within a lane. Max one forward, one reverse.
+**`--needs-context`** — The later task must run in the *same thread* as the earlier task (shared in-memory context). Forms linear chains within a lane. Max one forward, one reverse.
 
 ```bash
-# explore then plan in one session — plan needs explore's codebase understanding
+# explore then plan in one thread — plan needs explore's codebase understanding
 EXPLORE_ID=$(aiki task add "Explore codebase" --subtask-of {{data.target}} --output id)
 PLAN_ID=$(aiki task add "Create implementation plan" --subtask-of {{data.target}} --needs-context $EXPLORE_ID --output id)
 ```
@@ -67,8 +67,8 @@ PLAN_ID=$(aiki task add "Create implementation plan" --subtask-of {{data.target}
 
 | Situation | Link type | Why |
 |-----------|-----------|-----|
-| Task B needs A's code changes on disk | `--depends-on` | Fresh session is fine, just needs the committed output |
-| Task B needs A's in-memory understanding | `--needs-context` | Same agent session preserves context |
+| Task B needs A's code changes on disk | `--depends-on` | Fresh thread is fine, just needs the committed output |
+| Task B needs A's in-memory understanding | `--needs-context` | Same thread preserves context |
 | Tasks are independent (no shared state) | No link | Each becomes its own parallel lane |
 | Task B reviews/validates A's work | `--depends-on` | Review runs independently after implementation |
 
@@ -76,8 +76,8 @@ PLAN_ID=$(aiki task add "Create implementation plan" --subtask-of {{data.target}
 - Each subtask should be discrete and actionable
 - Include enough context in the instructions for an executing agent
 - Order subtasks logically (dependencies first)
-- Use `--depends-on` for tasks that need another's output but not its session context
-- Use `--needs-context` for tasks that must share an agent session (e.g., explore → plan)
+- Use `--depends-on` for tasks that need another's output but not its thread context
+- Use `--needs-context` for tasks that must share a thread (e.g., explore → plan)
 - Leave tasks unlinked when they are truly independent — they'll run as parallel lanes
 - Keep subtask names concise but descriptive
 - Each subtask should have verifiable acceptance criteria

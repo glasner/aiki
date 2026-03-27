@@ -1699,7 +1699,9 @@ mod tests {
     #[test]
     fn test_check_codex_hooks_complete() {
         let mut file = NamedTempFile::new().unwrap();
-        let global_aiki = crate::global::global_aiki_dir().to_string_lossy().to_string();
+        let global_aiki = crate::global::global_aiki_dir()
+            .to_string_lossy()
+            .to_string();
         let config = format!(
             r#"
 [hooks.sessionStart]

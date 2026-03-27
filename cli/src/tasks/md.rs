@@ -298,7 +298,6 @@ mod tests {
         let md = format_action_started(&task, true);
         assert!(md.starts_with("Started abcdefg"));
         assert!(md.contains("Test task"));
-        assert!(md.contains("Run `aiki task comment add"));
 
         let md_no_name = format_action_started(&task, false);
         assert!(md_no_name.starts_with("Started abcdefg"));

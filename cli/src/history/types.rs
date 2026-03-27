@@ -77,8 +77,8 @@ pub enum ConversationEvent {
         session_id: String,
         agent_type: AgentType,
         timestamp: DateTime<Utc>,
-        /// Task that caused this session to be launched via `aiki run`, if any
-        run_task_id: Option<String>,
+        /// Thread that caused this session to be launched via `aiki run`, if any
+        run_thread_id: Option<String>,
         /// Stable repository identifier (from repo-id file)
         repo_id: Option<String>,
         /// Current working directory where the event occurred

@@ -1,4 +1,4 @@
-use rhai::{Dynamic, Engine, Map, Scope, AST};
+use rhai::{Dynamic, Engine, Map, Scope, Token, AST};
 use std::collections::{BTreeMap, HashMap};
 
 /// Unified expression evaluator backed by Rhai.
@@ -37,6 +37,14 @@ impl ExpressionEvaluator {
         // - Simple undefined vars are falsy
         // - `not undefined_var` → `!false` → true
         // - Boolean operators short-circuit correctly with undefined vars
+        // Remap reserved keywords (like "thread") to identifiers when used
+        // as property names in dotted access (e.g., session.thread.tail).
+        #[allow(deprecated)]
+        engine.on_parse_token(|token, _pos, _state| match token {
+            Token::Reserved(ref s) if &**s == "thread" => Token::Identifier(s.clone()),
+            _ => token,
+        });
+
         #[allow(deprecated)]
         engine.on_var(|name, _index, context| {
             if context.scope().contains(name) {

@@ -132,7 +132,7 @@ enum Commands {
     },
     /// Spawn an agent session for a task
     Run {
-        /// Task ID to run (or parent ID with --next-session)
+        /// Task ID to run (or parent ID with --next-thread)
         id: Option<String>,
         /// Return after spawn instead of blocking until session ends
         #[arg(long = "async")]
@@ -140,17 +140,17 @@ enum Commands {
         /// Force direct run on reserved/in-progress tasks by resetting state
         #[arg(long)]
         force: bool,
-        /// Pick next ready session (needs-context chain or standalone task)
+        /// Pick next ready thread (needs-context chain or standalone task)
         #[arg(long)]
-        next_session: bool,
-        /// Scope --next-session to a specific lane (head task ID, prefix matching)
-        #[arg(long, requires = "next_session")]
+        next_thread: bool,
+        /// Scope --next-thread to a specific lane (head task ID, prefix matching)
+        #[arg(long, requires = "next_thread")]
         lane: Option<String>,
         /// Override assignee agent (claude-code, codex)
         #[arg(long)]
         agent: Option<String>,
         /// Create task from template before running
-        #[arg(long, conflicts_with_all = ["id", "next_session"])]
+        #[arg(long, conflicts_with_all = ["id", "next_thread"])]
         template: Option<String>,
         /// Key=value pairs for template variables
         #[arg(long, requires = "template")]
@@ -342,7 +342,7 @@ fn run() -> Result<()> {
             id,
             run_async,
             force,
-            next_session,
+            next_thread,
             lane,
             agent,
             template,
@@ -352,7 +352,7 @@ fn run() -> Result<()> {
             id,
             run_async,
             force,
-            next_session,
+            next_thread,
             lane,
             agent,
             template,

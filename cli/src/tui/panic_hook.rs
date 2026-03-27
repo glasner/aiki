@@ -30,16 +30,12 @@ pub(crate) fn install_signal_handlers(stop: Arc<AtomicBool>) -> Vec<SignalGuard>
     let mut guards = Vec::new();
 
     // SIGTERM — process termination (e.g. `kill <pid>`)
-    if let Ok(id) =
-        signal_hook::flag::register(signal_hook::consts::SIGTERM, Arc::clone(&stop))
-    {
+    if let Ok(id) = signal_hook::flag::register(signal_hook::consts::SIGTERM, Arc::clone(&stop)) {
         guards.push(SignalGuard(id));
     }
 
     // SIGHUP — terminal hangup (e.g. SSH disconnect, terminal window closed)
-    if let Ok(id) =
-        signal_hook::flag::register(signal_hook::consts::SIGHUP, Arc::clone(&stop))
-    {
+    if let Ok(id) = signal_hook::flag::register(signal_hook::consts::SIGHUP, Arc::clone(&stop)) {
         guards.push(SignalGuard(id));
     }
 

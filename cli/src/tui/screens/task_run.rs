@@ -1,10 +1,10 @@
 // cli/src/tui/screens/task_run.rs
 
-use crate::tasks::TaskGraph;
+use super::helpers::{format_progress, get_subtasks, loading_lines};
 use crate::tasks::types::TaskStatus;
+use crate::tasks::TaskGraph;
 use crate::tui::app::{Line, LineStyle, WindowState};
 use crate::tui::components::{self, ChildLine, SubtaskData};
-use super::helpers::{get_subtasks, format_progress, loading_lines};
 
 pub fn view(graph: &TaskGraph, task_id: &str, _window: &WindowState) -> Vec<Line> {
     let task = match graph.tasks.get(task_id) {
@@ -18,18 +18,28 @@ pub fn view(graph: &TaskGraph, task_id: &str, _window: &WindowState) -> Vec<Line
         // Active states: spinner header + status child
         TaskStatus::Open | TaskStatus::Reserved | TaskStatus::InProgress => {
             let children = match task.status {
-                TaskStatus::Open | TaskStatus::Reserved => vec![
-                    ChildLine::active("starting session..."),
-                ],
-                TaskStatus::InProgress if subtasks.is_empty() => vec![
-                    ChildLine::active_with_elapsed(task.latest_heartbeat(), task.elapsed_str()),
-                ],
-                TaskStatus::InProgress => vec![
-                    ChildLine::normal(&format_progress(&subtasks), task.elapsed_str()),
-                ],
+                TaskStatus::Open | TaskStatus::Reserved => {
+                    vec![ChildLine::active("starting session...")]
+                }
+                TaskStatus::InProgress if subtasks.is_empty() => {
+                    vec![ChildLine::active_with_elapsed(
+                        task.latest_heartbeat(),
+                        task.elapsed_str(),
+                    )]
+                }
+                TaskStatus::InProgress => vec![ChildLine::normal(
+                    &format_progress(&subtasks),
+                    task.elapsed_str(),
+                )],
                 _ => unreachable!(),
             };
-            lines.extend(components::phase(0, "task", task.agent_label(), true, children));
+            lines.extend(components::phase(
+                0,
+                "task",
+                task.agent_label(),
+                true,
+                children,
+            ));
         }
 
         // Done: 合 task completed — <summary>           <elapsed>
@@ -80,7 +90,13 @@ pub fn view(graph: &TaskGraph, task_id: &str, _window: &WindowState) -> Vec<Line
     // Subtask table (if parent task)
     if !subtasks.is_empty() {
         let data: Vec<SubtaskData> = subtasks.iter().map(|s| s.into()).collect();
-        lines.extend(components::subtask_table(0, task.short_id(), &task.name, &data, false));
+        lines.extend(components::subtask_table(
+            0,
+            task.short_id(),
+            &task.name,
+            &data,
+            false,
+        ));
     }
 
     // Hint text when done

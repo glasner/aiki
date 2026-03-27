@@ -1,4 +1,6 @@
+use std::cell::OnceCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 
 /// Result of executing an action
 #[derive(Debug, Clone)]
@@ -58,6 +60,10 @@ pub struct AikiState {
     /// Cached expression evaluator for compile-once/eval-many condition evaluation.
     /// Persists compiled ASTs across multiple condition evaluations within a session.
     expression_evaluator: crate::expressions::ExpressionEvaluator,
+
+    /// Lazily cached thread-session match for task.closed events.
+    /// Stores `Some(None)` after a miss so failed lookups are also memoized.
+    task_closed_thread_session: Rc<OnceCell<Option<crate::session::ThreadSessionInfo>>>,
 }
 
 impl AikiState {
@@ -97,6 +103,7 @@ impl AikiState {
             failures: Vec::new(),
             pending_session_ends: Vec::new(),
             expression_evaluator: crate::expressions::ExpressionEvaluator::new(),
+            task_closed_thread_session: Rc::new(OnceCell::new()),
         }
     }
 
@@ -109,6 +116,27 @@ impl AikiState {
     /// Get a mutable reference to the cached expression evaluator.
     pub fn expression_evaluator(&mut self) -> &mut crate::expressions::ExpressionEvaluator {
         &mut self.expression_evaluator
+    }
+
+    /// Resolve the task-thread session once for a task.closed event and cache the result.
+    #[must_use]
+    pub fn resolve_task_closed_thread_session(&self) -> Option<crate::session::ThreadSessionInfo> {
+        self.task_closed_thread_session
+            .get_or_init(|| match &self.event {
+                crate::events::AikiEvent::TaskClosed(e) => {
+                    crate::session::find_thread_session(&e.task.id)
+                }
+                _ => None,
+            })
+            .clone()
+    }
+
+    /// Get the shared per-event cache used by task.closed lazy session variables.
+    #[must_use]
+    pub fn task_closed_thread_session_cache(
+        &self,
+    ) -> Rc<OnceCell<Option<crate::session::ThreadSessionInfo>>> {
+        Rc::clone(&self.task_closed_thread_session)
     }
 
     /// Get a variable value by name
@@ -256,6 +284,56 @@ impl AikiState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::events::{AikiTaskClosedPayload, TaskEventPayload};
+    use std::env;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::sync::Mutex;
+    use tempfile::TempDir;
+
+    static AIKI_HOME_MUTEX: Mutex<()> = Mutex::new(());
+
+    struct EnvGuard {
+        original: Option<String>,
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match &self.original {
+                Some(value) => env::set_var(crate::global::AIKI_HOME_ENV, value),
+                None => env::remove_var(crate::global::AIKI_HOME_ENV),
+            }
+        }
+    }
+
+    fn setup_global_aiki_home() -> (TempDir, EnvGuard) {
+        let aiki_home = TempDir::new().unwrap();
+        fs::create_dir_all(aiki_home.path().join("sessions")).unwrap();
+
+        let original = env::var(crate::global::AIKI_HOME_ENV).ok();
+        env::set_var(crate::global::AIKI_HOME_ENV, aiki_home.path());
+
+        (aiki_home, EnvGuard { original })
+    }
+
+    fn create_task_closed_event(task_id: &str) -> crate::events::AikiEvent {
+        AikiTaskClosedPayload {
+            task: TaskEventPayload {
+                id: task_id.to_string(),
+                name: "Execution Test".to_string(),
+                task_type: "review".to_string(),
+                status: "closed".to_string(),
+                assignee: None,
+                outcome: Some("done".to_string()),
+                source: None,
+                files: Some(vec!["src/test.rs".to_string()]),
+                changes: Some(vec!["abc123".to_string()]),
+            },
+            cwd: PathBuf::from("/tmp/test"),
+            timestamp: chrono::Utc::now(),
+        }
+        .into()
+    }
 
     #[test]
     fn test_action_result_success() {
@@ -323,5 +401,42 @@ mod tests {
             _ => panic!("Expected ChangeCompleted event"),
         }
         assert_eq!(ctx.cwd(), std::path::Path::new("/test"));
+    }
+
+    #[test]
+    fn test_task_closed_thread_session_lookup_is_cached() {
+        let _lock = AIKI_HOME_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let (_aiki_home, _guard) = setup_global_aiki_home();
+
+        let task_id = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        let thread_head = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let session_path = crate::global::global_sessions_dir().join("sessioncachetest");
+        fs::write(
+            &session_path,
+            format!(
+                "thread={}:{}\nparent_pid=4242\nsession_id=sessioncachetest\nmode=background\n",
+                thread_head, task_id
+            ),
+        )
+        .unwrap();
+
+        let state = AikiState::new(create_task_closed_event(task_id));
+
+        let first = state
+            .resolve_task_closed_thread_session()
+            .expect("expected initial session lookup to succeed");
+        assert_eq!(first.pid, 4242);
+        assert_eq!(first.thread.head, thread_head);
+        assert_eq!(first.thread.tail, task_id);
+        assert_eq!(first.mode, crate::session::SessionMode::Background);
+
+        fs::remove_file(&session_path).unwrap();
+
+        let second = state
+            .resolve_task_closed_thread_session()
+            .expect("expected cached session lookup to survive file removal");
+        assert_eq!(second.pid, first.pid);
+        assert_eq!(second.thread.serialize(), first.thread.serialize());
+        assert_eq!(second.mode, first.mode);
     }
 }

@@ -1,13 +1,12 @@
 Bugs:
-- thread runner
-- workflow split -> commands
-
-- fix claude session resume
+- thread runner??
+- workflow split -> workflow thin
 - hung fix
 - fix session isolation
 
 Now:
 - better reviews/
+  - optimize task revset -> smarter task diff
 - cleanup loop/fix commands
 - track token usage
 - metrics

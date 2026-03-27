@@ -16,7 +16,7 @@ the primitive that `aiki plan` builds on.
 
 ```
 aiki run <task-id> -i                       # interactive session
-aiki run <parent-id> --next-session -i      # resolve next, interactive
+aiki run <parent-id> --next-thread -i      # resolve next, interactive
 ```
 
 `-i` / `--interactive` opens the agent in the current terminal. The

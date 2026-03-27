@@ -227,7 +227,8 @@ pub fn write_link_event_with_autorun(
                                 timestamp,
                             };
                             write_event(cwd, &supersedes_event)?;
-                            eprintln!( // stderr-ok: write-path only, never called during monitoring
+                            eprintln!(
+                                // stderr-ok: write-path only, never called during monitoring
                                 "Superseded: {} previously {} {}",
                                 short_id(old_target),
                                 if kind == "implements-plan" {
@@ -240,7 +241,8 @@ pub fn write_link_event_with_autorun(
                         }
                         // If old_target is a file path, skip the supersedes link silently (bug #4 fix)
                     } else if kind == "subtask-of" {
-                        eprintln!( // stderr-ok: write-path only, never called during monitoring
+                        eprintln!(
+                            // stderr-ok: write-path only, never called during monitoring
                             "Re-parented: {} moved from {} to {}",
                             short_id(from),
                             short_id(old_target),
@@ -279,7 +281,8 @@ pub fn write_link_event_with_autorun(
                             timestamp,
                         };
                         write_event(cwd, &supersedes_event)?;
-                        eprintln!( // stderr-ok: write-path only, never called during monitoring
+                        eprintln!(
+                            // stderr-ok: write-path only, never called during monitoring
                             "Superseded: {} previously {} {}",
                             short_id(old_from),
                             if kind == "orchestrates" {

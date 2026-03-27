@@ -119,8 +119,16 @@ pub fn render_lines(lines: &[Line], buf: &mut Buffer, area: Rect, theme: &Theme,
                 // meta handled by fallthrough below
             }
             LineStyle::SubtaskHeader => {
-                let style_id = if line.dimmed { dim_style } else { theme.dim_style() };
-                let style_title = if line.dimmed { dim_style } else { theme.fg_style() };
+                let style_id = if line.dimmed {
+                    dim_style
+                } else {
+                    theme.dim_style()
+                };
+                let style_title = if line.dimmed {
+                    dim_style
+                } else {
+                    theme.fg_style()
+                };
 
                 if let Some(bracket_end) = line.text.find("] ") {
                     let (id_part, title_part) = line.text.split_at(bracket_end + 2);
@@ -131,15 +139,27 @@ pub fn render_lines(lines: &[Line], buf: &mut Buffer, area: Rect, theme: &Theme,
                 }
             }
             LineStyle::Child => {
-                let tree_style = if line.dimmed { dim_style } else { theme.dim_style() };
-                let text_style = if line.dimmed { dim_style } else { theme.dim_style() };
+                let tree_style = if line.dimmed {
+                    dim_style
+                } else {
+                    theme.dim_style()
+                };
+                let text_style = if line.dimmed {
+                    dim_style
+                } else {
+                    theme.dim_style()
+                };
 
                 buf.set_string(x, y, "⎿", tree_style);
                 buf.set_string(x + 1, y, " ", tree_style);
                 buf.set_string(x + 2, y, &line.text, text_style);
             }
             LineStyle::ChildActive => {
-                let tree_style = if line.dimmed { dim_style } else { theme.dim_style() };
+                let tree_style = if line.dimmed {
+                    dim_style
+                } else {
+                    theme.dim_style()
+                };
                 let text_style = if line.dimmed {
                     dim_style
                 } else {
@@ -151,13 +171,21 @@ pub fn render_lines(lines: &[Line], buf: &mut Buffer, area: Rect, theme: &Theme,
                 buf.set_string(x + 2, y, &line.text, text_style);
             }
             LineStyle::ChildDone => {
-                let tree_style = if line.dimmed { dim_style } else { theme.dim_style() };
+                let tree_style = if line.dimmed {
+                    dim_style
+                } else {
+                    theme.dim_style()
+                };
                 let check_style = if line.dimmed {
                     dim_style
                 } else {
                     Style::default().fg(theme.green)
                 };
-                let text_style = if line.dimmed { dim_style } else { theme.dim_style() };
+                let text_style = if line.dimmed {
+                    dim_style
+                } else {
+                    theme.dim_style()
+                };
 
                 buf.set_string(x, y, "⎿", tree_style);
                 buf.set_string(x + 1, y, " ", tree_style);
@@ -166,7 +194,11 @@ pub fn render_lines(lines: &[Line], buf: &mut Buffer, area: Rect, theme: &Theme,
                 buf.set_string(x + 4, y, &line.text, text_style);
             }
             LineStyle::ChildError => {
-                let tree_style = if line.dimmed { dim_style } else { theme.dim_style() };
+                let tree_style = if line.dimmed {
+                    dim_style
+                } else {
+                    theme.dim_style()
+                };
                 let icon_style = if line.dimmed {
                     dim_style
                 } else {
@@ -185,7 +217,11 @@ pub fn render_lines(lines: &[Line], buf: &mut Buffer, area: Rect, theme: &Theme,
                 buf.set_string(x + 4, y, &line.text, text_style);
             }
             LineStyle::ChildWarning => {
-                let tree_style = if line.dimmed { dim_style } else { theme.dim_style() };
+                let tree_style = if line.dimmed {
+                    dim_style
+                } else {
+                    theme.dim_style()
+                };
                 let warn_style = if line.dimmed {
                     dim_style
                 } else {
@@ -204,7 +240,11 @@ pub fn render_lines(lines: &[Line], buf: &mut Buffer, area: Rect, theme: &Theme,
                 buf.set_string(x + 4, y, &line.text, text_style);
             }
             LineStyle::ChildBold => {
-                let tree_style = if line.dimmed { dim_style } else { theme.dim_style() };
+                let tree_style = if line.dimmed {
+                    dim_style
+                } else {
+                    theme.dim_style()
+                };
                 let text_style = if line.dimmed {
                     dim_style
                 } else {
@@ -219,11 +259,19 @@ pub fn render_lines(lines: &[Line], buf: &mut Buffer, area: Rect, theme: &Theme,
                 let (icon, icon_style) = match status {
                     SubtaskStatus::PendingUnassigned => (
                         theme::SYM_PENDING_UNASSIGNED,
-                        if line.dimmed { dim_style } else { theme.dim_style() },
+                        if line.dimmed {
+                            dim_style
+                        } else {
+                            theme.dim_style()
+                        },
                     ),
                     SubtaskStatus::Pending => (
                         theme::SYM_PENDING,
-                        if line.dimmed { dim_style } else { theme.dim_style() },
+                        if line.dimmed {
+                            dim_style
+                        } else {
+                            theme.dim_style()
+                        },
                     ),
                     SubtaskStatus::Assigned => (
                         theme::SYM_STARTING,
@@ -276,13 +324,21 @@ pub fn render_lines(lines: &[Line], buf: &mut Buffer, area: Rect, theme: &Theme,
 
                 // Right-align elapsed time (meta) if present
                 if let Some(ref meta) = line.meta {
-                    let meta_style = if line.dimmed { dim_style } else { theme.dim_style() };
+                    let meta_style = if line.dimmed {
+                        dim_style
+                    } else {
+                        theme.dim_style()
+                    };
                     let meta_x = area.x + area.width - meta.len() as u16;
                     buf.set_string(meta_x, y, meta, meta_style);
                 }
             }
             LineStyle::Separator => {
-                let style = if line.dimmed { dim_style } else { theme.dim_style() };
+                let style = if line.dimmed {
+                    dim_style
+                } else {
+                    theme.dim_style()
+                };
                 buf.set_string(x, y, "---", style);
             }
             LineStyle::SectionHeader => {
@@ -302,7 +358,11 @@ pub fn render_lines(lines: &[Line], buf: &mut Buffer, area: Rect, theme: &Theme,
                 buf.set_string(x, y, &line.text, style);
             }
             LineStyle::Dim => {
-                let style = if line.dimmed { dim_style } else { theme.dim_style() };
+                let style = if line.dimmed {
+                    dim_style
+                } else {
+                    theme.dim_style()
+                };
                 buf.set_string(x, y, &line.text, style);
             }
             LineStyle::Blank => {
@@ -316,7 +376,11 @@ pub fn render_lines(lines: &[Line], buf: &mut Buffer, area: Rect, theme: &Theme,
             LineStyle::Subtask { .. } | LineStyle::SubtaskHeader | LineStyle::Blank
         ) {
             if let Some(ref meta) = line.meta {
-                let meta_style = if line.dimmed { dim_style } else { theme.dim_style() };
+                let meta_style = if line.dimmed {
+                    dim_style
+                } else {
+                    theme.dim_style()
+                };
                 let meta_x = area.x + area.width - meta.len() as u16;
                 buf.set_string(meta_x, y, meta, meta_style);
             }

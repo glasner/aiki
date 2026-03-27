@@ -234,6 +234,25 @@ pub trait AgentRuntime {
     fn spawn_monitored(&self, options: &AgentSpawnOptions) -> Result<MonitoredChild>;
 }
 
+/// Build the common environment variables for spawning an agent.
+///
+/// Both `ClaudeCodeRuntime` and `CodexRuntime` call this to ensure consistent
+/// env-var setup (`AIKI_THREAD`, `AIKI_SESSION_MODE`, and optionally
+/// `AIKI_PARENT_SESSION_UUID`).
+pub(crate) fn build_spawn_env(options: &AgentSpawnOptions, mode: &str) -> Vec<(String, String)> {
+    let mut env = vec![
+        ("AIKI_THREAD".to_string(), options.thread.serialize()),
+        ("AIKI_SESSION_MODE".to_string(), mode.to_string()),
+    ];
+    if let Some(ref uuid) = options.parent_session_uuid {
+        env.push((
+            "AIKI_PARENT_SESSION_UUID".to_string(),
+            uuid.clone(),
+        ));
+    }
+    env
+}
+
 /// Get the appropriate runtime for an agent type
 #[must_use]
 pub fn get_runtime(agent_type: AgentType) -> Option<Box<dyn AgentRuntime>> {
@@ -317,6 +336,175 @@ mod tests {
         assert!(get_runtime(AgentType::Cursor).is_none());
         assert!(get_runtime(AgentType::Gemini).is_none());
         assert!(get_runtime(AgentType::Unknown).is_none());
+    }
+
+    /// 6a: task_prompt contains thread display, expected keywords
+    #[test]
+    fn test_task_prompt_contains_thread_id() {
+        let head = "abcdefghijklmnopqrstuvwxyzabcdef".to_string();
+        let tail = "fedcbazyxwvutsrqponmlkjihgfedcba".to_string();
+        let thread = ThreadId {
+            head: head.clone(),
+            tail: tail.clone(),
+        };
+        let options = AgentSpawnOptions::new("/tmp", thread.clone());
+        let prompt = options.task_prompt();
+
+        // Should contain the Display form (short IDs)
+        let display = format!("{}", thread);
+        assert!(
+            prompt.contains(&display),
+            "prompt should contain thread display '{display}': {prompt}"
+        );
+        assert!(prompt.contains("thread"), "prompt should mention 'thread'");
+        assert!(prompt.contains("SCOPE"), "prompt should mention 'SCOPE'");
+        assert!(prompt.contains("EXIT"), "prompt should mention 'EXIT'");
+        assert!(
+            prompt.contains("aiki task list"),
+            "prompt should mention 'aiki task list'"
+        );
+    }
+
+    /// 6b: single-task thread display shows bare short ID (no colon)
+    #[test]
+    fn test_task_prompt_single_task_thread() {
+        let id = "abcdefghijklmnopqrstuvwxyzabcdef".to_string();
+        let thread = ThreadId::single(id.clone());
+        let options = AgentSpawnOptions::new("/tmp", thread);
+        let prompt = options.task_prompt();
+
+        let short = &id[..7];
+        assert!(
+            prompt.contains(short),
+            "prompt should contain short ID '{short}'"
+        );
+        // Single-task thread display should NOT contain a colon separator
+        assert!(
+            !prompt.contains(&format!("{}:", short)),
+            "single-task thread display should not contain colon"
+        );
+    }
+
+    /// 6c: serialize() returns "head:tail" for multi-task, bare head for single
+    #[test]
+    fn test_spawn_options_thread_serialization() {
+        let head = "abcdefghijklmnopqrstuvwxyzabcdef".to_string();
+        let tail = "fedcbazyxwvutsrqponmlkjihgfedcba".to_string();
+        let thread = ThreadId {
+            head: head.clone(),
+            tail: tail.clone(),
+        };
+        let options = AgentSpawnOptions::new("/tmp", thread);
+        assert_eq!(
+            options.thread.serialize(),
+            format!("{}:{}", head, tail),
+            "multi-task thread should serialize as head:tail"
+        );
+
+        // Single-task thread serializes as just the ID
+        let single = ThreadId::single(head.clone());
+        let options_single = AgentSpawnOptions::new("/tmp", single);
+        assert_eq!(
+            options_single.thread.serialize(),
+            head,
+            "single-task thread should serialize as bare head"
+        );
+    }
+
+    /// 6d: build_spawn_env returns AIKI_THREAD = thread.serialize() (multi-task thread)
+    #[test]
+    fn test_build_spawn_env_sets_aiki_thread() {
+        let head = "abcdefghijklmnopqrstuvwxyzabcdef".to_string();
+        let tail = "fedcbazyxwvutsrqponmlkjihgfedcba".to_string();
+        let thread = ThreadId {
+            head: head.clone(),
+            tail: tail.clone(),
+        };
+        let options = AgentSpawnOptions::new("/tmp", thread.clone());
+        let env = build_spawn_env(&options, "background");
+
+        let thread_val = env
+            .iter()
+            .find(|(k, _)| k == "AIKI_THREAD")
+            .map(|(_, v)| v.as_str());
+        assert_eq!(
+            thread_val,
+            Some(thread.serialize().as_str()),
+            "AIKI_THREAD must equal thread.serialize()"
+        );
+    }
+
+    /// 6e: build_spawn_env returns AIKI_THREAD = thread.serialize() (single-task thread)
+    #[test]
+    fn test_build_spawn_env_sets_aiki_thread_single() {
+        let id = "abcdefghijklmnopqrstuvwxyzabcdef".to_string();
+        let thread = ThreadId::single(id.clone());
+        let options = AgentSpawnOptions::new("/tmp", thread.clone());
+        let env = build_spawn_env(&options, "monitored");
+
+        let thread_val = env
+            .iter()
+            .find(|(k, _)| k == "AIKI_THREAD")
+            .map(|(_, v)| v.as_str());
+        assert_eq!(
+            thread_val,
+            Some(id.as_str()),
+            "single-task AIKI_THREAD must equal bare head ID"
+        );
+
+        let mode_val = env
+            .iter()
+            .find(|(k, _)| k == "AIKI_SESSION_MODE")
+            .map(|(_, v)| v.as_str());
+        assert_eq!(mode_val, Some("monitored"));
+    }
+
+    /// 7a: find_session_started_for_thread matches on thread.serialize() format
+    ///
+    /// Behavioral test: creates a SessionStart event with a known run_thread_id
+    /// matching thread.serialize(), then verifies the matching logic returns the
+    /// correct session.
+    #[test]
+    fn test_find_session_matches_serialized_thread() {
+        use crate::history::types::ConversationEvent;
+        use chrono::Utc;
+
+        let head = "abcdefghijklmnopqrstuvwxyzabcdef".to_string();
+        let tail = "fedcbazyxwvutsrqponmlkjihgfedcba".to_string();
+        let thread = ThreadId {
+            head: head.clone(),
+            tail: tail.clone(),
+        };
+        let serialized = thread.serialize();
+
+        // Build an event with the serialized thread as run_thread_id
+        let events = vec![
+            ConversationEvent::SessionStart {
+                session_id: "found-session".to_string(),
+                agent_type: super::super::AgentType::ClaudeCode,
+                timestamp: Utc::now(),
+                run_thread_id: Some(serialized.clone()),
+                repo_id: None,
+                cwd: None,
+                session_mode: None,
+            },
+        ];
+
+        // Replicate the matching logic used by find_session_started_for_thread
+        let result = events.iter().rev().find_map(|event| match event {
+            ConversationEvent::SessionStart {
+                session_id,
+                run_thread_id: Some(run_thread_id),
+                ..
+            } if run_thread_id == &serialized => Some(session_id.clone()),
+            _ => None,
+        });
+
+        assert_eq!(
+            result.as_deref(),
+            Some("found-session"),
+            "find_session_started_for_thread must match thread.serialize() format"
+        );
     }
 
     /// Structural invariant: every spawn method that sets AIKI_THREAD must also

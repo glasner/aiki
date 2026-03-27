@@ -17,10 +17,10 @@ You are orchestrating the execution of subtasks under {{data.target}}.
 Loop until all lanes are complete:
 
 1. Get ready lanes via `aiki task lane {{data.target}} -o id`
-2. For each ready lane, start it with `aiki run {{data.target}} --next-session --lane <lane-id> --async -o id`
+2. For each ready lane, start it with `aiki run {{data.target}} --next-thread --lane <lane-id> --async -o id`
 3. Collect the session UUIDs from started sessions
 4. Wait for any to finish with `aiki session wait <sid1> <sid2> ... --any`
-5. Loop back — finished session may have unblocked new lanes or the next session in a lane
+5. Loop back — finished session may have unblocked new lanes or the next thread in a lane
 
 ```bash
 while true; do
@@ -29,7 +29,7 @@ while true; do
 
   sids=()
   for lane in $ready; do
-    sid=$(aiki run {{data.target}} --next-session --lane $lane --async -o id) || {
+    sid=$(aiki run {{data.target}} --next-thread --lane $lane --async -o id) || {
       rc=$?
       [ $rc -eq 2 ] && continue  # AllComplete for this lane
       exit $rc                    # real error

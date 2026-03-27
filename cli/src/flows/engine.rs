@@ -441,32 +441,62 @@ impl HookEngine {
         resolver.set_env_lookup(|name| std::env::var(name).ok());
 
         // Add session variables for task.closed events
-        // These look up the session driven by the closed task
+        // These look up the session driven by the closed task's thread
         if let crate::events::AikiEvent::TaskClosed(e) = &state.event {
             let task_id = e.task.id.clone();
+            let session_cache = state.task_closed_thread_session_cache();
+            let resolve_thread_session: std::rc::Rc<
+                dyn Fn() -> Option<crate::session::ThreadSessionInfo>,
+            > = {
+                let task_id = task_id.clone();
+                let session_cache = session_cache.clone();
+                std::rc::Rc::new(move || {
+                    session_cache
+                        .get_or_init(|| crate::session::find_thread_session(&task_id))
+                        .clone()
+                })
+            };
 
             debug_log(|| format!("task.closed: event.task.id={}", task_id));
 
-            // Lazy lookup of session info for this task
-            let task_id_for_session = task_id.clone();
-            resolver.add_lazy_var("session.task.id", move || {
-                let result = if let Some(session_info) =
-                    crate::session::find_task_session(&task_id_for_session)
-                {
-                    session_info.task_id
+            // Lazy lookup of thread session info — matches on thread tail
+            let resolve_thread_session_for_tail = resolve_thread_session.clone();
+            resolver.add_lazy_var("session.thread.tail", move || {
+                let result = if let Some(session_info) = resolve_thread_session_for_tail() {
+                    session_info.thread.tail.clone()
                 } else {
                     String::new()
                 };
-                debug_log(|| format!("task.closed: session.task.id resolved to '{}'", result));
+                debug_log(|| format!("task.closed: session.thread.tail resolved to '{}'", result));
                 result
             });
 
-            let task_id_for_mode = task_id;
+            let resolve_thread_session_for_head = resolve_thread_session.clone();
+            resolver.add_lazy_var("session.thread.head", move || {
+                let result = if let Some(session_info) = resolve_thread_session_for_head() {
+                    session_info.thread.head.clone()
+                } else {
+                    String::new()
+                };
+                debug_log(|| format!("task.closed: session.thread.head resolved to '{}'", result));
+                result
+            });
+
+            let resolve_thread_session_for_thread = resolve_thread_session.clone();
+            resolver.add_lazy_var("session.thread", move || {
+                let result = if let Some(session_info) = resolve_thread_session_for_thread() {
+                    session_info.thread.serialize()
+                } else {
+                    String::new()
+                };
+                debug_log(|| format!("task.closed: session.thread resolved to '{}'", result));
+                result
+            });
+
+            let resolve_thread_session_for_mode = resolve_thread_session;
             resolver.add_lazy_var("session.mode", move || {
                 // Read the session file to get the actual mode
-                let result = if let Some(session_info) =
-                    crate::session::find_task_session(&task_id_for_mode)
-                {
+                let result = if let Some(session_info) = resolve_thread_session_for_mode() {
                     session_info.mode.to_string().to_string()
                 } else {
                     String::new()
@@ -1170,7 +1200,7 @@ impl HookEngine {
             crate::events::AikiEvent::TaskClosed(e) => {
                 // For task.closed events, we need to find the session that matches the task
                 // Look up the session for this task
-                if let Some(session_info) = crate::session::find_task_session(&e.task.id) {
+                if let Some(session_info) = state.resolve_task_closed_thread_session() {
                     Some(session_info.pid)
                 } else {
                     debug_log(|| {
@@ -2398,7 +2428,10 @@ fn execute_with_timeout(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::events::{AikiChangeCompletedPayload, ChangeOperation, WriteOperation};
+    use crate::events::{
+        AikiChangeCompletedPayload, AikiTaskClosedPayload, ChangeOperation, TaskEventPayload,
+        WriteOperation,
+    };
     use crate::provenance::record::AgentType;
     use crate::session::{AikiSession, SessionMode};
 
@@ -4450,5 +4483,269 @@ mod tests {
         // event.file_count > 5 should be false
         let result = HookEngine::evaluate_condition("event.file_count > 5", &mut state).unwrap();
         assert!(!result, "event.file_count (3) > 5 should be false");
+    }
+
+    // ── Mutex + helpers for session-file-based tests (env mutation) ──
+
+    static SESSION_TEST_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    struct EnvGuard {
+        original: Option<String>,
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match &self.original {
+                Some(v) => std::env::set_var(crate::global::AIKI_HOME_ENV, v),
+                None => std::env::remove_var(crate::global::AIKI_HOME_ENV),
+            }
+        }
+    }
+
+    fn setup_aiki_home() -> (tempfile::TempDir, EnvGuard) {
+        let aiki_home = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(aiki_home.path().join("sessions")).unwrap();
+        let original = std::env::var(crate::global::AIKI_HOME_ENV).ok();
+        std::env::set_var(crate::global::AIKI_HOME_ENV, aiki_home.path());
+        (aiki_home, EnvGuard { original })
+    }
+
+    fn create_task_closed_event(task_id: &str) -> AikiEvent {
+        AikiTaskClosedPayload {
+            task: TaskEventPayload {
+                id: task_id.to_string(),
+                name: "Test task".to_string(),
+                task_type: "feature".to_string(),
+                status: "closed".to_string(),
+                assignee: None,
+                outcome: Some("done".to_string()),
+                source: None,
+                files: None,
+                changes: None,
+            },
+            cwd: std::path::PathBuf::from("/tmp/test"),
+            timestamp: chrono::Utc::now(),
+        }
+        .into()
+    }
+
+    // 32-char lowercase IDs for thread tests
+    const HEAD_ID: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const TAIL_ID: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+    // --- 5a: task.closed resolves session.thread.{tail,head} and session.thread ---
+    #[test]
+    fn test_task_closed_resolves_session_thread_tail() {
+        let _lock = SESSION_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let (aiki_home, _guard) = setup_aiki_home();
+
+        // Write session file with thread=head:tail
+        let sessions_dir = aiki_home.path().join("sessions");
+        let content = format!(
+            "thread={}:{}\nparent_pid=12345\nsession_id=sess-5a\nmode=interactive\n",
+            HEAD_ID, TAIL_ID,
+        );
+        std::fs::write(sessions_dir.join("sess-5a"), &content).unwrap();
+
+        // Close the TAIL task → should match the session
+        let event = create_task_closed_event(TAIL_ID);
+        let state = AikiState::new(event);
+        let mut resolver = HookEngine::create_resolver(&state);
+
+        assert_eq!(
+            resolver.resolve("{{session.thread.tail}}").unwrap(),
+            TAIL_ID,
+        );
+        assert_eq!(
+            resolver.resolve("{{session.thread.head}}").unwrap(),
+            HEAD_ID,
+        );
+        assert_eq!(
+            resolver.resolve("{{session.thread}}").unwrap(),
+            format!("{}:{}", HEAD_ID, TAIL_ID),
+        );
+    }
+
+    // --- 5b: No session file on disk → empty strings ---
+    #[test]
+    fn test_task_closed_session_thread_empty_when_no_session() {
+        let _lock = SESSION_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let (_aiki_home, _guard) = setup_aiki_home();
+        // No session files written
+
+        let event = create_task_closed_event(TAIL_ID);
+        let state = AikiState::new(event);
+        let mut resolver = HookEngine::create_resolver(&state);
+
+        assert_eq!(
+            resolver.resolve("{{session.thread.tail}}").unwrap(),
+            "",
+        );
+        assert_eq!(
+            resolver.resolve("{{session.mode}}").unwrap(),
+            "",
+        );
+    }
+
+    // --- 5c: Only tail triggers session.end (head does not) ---
+    #[test]
+    fn test_task_closed_only_tail_triggers_session_end() {
+        let _lock = SESSION_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let (aiki_home, _guard) = setup_aiki_home();
+
+        let sessions_dir = aiki_home.path().join("sessions");
+        let content = format!(
+            "thread={}:{}\nparent_pid=99999\nsession_id=sess-5c\nmode=interactive\n",
+            HEAD_ID, TAIL_ID,
+        );
+        std::fs::write(sessions_dir.join("sess-5c"), &content).unwrap();
+
+        let session_end = crate::flows::types::SessionEndAction {
+            reason: "task done".to_string(),
+            on_failure: crate::flows::types::OnFailure::default(),
+        };
+
+        // Close HEAD task → session lookup should NOT match (tail-only matching)
+        {
+            let event = create_task_closed_event(HEAD_ID);
+            let mut state = AikiState::new(event);
+
+            // Verify the thread session lookup returns None for the head task
+            assert!(
+                state.resolve_task_closed_thread_session().is_none(),
+                "Closing the HEAD task should NOT match a session (tail-only match)",
+            );
+
+            // session.end action should succeed but not register any pending termination
+            let result = HookEngine::execute_session_end(&session_end, &mut state).unwrap();
+            assert!(result.success);
+            // No pending session end should have been registered (no PID found)
+        }
+
+        // Close TAIL task → should match → session.end fires
+        {
+            let event = create_task_closed_event(TAIL_ID);
+            let mut state = AikiState::new(event);
+
+            // Verify the thread session lookup returns Some for the tail task
+            let session_info = state.resolve_task_closed_thread_session();
+            assert!(
+                session_info.is_some(),
+                "Closing the TAIL task should match the session",
+            );
+            assert_eq!(session_info.unwrap().pid, 99999);
+
+            // session.end action should register a pending termination
+            let result = HookEngine::execute_session_end(&session_end, &mut state).unwrap();
+            assert!(result.success);
+        }
+    }
+
+    // --- 5d: Single-task thread (head==tail) triggers session.end ---
+    #[test]
+    fn test_task_closed_single_task_thread_triggers_session_end() {
+        let _lock = SESSION_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let (aiki_home, _guard) = setup_aiki_home();
+
+        let sessions_dir = aiki_home.path().join("sessions");
+        // Single-task thread: thread=<id> (no colon → head==tail)
+        let content = format!(
+            "thread={}\nparent_pid=77777\nsession_id=sess-5d\nmode=background\n",
+            HEAD_ID,
+        );
+        std::fs::write(sessions_dir.join("sess-5d"), &content).unwrap();
+
+        let event = create_task_closed_event(HEAD_ID);
+        let mut state = AikiState::new(event);
+
+        // Single-task thread: closing the only task matches
+        let session_info = state.resolve_task_closed_thread_session();
+        assert!(
+            session_info.is_some(),
+            "Single-task thread should match when closing that task",
+        );
+        let info = session_info.unwrap();
+        assert_eq!(info.thread.head, HEAD_ID);
+        assert_eq!(info.thread.tail, HEAD_ID);
+        assert!(info.thread.is_single());
+        assert_eq!(info.pid, 77777);
+
+        // Verify session.thread resolves to just the ID (no colon for single-task)
+        let mut resolver = HookEngine::create_resolver(&state);
+        assert_eq!(
+            resolver.resolve("{{session.thread}}").unwrap(),
+            HEAD_ID,
+        );
+
+        // session.end should register pending termination
+        let session_end = crate::flows::types::SessionEndAction {
+            reason: "single-task session done".to_string(),
+            on_failure: crate::flows::types::OnFailure::default(),
+        };
+        let result = HookEngine::execute_session_end(&session_end, &mut state).unwrap();
+        assert!(result.success);
+    }
+
+    // --- 5e: Background mode blocks the full hook condition ---
+    //
+    // Regression test: spawn_blocking agents were getting SIGTERM'd because
+    // the task.closed hook condition evaluated incorrectly for background sessions.
+    // This tests the FULL condition through evaluate_condition (the real code path).
+    #[test]
+    fn test_task_closed_background_mode_blocks_hook_condition() {
+        let _lock = SESSION_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let (aiki_home, _guard) = setup_aiki_home();
+
+        // Write session file with mode=background (as spawn_blocking now sets)
+        let sessions_dir = aiki_home.path().join("sessions");
+        let content = format!(
+            "thread={}\nparent_pid=88888\nsession_id=sess-5e\nmode=background\n",
+            HEAD_ID,
+        );
+        std::fs::write(sessions_dir.join("sess-5e"), &content).unwrap();
+
+        // Close the task that matches the session's thread tail
+        let event = create_task_closed_event(HEAD_ID);
+        let mut state = AikiState::new(event);
+
+        // Verify the session IS found (thread tail matches)
+        let session_info = state.resolve_task_closed_thread_session();
+        assert!(session_info.is_some(), "Session should be found by thread tail");
+        let info = session_info.unwrap();
+        assert_eq!(info.mode, crate::session::SessionMode::Background);
+
+        // Now evaluate the actual hook condition through the engine
+        // This is the real code path that decides whether to fire session.end
+        let condition = r#"event.task.id == session.thread.tail && session.mode == "interactive""#;
+        let result = HookEngine::evaluate_condition(condition, &mut state).unwrap();
+        assert!(
+            !result,
+            "Hook condition must be FALSE for background sessions — \
+             this is what prevents SIGTERM on spawn_blocking agents"
+        );
+    }
+
+    // --- 5f: Interactive mode allows the full hook condition ---
+    #[test]
+    fn test_task_closed_interactive_mode_allows_hook_condition() {
+        let _lock = SESSION_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let (aiki_home, _guard) = setup_aiki_home();
+
+        let sessions_dir = aiki_home.path().join("sessions");
+        let content = format!(
+            "thread={}\nparent_pid=99999\nsession_id=sess-5f\nmode=interactive\n",
+            HEAD_ID,
+        );
+        std::fs::write(sessions_dir.join("sess-5f"), &content).unwrap();
+
+        let event = create_task_closed_event(HEAD_ID);
+        let mut state = AikiState::new(event);
+
+        let condition = r#"event.task.id == session.thread.tail && session.mode == "interactive""#;
+        let result = HookEngine::evaluate_condition(condition, &mut state).unwrap();
+        assert!(
+            result,
+            "Hook condition must be TRUE for interactive sessions"
+        );
     }
 }

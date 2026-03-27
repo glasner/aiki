@@ -5,6 +5,7 @@ use crate::cache::debug_log;
 use crate::error::{AikiError, Result};
 use crate::global;
 use crate::provenance::record::{AgentType, DetectionMethod};
+use crate::tasks::lanes::ThreadId;
 use chrono::{DateTime, Utc};
 use std::collections::HashSet;
 use std::fs;
@@ -98,9 +99,9 @@ impl AikiSessionFile {
             metadata.push_str(&format!("parent_pid={}\n", pid));
         }
 
-        // Add task if this is a task-driven session (spawned by aiki plan or aiki run --async)
-        if let Some(task_id) = self.session.task() {
-            metadata.push_str(&format!("task={}\n", task_id));
+        // Add thread if this is a thread-driven session (spawned by aiki plan or aiki run --async)
+        if let Some(thread) = self.session.thread() {
+            metadata.push_str(&format!("thread={}\n", thread.serialize()));
         }
 
         metadata.push_str("[/aiki]\n");
@@ -356,12 +357,12 @@ pub struct AikiSession {
     /// In ACP mode, this is the `agent_pid` from the session/start message.
     /// Used to match bash commands back to their originating session.
     parent_pid: Option<u32>,
-    /// Task ID driving this session (if any)
+    /// Thread driving this session (if any)
     ///
-    /// Set from AIKI_TASK environment variable.
+    /// Set from AIKI_THREAD environment variable.
     /// Used for task-driven sessions spawned by `aiki plan` or `aiki run --async`.
-    /// When the driving task closes, interactive sessions auto-end.
-    task: Option<String>,
+    /// When the driving thread's tail task closes, interactive sessions auto-end.
+    thread: Option<ThreadId>,
 }
 
 impl AikiSession {
@@ -440,7 +441,7 @@ impl AikiSession {
             detection_method,
             mode,
             parent_pid: None,
-            task: None,
+            thread: None,
         }
     }
 
@@ -460,7 +461,7 @@ impl AikiSession {
             detection_method: DetectionMethod::Unknown,
             mode,
             parent_pid: None,
-            task: None,
+            thread: None,
         }
     }
 
@@ -508,7 +509,7 @@ impl AikiSession {
             mode,
         )
         .with_parent_pid(parent_pid)
-        .with_task_from_env()
+        .with_thread_from_env()
     }
 
     /// Generate a deterministic short ID for a session
@@ -583,24 +584,25 @@ impl AikiSession {
         self
     }
 
-    /// Set the task ID driving this session
+    /// Set the thread driving this session
     ///
     /// Used for sessions spawned by `aiki plan` or `aiki run --async`.
     #[must_use]
-    pub fn with_task(mut self, task_id: Option<String>) -> Self {
-        self.task = task_id;
+    pub fn with_thread(mut self, thread: Option<ThreadId>) -> Self {
+        self.thread = thread;
         self
     }
 
-    /// Capture task ID from AIKI_TASK environment variable
+    /// Capture thread from AIKI_THREAD environment variable
     ///
     /// This should be called when creating sessions to check if this session
     /// was spawned by a workflow command (e.g., `aiki plan`, `aiki run --async`).
     #[must_use]
-    pub fn with_task_from_env(self) -> Self {
-        let task_id = std::env::var("AIKI_TASK").ok();
-        debug_log(|| format!("with_task_from_env: AIKI_TASK={:?}", task_id));
-        self.with_task(task_id)
+    pub fn with_thread_from_env(self) -> Self {
+        let thread_val = std::env::var("AIKI_THREAD").ok();
+        debug_log(|| format!("with_thread_from_env: AIKI_THREAD={:?}", thread_val));
+        let thread = thread_val.and_then(|v| ThreadId::parse(&v).ok());
+        self.with_thread(thread)
     }
 
     /// Get the session UUID as a string
@@ -657,10 +659,10 @@ impl AikiSession {
         self.parent_pid
     }
 
-    /// Get the task ID if this is a task-driven session
+    /// Get the thread driving this session (if any)
     #[must_use]
-    pub fn task(&self) -> Option<&str> {
-        self.task.as_deref()
+    pub fn thread(&self) -> Option<&ThreadId> {
+        self.thread.as_ref()
     }
 
     /// Get a session file handle for this session
@@ -979,35 +981,36 @@ pub fn find_session_by_ancestor_pid(jj_cwd: impl AsRef<Path>) -> Option<SessionM
     best_match.map(|(m, _)| m)
 }
 
-/// Info about a task-driven session (spawned by `aiki plan` or `aiki run --async`)
+/// Info about a thread-driven session (spawned by `aiki plan` or `aiki run --async`)
 #[derive(Debug, Clone)]
-pub struct TaskSessionInfo {
-    /// Task ID driving this session
-    pub task_id: String,
+pub struct ThreadSessionInfo {
+    /// Thread driving this session
+    pub thread: ThreadId,
     /// Process ID of the agent (for termination)
     pub pid: u32,
     /// Session mode (interactive or background)
     pub mode: SessionMode,
 }
 
-/// Find a task-driven session by task ID
+/// Find a thread-driven session by task ID (matches against thread tail)
 ///
-/// Scans session files for one with `task=<task_id>` and returns
-/// the session info including the PID for process termination.
+/// Scans session files for one whose `thread=<wire>` has a tail matching
+/// the given task ID. Returns session info including the PID for process
+/// termination.
 ///
 /// Returns None if no matching session found.
-pub fn find_task_session(task_id: &str) -> Option<TaskSessionInfo> {
+pub fn find_thread_session(task_id: &str) -> Option<ThreadSessionInfo> {
     let sessions_dir = global::global_sessions_dir();
 
     debug_log(|| {
         format!(
-            "find_task_session: looking for task={} in {:?}",
+            "find_thread_session: looking for thread tail={} in {:?}",
             task_id, sessions_dir
         )
     });
 
     if !sessions_dir.exists() {
-        debug_log(|| "find_task_session: sessions dir does not exist".to_string());
+        debug_log(|| "find_thread_session: sessions dir does not exist".to_string());
         return None;
     }
 
@@ -1035,15 +1038,15 @@ pub fn find_task_session(task_id: &str) -> Option<TaskSessionInfo> {
         };
 
         // Parse session file fields
-        let mut session_task: Option<String> = None;
+        let mut session_thread: Option<String> = None;
         let mut parent_pid: Option<u32> = None;
         let mut session_id: Option<String> = None;
         let mut mode: Option<SessionMode> = None;
 
         for line in content.lines() {
             let line = line.trim();
-            if let Some(val) = line.strip_prefix("task=") {
-                session_task = Some(val.to_string());
+            if let Some(val) = line.strip_prefix("thread=") {
+                session_thread = Some(val.to_string());
             } else if let Some(val) = line.strip_prefix("parent_pid=") {
                 parent_pid = val.parse().ok();
             } else if let Some(val) = line.strip_prefix("session_id=") {
@@ -1053,30 +1056,32 @@ pub fn find_task_session(task_id: &str) -> Option<TaskSessionInfo> {
             }
         }
 
-        // Check if this session matches our task
-        if let (Some(st), Some(pid), Some(sid)) =
-            (session_task.clone(), parent_pid, session_id.clone())
+        // Check if this session's thread tail matches our task
+        if let (Some(thread_wire), Some(pid), Some(sid)) =
+            (session_thread.clone(), parent_pid, session_id.clone())
         {
-            debug_log(|| {
-                format!(
-                    "find_task_session: session {} has task={}, looking for {}",
-                    sid, st, task_id
-                )
-            });
-            if st == task_id {
-                debug_log(|| format!("find_task_session: FOUND match! pid={}", pid));
-                return Some(TaskSessionInfo {
-                    task_id: st,
-                    pid,
-                    mode: mode.unwrap_or(SessionMode::Interactive),
+            if let Ok(thread) = ThreadId::parse(&thread_wire) {
+                debug_log(|| {
+                    format!(
+                        "find_thread_session: session {} has thread={}, tail={}, looking for {}",
+                        sid, thread_wire, thread.tail, task_id
+                    )
                 });
+                if thread.tail == task_id {
+                    debug_log(|| format!("find_thread_session: FOUND match! pid={}", pid));
+                    return Some(ThreadSessionInfo {
+                        thread,
+                        pid,
+                        mode: mode.unwrap_or(SessionMode::Interactive),
+                    });
+                }
             }
         }
     }
 
     debug_log(|| {
         format!(
-            "find_task_session: checked {} sessions, no match found",
+            "find_thread_session: checked {} sessions, no match found",
             sessions_checked
         )
     });
@@ -1577,16 +1582,32 @@ mod tests {
     // Mutex to serialize tests that modify AIKI_HOME env var
     static ENV_MUTEX: Mutex<()> = Mutex::new(());
 
-    /// Guard that restores AIKI_HOME on drop
+    /// RAII guard that restores an environment variable on drop.
     struct EnvGuard {
+        key: String,
         original: Option<String>,
+    }
+
+    impl EnvGuard {
+        /// Save the current value of `key`, then set it to `value` (or remove if `None`).
+        fn new(key: &str, value: Option<&str>) -> Self {
+            let original = env::var(key).ok();
+            match value {
+                Some(v) => env::set_var(key, v),
+                None => env::remove_var(key),
+            }
+            Self {
+                key: key.to_string(),
+                original,
+            }
+        }
     }
 
     impl Drop for EnvGuard {
         fn drop(&mut self) {
             match &self.original {
-                Some(v) => env::set_var(global::AIKI_HOME_ENV, v),
-                None => env::remove_var(global::AIKI_HOME_ENV),
+                Some(v) => env::set_var(&self.key, v),
+                None => env::remove_var(&self.key),
             }
         }
     }
@@ -1604,11 +1625,9 @@ mod tests {
         let aiki_home_path = aiki_home.path().to_path_buf();
         fs::create_dir_all(aiki_home_path.join("sessions")).unwrap();
 
-        // Save original AIKI_HOME and set new value
-        let original = env::var(global::AIKI_HOME_ENV).ok();
-        env::set_var(global::AIKI_HOME_ENV, &aiki_home_path);
+        let guard = EnvGuard::new(global::AIKI_HOME_ENV, Some(aiki_home_path.to_str().unwrap()));
 
-        (repo_dir, aiki_home, EnvGuard { original })
+        (repo_dir, aiki_home, guard)
     }
 
     /// Set up isolated AIKI_HOME only (for tests that don't need repo path).
@@ -1620,11 +1639,9 @@ mod tests {
         let aiki_home_path = aiki_home.path().to_path_buf();
         fs::create_dir_all(aiki_home_path.join("sessions")).unwrap();
 
-        // Save original AIKI_HOME and set new value
-        let original = env::var(global::AIKI_HOME_ENV).ok();
-        env::set_var(global::AIKI_HOME_ENV, &aiki_home_path);
+        let guard = EnvGuard::new(global::AIKI_HOME_ENV, Some(aiki_home_path.to_str().unwrap()));
 
-        (aiki_home, EnvGuard { original })
+        (aiki_home, guard)
     }
 
     /// Simple test repo setup (for tests that only need a local temp directory)
@@ -2444,5 +2461,209 @@ mod tests {
         // Don't create the file - add_repo should handle gracefully
         let result = session_file.add_repo("abc123");
         assert!(result.is_ok());
+    }
+
+    // ========================================================================
+    // Session thread persistence tests (2a-2i)
+    // ========================================================================
+
+    // Helper: 32-char lowercase IDs for ThreadId tests
+    const THREAD_ID_A: &str = "abcdefghijklmnopqrstuvwxyzabcdef";
+    const THREAD_ID_B: &str = "fedcbazyxwvutsrqponmlkjihgfedcba";
+
+    // --- 2a: with_thread sets the thread field ---
+    #[test]
+    fn test_with_thread_sets_thread_field() {
+        let session = AikiSession::new(
+            AgentType::ClaudeCode,
+            "thread-test",
+            None::<&str>,
+            DetectionMethod::Hook,
+            SessionMode::Interactive,
+        )
+        .with_thread(Some(ThreadId::single(THREAD_ID_A.to_string())));
+
+        let thread = session.thread().expect("thread should be set");
+        assert_eq!(thread.head, THREAD_ID_A);
+        assert_eq!(thread.tail, THREAD_ID_A);
+    }
+
+    // --- 2b: with_thread(None) clears thread field ---
+    #[test]
+    fn test_with_thread_none_clears_field() {
+        let session = AikiSession::new(
+            AgentType::ClaudeCode,
+            "thread-test",
+            None::<&str>,
+            DetectionMethod::Hook,
+            SessionMode::Interactive,
+        )
+        .with_thread(Some(ThreadId::single(THREAD_ID_A.to_string())))
+        .with_thread(None);
+
+        assert!(session.thread().is_none());
+    }
+
+    // --- 2c: with_thread_from_env parses single ID ---
+    #[test]
+    fn test_with_thread_from_env_parses_single() {
+        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = EnvGuard::new("AIKI_THREAD", Some(THREAD_ID_A));
+
+        let session = AikiSession::new(
+            AgentType::ClaudeCode,
+            "env-single-test",
+            None::<&str>,
+            DetectionMethod::Hook,
+            SessionMode::Interactive,
+        )
+        .with_thread_from_env();
+
+        let thread = session.thread().expect("thread should be set from env");
+        assert!(thread.is_single());
+        assert_eq!(thread.head, THREAD_ID_A);
+    }
+
+    // --- 2d: with_thread_from_env parses head:tail pair ---
+    #[test]
+    fn test_with_thread_from_env_parses_pair() {
+        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let pair = format!("{}:{}", THREAD_ID_A, THREAD_ID_B);
+        let _guard = EnvGuard::new("AIKI_THREAD", Some(&pair));
+
+        let session = AikiSession::new(
+            AgentType::ClaudeCode,
+            "env-pair-test",
+            None::<&str>,
+            DetectionMethod::Hook,
+            SessionMode::Interactive,
+        )
+        .with_thread_from_env();
+
+        let thread = session.thread().expect("thread should be set from env");
+        assert!(!thread.is_single());
+        assert_eq!(thread.head, THREAD_ID_A);
+        assert_eq!(thread.tail, THREAD_ID_B);
+    }
+
+    // --- 2e: with_thread_from_env when unset is None ---
+    #[test]
+    fn test_with_thread_from_env_unset_is_none() {
+        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = EnvGuard::new("AIKI_THREAD", None);
+
+        let session = AikiSession::new(
+            AgentType::ClaudeCode,
+            "env-unset-test",
+            None::<&str>,
+            DetectionMethod::Hook,
+            SessionMode::Interactive,
+        )
+        .with_thread_from_env();
+
+        assert!(session.thread().is_none());
+    }
+
+    // --- 2f: with_thread_from_env with invalid value is None ---
+    #[test]
+    fn test_with_thread_from_env_invalid_is_none() {
+        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = EnvGuard::new("AIKI_THREAD", Some("bad"));
+
+        let session = AikiSession::new(
+            AgentType::ClaudeCode,
+            "env-invalid-test",
+            None::<&str>,
+            DetectionMethod::Hook,
+            SessionMode::Interactive,
+        )
+        .with_thread_from_env();
+
+        assert!(session.thread().is_none());
+    }
+
+    // --- 2g: session file writes thread field ---
+    #[test]
+    fn test_session_file_writes_thread() {
+        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let (_aiki_home, _guard) = setup_global_aiki_home_inner();
+
+        let thread = ThreadId {
+            head: THREAD_ID_A.to_string(),
+            tail: THREAD_ID_B.to_string(),
+        };
+
+        let session = AikiSession::new(
+            AgentType::ClaudeCode,
+            "thread-file-test",
+            None::<&str>,
+            DetectionMethod::Hook,
+            SessionMode::Interactive,
+        )
+        .with_thread(Some(thread));
+
+        session.file().create().unwrap();
+
+        let session_file_path = global::global_sessions_dir().join(session.uuid());
+        let content = fs::read_to_string(&session_file_path).unwrap();
+        let expected = format!("thread={}:{}", THREAD_ID_A, THREAD_ID_B);
+        assert!(
+            content.contains(&expected),
+            "Session file should contain thread field, got: {}",
+            content
+        );
+    }
+
+    // --- 2h: find_thread_session matches on tail only ---
+    #[test]
+    fn test_find_thread_session_matches_on_tail() {
+        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let (_aiki_home, _guard) = setup_global_aiki_home_inner();
+
+        let sessions_dir = global::global_sessions_dir();
+
+        // Write a session file with thread=head:tail and a parent_pid
+        let content = format!(
+            "[aiki]\nagent=claude\nexternal_session_id=thread-match-test\nsession_id=uuid-thread-match\nstarted_at=2026-01-24T12:00:00Z\nparent_pid=55555\nthread={}:{}\nmode=interactive\n[/aiki]\n",
+            THREAD_ID_A, THREAD_ID_B
+        );
+        fs::write(sessions_dir.join("uuid-thread-match"), &content).unwrap();
+
+        // Match by tail → should find it
+        let result = find_thread_session(THREAD_ID_B);
+        assert!(result.is_some(), "Should find session by tail match");
+        let info = result.unwrap();
+        assert_eq!(info.thread.tail, THREAD_ID_B);
+        assert_eq!(info.pid, 55555);
+
+        // Match by head → should NOT find it (tail-only match)
+        let result = find_thread_session(THREAD_ID_A);
+        assert!(result.is_none(), "Should not match on head, only tail");
+    }
+
+    // --- 2i: find_thread_session with single-task thread ---
+    #[test]
+    fn test_find_thread_session_single_task_thread() {
+        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let (_aiki_home, _guard) = setup_global_aiki_home_inner();
+
+        let sessions_dir = global::global_sessions_dir();
+
+        // Write a session file with thread=<id> (single-task, head==tail)
+        let content = format!(
+            "[aiki]\nagent=claude\nexternal_session_id=thread-single-test\nsession_id=uuid-thread-single\nstarted_at=2026-01-24T12:00:00Z\nparent_pid=66666\nthread={}\nmode=background\n[/aiki]\n",
+            THREAD_ID_A
+        );
+        fs::write(sessions_dir.join("uuid-thread-single"), &content).unwrap();
+
+        // Match by the single ID → should find it (head==tail)
+        let result = find_thread_session(THREAD_ID_A);
+        assert!(result.is_some(), "Should find single-task thread session");
+        let info = result.unwrap();
+        assert!(info.thread.is_single());
+        assert_eq!(info.thread.head, THREAD_ID_A);
+        assert_eq!(info.thread.tail, THREAD_ID_A);
+        assert_eq!(info.pid, 66666);
+        assert_eq!(info.mode, SessionMode::Background);
     }
 }

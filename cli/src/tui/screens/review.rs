@@ -33,7 +33,10 @@ pub fn view(graph: &TaskGraph, review_id: &str, target: &str, _window: &WindowSt
             ));
         }
         TaskStatus::Closed => {
-            children.push(ChildLine::done(&format!("{} approved", theme::SYM_CHECK), None));
+            children.push(ChildLine::done(
+                &format!("{} approved", theme::SYM_CHECK),
+                None,
+            ));
         }
         _ => {}
     }

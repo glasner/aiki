@@ -255,10 +255,10 @@ fn test_complex_expression() {
 fn test_complex_hook_condition() {
     // Real-world hook condition from hooks.yaml (bare names, no $ prefix)
     assert!(eval(
-        r#"event.task.id == session.task.id && session.mode == "interactive""#,
+        r#"event.task.id == session.thread.tail && session.mode == "interactive""#,
         &[
             ("event.task.id", "abc"),
-            ("session.task.id", "abc"),
+            ("session.thread.tail", "abc"),
             ("session.mode", "interactive")
         ]
     ));

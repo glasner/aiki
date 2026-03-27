@@ -98,7 +98,8 @@ pub fn normalize_template_ref(name: &str, quiet: bool) -> String {
         let known = super::builtin::known_default_template_names();
         if known.iter().any(|k| k == stripped) {
             if !quiet {
-                eprintln!( // stderr-ok: template validation, never called during monitoring
+                eprintln!(
+                    // stderr-ok: template validation, never called during monitoring
                     "warning: Template ref '{}' uses deprecated syntax. Use '{}' instead.",
                     name, stripped
                 );
@@ -1052,28 +1053,6 @@ pub fn convert_data(data: &HashMap<String, serde_json::Value>) -> HashMap<String
         .collect()
 }
 
-/// Returns the change_id of the current working copy (`@` in jj terms).
-pub fn get_working_copy_change_id(cwd: &Path) -> Option<String> {
-    use crate::jj::jj_cmd;
-
-    let output = jj_cmd()
-        .args(["log", "-r", "@", "-T", "change_id", "--no-graph"])
-        .current_dir(cwd)
-        .output()
-        .ok()?;
-
-    if !output.status.success() {
-        return None;
-    }
-
-    let change_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if change_id.is_empty() {
-        None
-    } else {
-        Some(change_id)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2020,8 +1999,8 @@ Review the changes."#;
             "Template should contain 'task lane {{{{data.target}}}}' command"
         );
         assert!(
-            instructions.contains("--next-session --lane"),
-            "Template should contain '--next-session --lane' command"
+            instructions.contains("--next-thread --lane"),
+            "Template should contain '--next-thread --lane' command"
         );
         assert!(
             instructions.contains("session wait"),
