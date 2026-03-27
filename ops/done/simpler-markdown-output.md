@@ -251,7 +251,7 @@ Current → Proposed changes:
 - Drop "Files Changed" section (use `task diff` for that)
 - Drop "Changes" section from default (use `task diff --show-changes`)
 - Use checklist format for subtasks instead of table (shorter)
-- Use relative subtask IDs (`.1`, `.2`) since parent ID is already shown
+- Use subtask slugs or short IDs since parent ID is already shown
 
 ```
 Task: Fix auth bug
@@ -260,11 +260,11 @@ Status: in_progress
 Priority: p1
 
 Subtasks (2/5):
-- [x] .1 Update auth validation
-- [>] .2 Add unit tests
-- [ ] .3 Update docs
-- [ ] .4 Integration tests
-- [ ] .5 Deploy
+- [x] auth-validation Update auth validation
+- [>] unit-tests Add unit tests
+- [ ] docs Update docs
+- [ ] integration-tests Integration tests
+- [ ] deploy Deploy
 
 Comments:
 - Found the issue in auth handler
@@ -302,8 +302,8 @@ Sources: file:ops/now/auth-fix.md
 | Comment IDs | Always present | Removed | Rarely referenced |
 | Files Changed on show | Present for closed tasks | Removed | Use `task diff` |
 | Changes list on show | Present always | Removed | Use `task diff` |
-| Subtask table format | `| ID | Status | Name |` | Checklist `- [x] .1 Name` | Shorter, scannable |
-| Full subtask IDs | `parent.1`, `parent.2` | `.1`, `.2` | Parent ID already shown |
+| Subtask table format | `| ID | Status | Name |` | Checklist `- [x] slug Name` | Shorter, scannable |
+| Subtask identifiers | Full task IDs | Slugs or short IDs | Parent ID is already shown |
 | Priority on show | Always shown | Kept | Useful context |
 | Type suffix on show | Always shown | Kept | Useful context |
 | Instructions on start | Present when available | Kept | Essential for work |

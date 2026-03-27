@@ -1,4 +1,4 @@
-# Phase 4: Remove Dot-Notation, Emit `subtask-of` Links
+# Phase 4: Remove Encoded Child IDs, Emit `subtask-of` Links
 
 **Date**: 2026-02-13
 **Status**: Implementation
@@ -8,11 +8,11 @@
 
 ## Context
 
-Phase 4 of the task-dag spec replaces dot-notation subtask IDs (`parent.1`, `parent.2`) with full 32-char task IDs linked via explicit `subtask-of` edges. Currently, the `subtask-of` link kind is defined and graph queries use it, but all subtask creation still uses `generate_child_id()` — the backward-compat bridge in `graph.rs:337-340` synthesizes edges from the dots. This phase flips the switch: emit links explicitly and use full IDs.
+Phase 4 of the task-dag spec replaces encoded child IDs with full 32-char task IDs linked via explicit `subtask-of` edges. Currently, the `subtask-of` link kind is defined and graph queries use it, but all subtask creation still uses `generate_child_id()` and the backward-compat bridge in `graph.rs` synthesizes edges from legacy IDs. This phase flips the switch: emit links explicitly and use full IDs.
 
 ## Approach
 
-Single implementation pass across all call sites, then update support code (sorting, parent preservation, provenance). Backward-compat bridge stays (old dot-notation IDs continue to work).
+Single implementation pass across all call sites, then update support code (sorting, parent preservation, provenance). The backward-compat bridge stays so old encoded child IDs continue to work.
 
 ---
 
@@ -81,7 +81,7 @@ if has_subtasks(&graph, &task_id) {
 
 ### 2b: Replace parent preservation (lines 1592-1598)
 
-Replace dot-notation parsing with graph edge lookup:
+Replace legacy child-ID parsing with graph edge lookup:
 ```rust
 let parent_ids_to_preserve: HashSet<String> = actual_ids_to_start
     .iter()
@@ -189,7 +189,7 @@ subtasks.sort_by_key(|t| t.created_at);
 
 ### 5b: Subtask display numbering (lines 266, 315)
 
-Currently `get_child_number(&subtask.id)` extracts the `.N` suffix. After migration, new subtasks return `None`. Change to use the enumerated index from the sorted list instead:
+Currently `get_child_number(&subtask.id)` extracts the legacy positional suffix. After migration, new subtasks return `None`. Change to use the enumerated index from the sorted list instead:
 
 Pass the loop index as the child number instead of extracting from the ID. The callers at lines 250-268 and 300-317 iterate over sorted subtasks — use `enumerate()` and pass `Some(i)` as the subtask_index.
 

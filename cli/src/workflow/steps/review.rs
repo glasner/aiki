@@ -12,11 +12,13 @@ use crate::error::{AikiError, Result};
 use crate::output_utils;
 use crate::session::find_active_session;
 use crate::tasks::md::MdBuilder;
+use crate::tasks::runner::{task_run, TaskRunOptions};
 use crate::tasks::templates::create_review_task_from_template;
 use crate::tasks::{
     find_task, materialize_graph, read_events, write_link_event_with_autorun, Task, TaskComment,
     TaskStatus,
 };
+use crate::workflow::{StepResult, WorkflowContext};
 
 /// What kind of review scope this is
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -285,26 +287,12 @@ pub struct CreateReviewResult {
     pub scope: ReviewScope,
 }
 
-/// Check if a string looks like it could be a task ID, prefix, or subtask ID.
+/// Check if a string looks like it could be a task ID or task ID prefix.
 ///
-/// Task IDs are 32 lowercase letters (a-z only). Prefixes are shorter
-/// but follow the same pattern. Subtask IDs append `.N` suffixes
-/// (e.g., `abcdef.1`, `abcdef.1.2`). This is a heuristic used by
-/// detect_target to distinguish task IDs from file paths.
+/// This is a heuristic used by `detect_target` to distinguish task IDs
+/// from file paths.
 pub(crate) fn looks_like_task_id(s: &str) -> bool {
-    if s.is_empty() {
-        return false;
-    }
-    // Split off optional subtask suffix (e.g., "abc.1.2" → root "abc")
-    let root = s.split('.').next().unwrap_or(s);
-    // Root must be non-empty lowercase letters
-    if root.is_empty() || !root.chars().all(|c| c.is_ascii_lowercase()) {
-        return false;
-    }
-    // Every part after the root must be a non-empty digit sequence
-    let mut parts = s.split('.');
-    parts.next(); // skip root
-    parts.all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
+    crate::tasks::is_task_id(s) || crate::tasks::is_task_id_prefix(s)
 }
 
 fn output_nothing_to_review() -> Result<()> {
@@ -511,6 +499,112 @@ pub(crate) fn create_review(cwd: &Path, params: CreateReviewParams) -> Result<Cr
     Ok(CreateReviewResult {
         review_task_id: review_id,
         scope,
+    })
+}
+
+/// Build the review scope for a build workflow review step.
+///
+/// Uses `Task` scope so that downstream fix tasks become subtasks of the epic,
+/// which triggers `reopen_if_closed` and keeps the epic in-progress during the
+/// review/fix cycle.
+pub(crate) fn build_review_scope(epic_id: &str) -> ReviewScope {
+    ReviewScope {
+        kind: ReviewScopeKind::Task,
+        id: epic_id.to_string(),
+        task_ids: vec![],
+    }
+}
+
+/// Review step: create a task-scoped review for the epic and run it.
+pub(crate) fn run_review_step(
+    ctx: &mut WorkflowContext,
+    template: Option<String>,
+    agent: Option<String>,
+) -> anyhow::Result<StepResult> {
+    let epic_id = ctx
+        .task_id
+        .as_ref()
+        .ok_or_else(|| AikiError::InvalidArgument("No epic ID in workflow context".to_string()))?
+        .clone();
+    let scope = build_review_scope(&epic_id);
+
+    let result = create_review(
+        &ctx.cwd,
+        CreateReviewParams {
+            scope,
+            agent_override: agent.clone(),
+            template,
+            fix_template: None,
+            autorun: false,
+        },
+    )?;
+
+    // Link review to epic
+    let events = read_events(&ctx.cwd)?;
+    let graph = materialize_graph(&events);
+    crate::tasks::write_link_event(
+        &ctx.cwd,
+        &graph,
+        "validates",
+        &result.review_task_id,
+        &epic_id,
+    )?;
+
+    // Run the review to completion
+    let options = TaskRunOptions::new().quiet();
+    task_run(&ctx.cwd, &result.review_task_id, options)?;
+
+    Ok(StepResult {
+        message: "Review complete".to_string(),
+        task_id: Some(result.review_task_id),
+    })
+}
+
+/// Standalone review step: create review, run it, count issues.
+pub(crate) fn run_standalone_review_step(
+    ctx: &mut WorkflowContext,
+    scope: ReviewScope,
+    template: Option<String>,
+    agent: Option<String>,
+    fix_template: Option<String>,
+    autorun: bool,
+) -> anyhow::Result<StepResult> {
+    let result = create_review(
+        &ctx.cwd,
+        CreateReviewParams {
+            scope,
+            agent_override: agent,
+            template,
+            fix_template,
+            autorun,
+        },
+    )?;
+    let review_id = result.review_task_id;
+    ctx.task_id = Some(review_id.clone());
+
+    let options = TaskRunOptions::new().quiet();
+    task_run(&ctx.cwd, &review_id, options)?;
+
+    let events = read_events(&ctx.cwd)?;
+    let graph = materialize_graph(&events);
+    let issue_count = find_task(&graph.tasks, &review_id)
+        .map(|t| {
+            t.data
+                .get("issue_count")
+                .and_then(|c| c.parse::<usize>().ok())
+                .unwrap_or(0)
+        })
+        .unwrap_or(0);
+
+    let message = if issue_count > 0 {
+        format!("Found {} issues", issue_count)
+    } else {
+        "approved".to_string()
+    };
+
+    Ok(StepResult {
+        message,
+        task_id: Some(review_id),
     })
 }
 

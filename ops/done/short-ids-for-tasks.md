@@ -6,7 +6,7 @@ Task IDs are 32-character strings of k-z letters (e.g., `mvslrspmoynoxyyywqyutmo
 
 ## Approach
 
-Add prefix matching so any unambiguous prefix resolves to the full task ID. `mvslrsp` resolves to `mvslrspmoynoxyyywqyutmovxpvztkls`. Subtask prefixes work too: `mvslrsp.1` resolves to `mvslrspmoynoxyyywqyutmovxpvztkls.1`.
+Add prefix matching so any unambiguous prefix resolves to the full task ID. `mvslrsp` resolves to `mvslrspmoynoxyyywqyutmovxpvztkls`. The same prefix resolution should work uniformly for subtasks because they also use normal full task IDs.
 
 ## Changes
 
@@ -27,7 +27,7 @@ PrefixTooShort { prefix: String }
 
 ### 2. New function `is_task_id_prefix` — `cli/src/tasks/id.rs`
 
-Checks if a string *looks like* a task ID prefix (all k-z, optional `.N` suffixes). Separate from `is_task_id` which requires exactly 32 chars.
+Checks if a string *looks like* a task ID prefix (all k-z). Separate from `is_task_id` which requires exactly 32 chars.
 
 ```rust
 pub fn is_task_id_prefix(input: &str) -> bool
@@ -35,7 +35,7 @@ pub fn is_task_id_prefix(input: &str) -> bool
 
 Minimum prefix length of 3 characters (before the dot). This avoids noisy ambiguous errors from typos — with a k-z alphabet, 1-2 char prefixes are almost always ambiguous.
 
-Returns true for: `"mvslrsp"`, `"mvslrsp.1"`, `"kvx"`, full 32-char IDs.
+Returns true for: `"mvslrsp"`, `"kvx"`, full 32-char IDs.
 Returns false for: `"Fix bug"`, `"implement-login"`, `"abc"` (outside k-z range), `""`, `"k"` (too short), `"kv"` (too short).
 
 ### 3. Update `find_task` to handle resolution — `cli/src/tasks/manager.rs`
@@ -74,24 +74,7 @@ fn resolve_task_id_internal(tasks: &HashMap<String, Task>, prefix: &str) -> Resu
         return Ok(prefix.to_string());
     }
     
-    // Subtask prefix: "mvslrsp.1"
-    if let Some((root_prefix, suffix)) = prefix.split_once('.') {
-        let full_root = resolve_root_prefix(tasks, root_prefix)?;
-        let full_id = format!("{}.{}", full_root, suffix);
-        
-        // Verify subtask exists
-        if tasks.contains_key(&full_id) {
-            Ok(full_id)
-        } else {
-            Err(AikiError::SubtaskNotFound {
-                root: full_root,
-                subtask: suffix.to_string(),
-            })
-        }
-    } else {
-        // Root prefix: "mvslrsp"
-        resolve_root_prefix(tasks, prefix)
-    }
+    resolve_root_prefix(tasks, prefix)
 }
 
 /// Resolve a root task prefix (no dots)
@@ -307,14 +290,14 @@ let plan = if is_task_id(arg) || is_task_id_prefix(arg) {
 
 ### 7. Tests
 
-**In `id.rs`**: Tests for `is_task_id_prefix` — valid prefixes, invalid inputs, subtask prefixes.
+**In `id.rs`**: Tests for `is_task_id_prefix` — valid prefixes and invalid inputs.
 
 **In `manager.rs`**: Tests for `find_task` with prefixes:
 - Exact match (full ID) — existing behavior
 - Unique prefix match — new behavior
 - Ambiguous prefix → `AmbiguousTaskId` error with match list
 - Not found → `TaskNotFound` error
-- Subtask prefix resolution (`mvslrsp.1`)
+- Prefix resolution for tasks and subtasks with normal full IDs
 - Subtask not found → `SubtaskNotFound` error (root resolved, subtask `.99` doesn't exist)
 - Deduplication (parent + subtasks count as 1 root match)
 - Prefix too short (1-2 chars) → treated as non-prefix, not resolved

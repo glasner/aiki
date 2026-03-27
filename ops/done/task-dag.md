@@ -238,7 +238,7 @@ Replaces the implicit parent-child encoding in the ID string. Each parent-child 
 Link { from: "task-child", to: "task-parent", kind: "subtask-of" }
 ```
 
-**The dot-notation ID convention (`parent.1`) is removed.** All tasks, including subtasks, get regular 32-character IDs. Parent-child relationships exist only as links. Benefits:
+**The legacy encoded child-ID convention is removed.** All tasks, including subtasks, get regular 32-character IDs. Parent-child relationships exist only as links. Benefits:
 
 - **Short IDs for subtasks**: Without the `.1` suffix, short ID resolution works for subtasks like any other task
 - **Re-parenting**: Move a subtask to a different epic by removing one link and adding another
@@ -659,7 +659,7 @@ impl TaskGraph {
 
 ### Ancestor Chain Provenance
 
-**Problem:** With dot-notation IDs removed, the revset pattern `task=parent.` no longer matches subtask changes. We need a way to query "all changes made under this parent task" without expanding all descendant IDs into OR clauses at query time.
+**Problem:** With legacy encoded child IDs removed, the revset pattern `task=parent.` no longer matches subtask changes. We need a way to query "all changes made under this parent task" without expanding all descendant IDs into OR clauses at query time.
 
 **Solution:** Write ancestor task IDs into the provenance block at change time. When an agent works on subtask `child` whose parent is `parent`, the `[aiki]` block includes `task=` lines for the full ancestor chain:
 
@@ -682,7 +682,7 @@ agent=claude-code
 [/aiki]
 ```
 
-This means `description(substring:"task=parent")` matches changes made by any descendant — the same O(1) query behavior as dot-notation prefix matching, without coupling to the ID format.
+This means `description(substring:"task=parent")` matches changes made by any descendant — the same O(1) query behavior as the old prefix-matching approach, without coupling to the ID format.
 
 **Why this works:**
 - The `tasks` field on `ProvenanceRecord` is already a `Vec<String>` that supports multiple `task=` lines
@@ -748,7 +748,7 @@ fn build_task_revset_pattern(task_id: &str) -> String {
 }
 ```
 
-After the transition, the dot-notation `task=X.` clause can be dropped entirely. A single `description(substring:"task=X")` matches the task's own changes AND all descendant changes (because descendants write `task=X` in their provenance). During the transition period, keep both clauses for backward compatibility with old provenance blocks that only wrote `task=child`.
+After the transition, the legacy child-match `task=X.` clause can be dropped entirely. A single `description(substring:"task=X")` matches the task's own changes AND all descendant changes (because descendants write `task=X` in their provenance). During the transition period, keep both clauses for backward compatibility with old provenance blocks that only wrote `task=child`.
 
 **Ordering guarantee:** The `tasks` Vec is ordered with the most specific task first (the task being directly worked on) followed by ancestors from immediate parent to root. This ensures that `tasks[0]` is always the leaf task, matching the current behavior where the first `task=` line identifies the specific work item.
 
@@ -1049,24 +1049,24 @@ Templates still need values like `scope.name`, `scope.id`, `scope.kind` for vari
 
 Emit `subtask-of` links when creating subtasks. Implement closure validation (parent can't close with open children). Enable re-parenting.
 
-**Remove dot-notation support**: All subtasks get regular 32-character IDs. The `task add --subtask-of <id>` command generates a new full ID and emits a `subtask-of` link. Short ID resolution works for subtasks.
+**Remove encoded child-ID support**: All subtasks get regular 32-character IDs. The `task add --subtask-of <id>` command generates a new full ID and emits a `subtask-of` link. Short ID resolution works for subtasks.
 
 **Ancestor chain provenance**: Update the provenance write path to include ancestor task IDs in the `[aiki]` block (see [Ancestor Chain Provenance](#ancestor-chain-provenance)). This ensures `task diff <parent>` and other revset-based queries match descendant changes without OR-expanding all child IDs at query time.
 
-Backward compatibility: For existing tasks with dot-notation IDs (e.g., `parent.1`), the materializer:
+Backward compatibility: For existing tasks with legacy encoded child IDs, the materializer:
 1. Parses the dot to extract parent ID
 2. Synthesizes a `subtask-of` link during replay
 3. Issues a deprecation warning suggesting migration to link-based IDs
 
-Backward compatibility for provenance: Old changes written before ancestor chain support will only have `task=<subtask-id>`. During the transition, `build_task_revset_pattern` keeps the dot-notation clause (`task=X.`) to catch these. After migration, when all active tasks use full IDs with ancestor chain provenance, the dot-notation clause is removed.
+Backward compatibility for provenance: Old changes written before ancestor chain support will only have `task=<subtask-id>`. During the transition, `build_task_revset_pattern` keeps the legacy child-match clause (`task=X.`) to catch these. After migration, when all active tasks use full IDs with ancestor chain provenance, that clause is removed.
 
-#### Dot-Notation Removal: Code Impact Analysis
+#### Encoded Child-ID Removal: Code Impact Analysis
 
-Removing dot-notation is a **major refactor** affecting core task management code:
+Removing encoded child IDs is a **major refactor** affecting core task management code:
 
 **Files requiring changes (9):**
-- `cli/src/tasks/id.rs` — 8 functions implement dot-notation parsing
-- `cli/src/tasks/manager.rs` — 8 functions use dot-notation for parent-child logic
+- `cli/src/tasks/id.rs` — functions implementing legacy child-ID parsing
+- `cli/src/tasks/manager.rs` — functions using encoded child IDs for parent-child logic
 - `cli/src/commands/task.rs` — 4+ call sites generate child IDs
 - `cli/src/commands/plan.rs`, `build.rs` — Template subtask generation
 - `cli/src/commands/agents_template.rs` — Documents `.0` planning task
@@ -1103,7 +1103,7 @@ let child_id = generate_task_id(&name);
 
 **Line 1384-1432: The `.0` planning task**
 ```rust
-// OLD: Auto-create parent.0 when starting a parent with subtasks
+// OLD: Auto-create a deterministic planning subtask when starting a parent with subtasks
 let planning_id = generate_child_id(&task_id, 0);
 
 // NEW: Generate regular ID, emit subtask-of link
@@ -1122,18 +1122,18 @@ let subtask_id = generate_task_id(&subtask.name);
 ```
 
 **Tests requiring updates:**
-- `cli/src/tasks/manager.rs` — 60+ test assertions using `"parent.1"`, `"parent.2"`, `"parent.1.1"`
+- `cli/src/tasks/manager.rs` — 60+ test assertions using encoded parent/child IDs
 - Tests for scoping, ready queue, subtask ordering, `.0` planning task behavior
 
 **Documentation requiring updates:**
 - `AGENTS.md`, `cli/AGENTS.md` — Parent-child relationship examples
 - `ops/done/task-system.md` — Original task system design
-- `ops/now/aiki-vs-beads-comparison.md` — May reference dot-notation
+- `ops/now/aiki-vs-beads-comparison.md` — May reference legacy encoded child IDs
 
 **Special features to handle:**
 
 *The `.0` Planning Task:*
-- Current: When starting a parent with subtasks, auto-creates `parent.0`
+- Current: When starting a parent with subtasks, auto-creates a deterministic planning child
 - Migration: Generate regular task ID, emit subtask-of link
 - Behavior preserved: Still auto-creates planning task, just with full ID
 
@@ -1149,11 +1149,11 @@ let subtask_id = generate_task_id(&subtask.name);
 
 **Migration strategy:**
 1. Add link infrastructure first (Phases 1-3)
-2. Implement dual support (emit both dot-notation IDs AND subtask-of links)
+2. Implement dual support (emit both legacy encoded IDs and `subtask-of` links)
 3. Migrate ID generation incrementally (new tasks get full IDs + subtask-of links)
 4. Update all `generate_child_id` call sites to use `generate_task_id` + subtask-of link emission
-5. Add deprecation warnings for dot-notation ID parsing
-6. Remove dot-notation support after transition period
+5. Add deprecation warnings for legacy child-ID parsing
+6. Remove legacy child-ID support after transition period
 
 ### Phase 5: Basic DAG Operations
 
@@ -1183,7 +1183,7 @@ After basic link infrastructure (Phases 1-3) is working and agents can start usi
    - Include provenance chain examples using `aiki task trace`
 
 3. **Update subtask documentation**:
-   - Replace dot-notation ID examples (`parent.1`) with full 32-char task IDs
+   - Replace encoded child-ID examples with full 32-char task IDs
    - Explain that parent-child relationships are now `subtask-of` links
    - Update examples to show `aiki task link <child-id> --subtask-of <parent-id>`
    - Clarify that short IDs now work for all tasks including subtasks
@@ -1234,10 +1234,10 @@ This ensures agents have clear guidance on when to use links vs. attributes and 
 - No code queries `task_type` for relationship lookups — all use graph traversal (orchestrator type retained only for cascade-stop behavior)
 - All stored link events use canonical IDs: full 32-char task IDs (never short prefixes, never `task:` prefix), typed external refs (`file:`, `prompt:`, etc.)
 - Short ID input on CLI is resolved to full canonical ID at write time; ambiguous short IDs are rejected with an error
-- Backward compatibility during transition: existing dot-notation IDs parse correctly and synthesize subtask-of links
+- Backward compatibility during transition: existing encoded child IDs parse correctly and synthesize subtask-of links
 - `task diff <parent>` includes all descendant changes via ancestor chain provenance (no OR expansion in revset)
 - Provenance blocks for subtask changes include `task=` lines for all ancestors up to root
-- End state: new subtasks use full 32-char IDs with subtask-of links; dot-notation support removed after migration
+- End state: new subtasks use full 32-char IDs with subtask-of links; legacy encoded child-ID support removed after migration
 - `aiki task link B --supersedes A` stores link; forward and reverse lookups work
 - `aiki task link B --implements spec.md` when A already implements spec.md → auto-replaces A, emits `supersedes` link from B to A
 - `aiki task link child --subtask-of new-parent` when child has old-parent → auto-replaces, no `supersedes` link (re-parenting)

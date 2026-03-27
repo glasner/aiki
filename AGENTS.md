@@ -303,13 +303,13 @@ aiki task add --subtask-of <parent-id> "Remove unused import in utils.rs"
 aiki task start <parent-id>
 
 # 4. Work through subtasks one by one
-aiki task start <parent-id>.1
+aiki task start <subtask-id-1>
 # ... do the work ...
-aiki task close <parent-id>.1 --summary "Added null check before token access"
+aiki task close <subtask-id-1> --summary "Added null check before token access"
 
-aiki task start <parent-id>.2
+aiki task start <subtask-id-2>
 # ... do the work ...
-aiki task close <parent-id>.2 --summary "Wrapped API calls in try/catch"
+aiki task close <subtask-id-2> --summary "Wrapped API calls in try/catch"
 ```
 
 ### ❌ WRONG: One big task for multiple items
@@ -335,7 +335,7 @@ aiki task start <id>
 When you start a parent task with subtasks:
 1. Any stale in-progress subtasks from a previous session are stopped
 2. `aiki task` now shows only subtasks (scoped view)
-3. Subtask IDs are `<parent-id>.1`, `<parent-id>.2`, etc.
+3. Each subtask has its own full unique task ID; parent-child relationships are tracked via links
 4. The parent is closed automatically when all subtasks complete (or by the orchestrator if one is active). Do not close the parent manually.
 
 ### When Planning Work
@@ -404,7 +404,7 @@ Ready (3):
 3. Do the work described in the task
 4. Close with `aiki task close <id> --summary "What you did"`
 
-**Subtask IDs:** Append a dot and number to parent ID: `<parent-id>.1`, `<parent-id>.2`
+**Subtask IDs:** Subtasks use the same full unique IDs as any other task. Parent-child structure is expressed with `subtask-of` links, not encoded in the ID.
 
 ### Workflow
 

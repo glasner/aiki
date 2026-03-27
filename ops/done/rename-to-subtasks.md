@@ -6,7 +6,7 @@ The AGENTS.md documentation already uses "subtasks" terminology:
 - "Parent + Subtasks (Example)"
 - "Add subtasks under the parent"
 - "A `.0` subtask auto-starts"
-- "Subtask IDs are `<parent-id>.1`, `<parent-id>.2`"
+- "Subtasks use full unique task IDs linked to their parent"
 
 But the code uses "children" throughout. This creates a terminology mismatch. "Subtasks" is the natural way to talk about nested tasks in a task management context, while "children" is a more generic tree/graph term.
 
