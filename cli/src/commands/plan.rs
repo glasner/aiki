@@ -425,15 +425,21 @@ fn run_epic(
         }
     }
 
-    // Parse agent if provided
-    let agent_type = if let Some(ref agent_str) = agent {
-        Some(
+    let agent_type = match agent.as_deref() {
+        Some(agent_str) => Some(
             AgentType::from_str(agent_str)
-                .ok_or_else(|| AikiError::UnknownAgentType(agent_str.clone()))?,
-        )
-    } else {
-        None
+                .ok_or_else(|| AikiError::UnknownAgentType(agent_str.to_string()))?,
+        ),
+        None => None,
     };
+    let (launch_agent, launch_binary) = resolve_plan_launch_agent(agent.as_deref())?;
+    if !launch_agent.is_installed() {
+        return Err(AikiError::InvalidArgument(format!(
+            "Agent '{}' is not installed. {}",
+            launch_agent.as_str(),
+            launch_agent.install_hint()
+        )));
+    }
 
     // Check for existing plan task with source: file:<path>
     let events = read_events(cwd)?;
@@ -529,17 +535,21 @@ fn run_epic(
 
     if !output_id {
         output_utils::emit(|| {
-            format!("Spawning Claude agent session for task {}...", plan_task_id)
+            format!(
+                "Spawning {} agent session for task {}...",
+                launch_agent.display_name(),
+                plan_task_id
+            )
         });
     }
 
-    // Spawn claude interactively - inherits stdin/stdout/stderr for user interaction
+    // Spawn the selected agent interactively - inherits stdin/stdout/stderr for user interaction
     // Note: We don't use --print or --dangerously-skip-permissions here because
     // plan sessions are interactive and the user can approve actions themselves
     // AIKI_THREAD is set so the session tracks which thread is driving it, enabling
     // auto-end when the thread's tail task closes
     let thread = crate::tasks::lanes::ThreadId::single(plan_task_id.clone());
-    let status = Command::new("claude")
+    let status = Command::new(launch_binary)
         .current_dir(cwd)
         .env("AIKI_THREAD", &thread.serialize())
         .arg(&prompt)
@@ -566,12 +576,22 @@ fn run_epic(
                         output_plan_completed(&plan_task_id, &plan_path)?;
                     }
                 } else {
-                    output_plan_error(&plan_task_id, &format!("Claude exited with code {}", code))?;
+                    output_plan_error(
+                        &plan_task_id,
+                        &format!("{} exited with code {}", launch_agent.display_name(), code),
+                    )?;
                 }
             }
         }
         Err(e) => {
-            output_plan_error(&plan_task_id, &format!("Failed to spawn claude: {}", e))?;
+            output_plan_error(
+                &plan_task_id,
+                &format!(
+                    "Failed to spawn {}: {}",
+                    launch_agent.display_name().to_lowercase(),
+                    e
+                ),
+            )?;
             return Err(AikiError::AgentSpawnFailed(e.to_string()));
         }
     }
@@ -795,6 +815,24 @@ fn output_plan_error(plan_id: &str, error: &str) -> Result<()> {
     let md = MdBuilder::new().build_error(&content);
     eprintln!("{}", md);
     Ok(())
+}
+
+fn resolve_plan_launch_agent(agent: Option<&str>) -> Result<(AgentType, &'static str)> {
+    let agent_type = match agent {
+        Some(agent_str) => AgentType::from_str(agent_str)
+            .ok_or_else(|| AikiError::UnknownAgentType(agent_str.to_string()))?,
+        None => AgentType::ClaudeCode,
+    };
+
+    let binary = agent_type.cli_binary().ok_or_else(|| {
+        AikiError::InvalidArgument(format!(
+            "Agent '{}' does not support interactive `aiki plan` sessions. {}",
+            agent_type.as_str(),
+            agent_type.install_hint()
+        ))
+    })?;
+
+    Ok((agent_type, binary))
 }
 
 #[cfg(test)]
@@ -1032,5 +1070,25 @@ mod tests {
         };
         // Edit mode with CLI text — skip prompt
         assert!(!initial_idea_needs_input(&mode, true, false));
+    }
+
+    #[test]
+    fn test_resolve_plan_launch_agent_defaults_to_claude() {
+        let (agent, binary) = resolve_plan_launch_agent(None).unwrap();
+        assert_eq!(agent, AgentType::ClaudeCode);
+        assert_eq!(binary, "claude");
+    }
+
+    #[test]
+    fn test_resolve_plan_launch_agent_supports_codex() {
+        let (agent, binary) = resolve_plan_launch_agent(Some("codex")).unwrap();
+        assert_eq!(agent, AgentType::Codex);
+        assert_eq!(binary, "codex");
+    }
+
+    #[test]
+    fn test_resolve_plan_launch_agent_rejects_non_spawnable_agent() {
+        let err = resolve_plan_launch_agent(Some("cursor")).unwrap_err();
+        assert!(format!("{}", err).contains("does not support interactive `aiki plan` sessions"));
     }
 }
