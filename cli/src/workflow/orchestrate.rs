@@ -13,18 +13,15 @@ use std::path::Path;
 
 use crate::agents::{get_available_agents, AgentType};
 use crate::commands::async_spawn::spawn_aiki_background;
-use crate::commands::fix::{run_fix_review_step, run_regression_review_step};
-use crate::commands::review::{create_review, CreateReviewParams, ReviewScope, ReviewScopeKind};
 use crate::commands::OutputFormat;
 use crate::error::{AikiError, Result};
 use crate::output_utils;
 use crate::tasks::md::MdBuilder;
-use crate::tasks::{
-    find_task, materialize_graph_with_ids, read_events_with_ids, Task,
-};
+use crate::tasks::{find_task, materialize_graph_with_ids, read_events_with_ids, Task};
 use crate::workflow::builders::{fix_pass_workflow, FixOpts};
 use crate::workflow::steps::fix::create_fix_parent;
-use crate::workflow::{RunMode, StepResult, WorkflowContext};
+use crate::workflow::steps::fix::{run_fix_review_step, run_regression_review_step};
+use crate::workflow::{ReviewScope, ReviewScopeKind, RunMode};
 
 /// Maximum iterations of the quality loop to prevent infinite cycles.
 pub(crate) const MAX_QUALITY_ITERATIONS: usize = 10;
@@ -512,7 +509,7 @@ pub(crate) fn has_actionable_issues(review_task: &Task) -> bool {
         // Structured review: use data.issue_count
         match issue_count.parse::<usize>() {
             Ok(n) => n > 0,
-            Err(_) => !crate::commands::review::get_issue_comments(review_task).is_empty(),
+            Err(_) => !crate::workflow::steps::review::get_issue_comments(review_task).is_empty(),
         }
     } else {
         // Backward compatibility: older reviews without data.issue_count

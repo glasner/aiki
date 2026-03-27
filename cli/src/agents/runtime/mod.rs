@@ -245,10 +245,7 @@ pub(crate) fn build_spawn_env(options: &AgentSpawnOptions, mode: &str) -> Vec<(S
         ("AIKI_SESSION_MODE".to_string(), mode.to_string()),
     ];
     if let Some(ref uuid) = options.parent_session_uuid {
-        env.push((
-            "AIKI_PARENT_SESSION_UUID".to_string(),
-            uuid.clone(),
-        ));
+        env.push(("AIKI_PARENT_SESSION_UUID".to_string(), uuid.clone()));
     }
     env
 }
@@ -478,17 +475,15 @@ mod tests {
         let serialized = thread.serialize();
 
         // Build an event with the serialized thread as run_thread_id
-        let events = vec![
-            ConversationEvent::SessionStart {
-                session_id: "found-session".to_string(),
-                agent_type: super::super::AgentType::ClaudeCode,
-                timestamp: Utc::now(),
-                run_thread_id: Some(serialized.clone()),
-                repo_id: None,
-                cwd: None,
-                session_mode: None,
-            },
-        ];
+        let events = vec![ConversationEvent::SessionStart {
+            session_id: "found-session".to_string(),
+            agent_type: super::super::AgentType::ClaudeCode,
+            timestamp: Utc::now(),
+            run_thread_id: Some(serialized.clone()),
+            repo_id: None,
+            cwd: None,
+            session_mode: None,
+        }];
 
         // Replicate the matching logic used by find_session_started_for_thread
         let result = events.iter().rev().find_map(|event| match event {
@@ -515,8 +510,8 @@ mod tests {
     /// task.closed hook to SIGTERM background agents (exit code 143).
     #[test]
     fn test_all_spawn_methods_set_session_mode() {
-        let runtime_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("src/agents/runtime");
+        let runtime_dir =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/agents/runtime");
 
         for filename in &["claude_code.rs", "codex.rs"] {
             let path = runtime_dir.join(filename);

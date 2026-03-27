@@ -1452,9 +1452,15 @@ timestamp=2026-01-09T10:30:00Z
         ];
 
         // Exact match on thread_ab → session A
-        assert_eq!(find_session_in_events(&events, &thread_ab), Some("session-A".to_string()));
+        assert_eq!(
+            find_session_in_events(&events, &thread_ab),
+            Some("session-A".to_string())
+        );
         // Exact match on thread_ac → session B
-        assert_eq!(find_session_in_events(&events, &thread_ac), Some("session-B".to_string()));
+        assert_eq!(
+            find_session_in_events(&events, &thread_ac),
+            Some("session-B".to_string())
+        );
         // Head-only query does NOT match (exact-match semantics)
         assert_eq!(find_session_in_events(&events, head), None);
     }
@@ -1483,7 +1489,10 @@ timestamp=2026-01-09T10:30:00Z
         ];
 
         assert_eq!(
-            find_session_in_events(&events, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+            find_session_in_events(
+                &events,
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            ),
             None
         );
         assert_eq!(find_session_in_events(&events, "anything"), None);

@@ -1,5 +1,4 @@
 Bugs:
-- thread runner??
 - workflow split -> workflow thin
 - hung fix
 - fix session isolation

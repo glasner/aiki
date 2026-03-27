@@ -14,8 +14,8 @@ use aiki::history::record_session_start;
 use aiki::history::storage::read_events;
 use aiki::history::types::ConversationEvent;
 use aiki::provenance::DetectionMethod;
-use aiki::session::SessionMode;
 use aiki::session::AikiSession;
+use aiki::session::SessionMode;
 use aiki::tasks::lanes::ThreadId;
 use chrono::Utc;
 
@@ -49,9 +49,7 @@ fn test_record_session_start_includes_thread() {
     assert_eq!(events.len(), 1);
 
     match &events[0] {
-        ConversationEvent::SessionStart {
-            run_thread_id, ..
-        } => {
+        ConversationEvent::SessionStart { run_thread_id, .. } => {
             let expected = format!("{head}:{tail}");
             assert_eq!(
                 run_thread_id,
@@ -89,9 +87,7 @@ fn test_record_session_start_no_thread() {
     assert_eq!(events.len(), 1);
 
     match &events[0] {
-        ConversationEvent::SessionStart {
-            run_thread_id, ..
-        } => {
+        ConversationEvent::SessionStart { run_thread_id, .. } => {
             assert_eq!(
                 run_thread_id, &None,
                 "run_thread_id should be None when session has no thread"

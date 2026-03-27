@@ -989,8 +989,8 @@ impl HookEngine {
     /// `review: { task_id: X, template: Y }` is equivalent to
     /// `aiki review X --template Y --async`. Flows always use async mode.
     fn execute_review(action: &ReviewAction, state: &mut AikiState) -> Result<ActionResult> {
-        use crate::commands::review::{create_review, detect_target, CreateReviewParams};
         use crate::tasks::runner::{task_run_async, TaskRunOptions};
+        use crate::workflow::steps::review::{create_review, detect_target, CreateReviewParams};
 
         // Create variable resolver
         let mut resolver = Self::create_resolver(state);
@@ -4577,14 +4577,8 @@ mod tests {
         let state = AikiState::new(event);
         let mut resolver = HookEngine::create_resolver(&state);
 
-        assert_eq!(
-            resolver.resolve("{{session.thread.tail}}").unwrap(),
-            "",
-        );
-        assert_eq!(
-            resolver.resolve("{{session.mode}}").unwrap(),
-            "",
-        );
+        assert_eq!(resolver.resolve("{{session.thread.tail}}").unwrap(), "",);
+        assert_eq!(resolver.resolve("{{session.mode}}").unwrap(), "",);
     }
 
     // --- 5c: Only tail triggers session.end (head does not) ---
@@ -4672,10 +4666,7 @@ mod tests {
 
         // Verify session.thread resolves to just the ID (no colon for single-task)
         let mut resolver = HookEngine::create_resolver(&state);
-        assert_eq!(
-            resolver.resolve("{{session.thread}}").unwrap(),
-            HEAD_ID,
-        );
+        assert_eq!(resolver.resolve("{{session.thread}}").unwrap(), HEAD_ID,);
 
         // session.end should register pending termination
         let session_end = crate::flows::types::SessionEndAction {
@@ -4710,7 +4701,10 @@ mod tests {
 
         // Verify the session IS found (thread tail matches)
         let session_info = state.resolve_task_closed_thread_session();
-        assert!(session_info.is_some(), "Session should be found by thread tail");
+        assert!(
+            session_info.is_some(),
+            "Session should be found by thread tail"
+        );
         let info = session_info.unwrap();
         assert_eq!(info.mode, crate::session::SessionMode::Background);
 

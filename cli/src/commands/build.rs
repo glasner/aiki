@@ -29,8 +29,7 @@ use crate::workflow::steps::decompose::{
     undo_completed_subtasks,
 };
 use crate::workflow::steps::plan::{cleanup_stale_builds, validate_plan_path};
-use crate::workflow::{RunMode, Step, Workflow, WorkflowContext};
-use std::collections::VecDeque;
+use crate::workflow::{RunMode, Step, Workflow};
 
 /// Build subcommands
 #[derive(Subcommand)]
@@ -100,106 +99,6 @@ pub struct BuildArgs {
     /// Subcommand (show)
     #[command(subcommand)]
     pub subcommand: Option<BuildSubcommands>,
-}
-
-/// Maximum number of fix iterations before giving up.
-const MAX_BUILD_ITERATIONS: usize = 10;
-
-/// Check whether a review task has actionable issues (issue_count > 0).
-fn has_review_issues(ctx: &WorkflowContext, review_task_id: &str) -> anyhow::Result<bool> {
-    let events = read_events(&ctx.cwd)?;
-    let graph = materialize_graph(&events);
-    Ok(find_task(&graph.tasks, review_task_id)
-        .map(|t| {
-            t.data
-                .get("issue_count")
-                .and_then(|c| c.parse::<usize>().ok())
-                .unwrap_or(0)
-                > 0
-        })
-        .unwrap_or(false))
-}
-
-/// Drive a build workflow with dynamic fix iteration.
-///
-/// Uses a [`VecDeque`] instead of a fixed step list. After each Review or
-/// RegressionReview step, checks for actionable issues and injects a
-/// Fix→Decompose→Loop→Review→RegressionReview cycle (up to [`MAX_BUILD_ITERATIONS`]).
-pub fn drive_build(
-    steps: Vec<Step>,
-    mut ctx: WorkflowContext,
-    mode: RunMode,
-    opts: &BuildOpts,
-) -> anyhow::Result<WorkflowContext> {
-    let mut queue: VecDeque<Step> = steps.into_iter().collect();
-    let mut iteration = 0;
-
-    while let Some(step) = queue.pop_front() {
-        let is_review = matches!(&step, Step::Review { .. });
-        let is_regression_review = matches!(&step, Step::RegressionReview { .. });
-
-        // Execute the step with appropriate output
-        let result = match mode {
-            RunMode::Text => {
-                if let Some(section) = step.section() {
-                    eprintln!("\n── {} ──", section);
-                }
-                eprintln!("⠙ {}...", step.name());
-                match step.run(&mut ctx) {
-                    Ok(result) => {
-                        eprintln!("合 {} — {}", step.name(), result.message);
-                        result
-                    }
-                    Err(e) => {
-                        eprintln!("✗ {} — {}", step.name(), e);
-                        return Err(e);
-                    }
-                }
-            }
-            RunMode::Quiet => step.run(&mut ctx)?,
-        };
-
-        // After Review or RegressionReview: inject Fix step if issues found.
-        // run_fix_step drives the full quality loop internally (plan → decompose
-        // → loop → review → regression review), so we only need to inject the
-        // single Fix step — no Decompose/Loop/Review/RegressionReview after it.
-        if (is_review || is_regression_review) && iteration < MAX_BUILD_ITERATIONS {
-            if let Some(ref review_task_id) = result.task_id {
-                if has_review_issues(&ctx, review_task_id)? {
-                    iteration += 1;
-                    queue.push_back(Step::Fix {
-                        review_id: review_task_id.clone(),
-                        scope: None,
-                        assignee: None,
-                        template: opts.fix_template.clone(),
-                        autorun: false,
-                    });
-                }
-            }
-        }
-
-        if (is_review || is_regression_review) && iteration >= MAX_BUILD_ITERATIONS {
-            eprintln!(
-                "Warning: build fix iteration reached maximum ({}) without full approval.",
-                MAX_BUILD_ITERATIONS,
-            );
-            break;
-        }
-    }
-
-    Ok(ctx)
-}
-
-impl Workflow {
-    /// Run a build workflow, using [`drive_build`] for fix iteration when
-    /// `opts.fix_after` is true, or the generic step runner otherwise.
-    pub fn run_build(self, mode: RunMode, opts: &BuildOpts) -> anyhow::Result<WorkflowContext> {
-        if opts.fix_after {
-            drive_build(self.steps, self.ctx, mode, opts)
-        } else {
-            self.run(mode)
-        }
-    }
 }
 
 /// Convert anyhow::Error back to AikiError for crate-level Result.
@@ -373,7 +272,7 @@ fn run_build_plan(
         let wf = build_workflow(cwd, plan_path, &opts);
         wf.run_build(RunMode::Text, &opts).map_err(anyhow_to_aiki)?;
 
-        crate::workflow::steps::build::output_after_workflow(cwd, plan_path, output_id)?;
+        output_after_workflow(cwd, plan_path, output_id)?;
         return Ok(());
     }
 
@@ -568,12 +467,36 @@ fn run_build_epic(
     let wf = build_workflow_from_epic(cwd, epic_id, &plan_path, &opts);
     wf.run_build(RunMode::Text, &opts).map_err(anyhow_to_aiki)?;
 
-    crate::workflow::steps::build::output_after_workflow(cwd, &plan_path, output_id)?;
+    output_after_workflow(cwd, &plan_path, output_id)?;
 
     Ok(())
 }
 
-// Step handlers are in workflow/steps/build.rs.
+fn output_after_workflow(cwd: &Path, plan_path: &str, output_id: bool) -> Result<()> {
+    let events = read_events(cwd)?;
+    let graph = materialize_graph(&events);
+    let plan_graph = PlanGraph::build(&graph);
+
+    let epic = plan_graph.find_epic_for_plan(plan_path, &graph);
+    if let Some(epic) = epic {
+        if output_id {
+            println!("{}", epic.id);
+        } else {
+            let subtasks = get_subtasks(&graph, &epic.id);
+            let build_tasks: Vec<&Task> = graph
+                .tasks
+                .values()
+                .filter(|t| {
+                    t.task_type.as_deref() == Some("orchestrator")
+                        && t.data.get("plan").map(|s| s.as_str()) == Some(plan_path)
+                })
+                .collect();
+            output_build_show(epic, &subtasks, &build_tasks, &graph)?;
+        }
+    }
+
+    Ok(())
+}
 // The output_after_workflow helper is also there.
 
 /// Show build/epic status for a plan
@@ -618,7 +541,6 @@ fn run_show(cwd: &Path, plan_path: &str, output_format: Option<OutputFormat>) ->
 
     Ok(())
 }
-
 
 /// Output build show (detailed status display)
 pub(crate) fn output_build_show(
@@ -919,7 +841,6 @@ mod tests {
         // Contains uppercase
         assert!(!is_task_id("Mvslrspmoynoxyyywqyutmovxpvztkls"));
     }
-
 
     // --- Build show output formatting tests ---
 
@@ -1682,20 +1603,22 @@ mod tests {
     #[test]
     fn test_max_iterations_cap() {
         assert_eq!(
-            MAX_BUILD_ITERATIONS, 10,
+            crate::workflow::MAX_BUILD_ITERATIONS,
+            10,
             "Build fix iteration must cap at 10"
         );
         // Simulate: when every review returns issues, iteration counter stops at MAX
         let mut iteration = 0;
         let mut cycles_injected = 0;
-        for _ in 0..MAX_BUILD_ITERATIONS + 5 {
-            if iteration < MAX_BUILD_ITERATIONS {
+        for _ in 0..crate::workflow::MAX_BUILD_ITERATIONS + 5 {
+            if iteration < crate::workflow::MAX_BUILD_ITERATIONS {
                 cycles_injected += 1;
                 iteration += 1;
             }
         }
         assert_eq!(
-            cycles_injected, MAX_BUILD_ITERATIONS,
+            cycles_injected,
+            crate::workflow::MAX_BUILD_ITERATIONS,
             "Should inject exactly MAX_BUILD_ITERATIONS cycles before stopping"
         );
     }
@@ -1733,35 +1656,24 @@ mod tests {
         assert!(opts_with_fix.fix_after);
     }
 
-    /// has_review_issues returns true when issue_count > 0.
+    /// has_actionable_issues returns true when issue_count > 0.
     #[test]
     fn test_has_review_issues_logic() {
-        // Verify the issue detection logic used by drive_build
         let mut task = make_task("review1", "Review", TaskStatus::Closed);
         task.data.insert("issue_count".to_string(), "3".to_string());
-        let has_issues = task
-            .data
-            .get("issue_count")
-            .and_then(|c| c.parse::<usize>().ok())
-            .unwrap_or(0)
-            > 0;
+        let has_issues = crate::workflow::orchestrate::has_actionable_issues(&task);
         assert!(
             has_issues,
             "issue_count=3 should indicate actionable issues"
         );
     }
 
-    /// has_review_issues returns false when issue_count is 0.
+    /// has_actionable_issues returns false when issue_count is 0.
     #[test]
     fn test_no_review_issues_logic() {
         let mut task = make_task("review2", "Review", TaskStatus::Closed);
         task.data.insert("issue_count".to_string(), "0".to_string());
-        let has_issues = task
-            .data
-            .get("issue_count")
-            .and_then(|c| c.parse::<usize>().ok())
-            .unwrap_or(0)
-            > 0;
+        let has_issues = crate::workflow::orchestrate::has_actionable_issues(&task);
         assert!(
             !has_issues,
             "issue_count=0 should indicate no actionable issues"
@@ -1828,10 +1740,10 @@ mod tests {
     #[test]
     #[test]
     fn test_build_review_scope_uses_task_kind() {
-        use crate::commands::review::ReviewScopeKind;
+        use crate::workflow::ReviewScopeKind;
 
         let epic_id = "onnlrwntommtvtnzovwromnkyulorwtz";
-        let scope = crate::workflow::steps::build::build_review_scope(epic_id);
+        let scope = crate::workflow::steps::review::build_review_scope(epic_id);
 
         // Must be Task scope so that fix tasks become subtasks of the epic,
         // triggering reopen_if_closed. Using Code/Plan scope breaks this.

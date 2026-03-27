@@ -1625,7 +1625,10 @@ mod tests {
         let aiki_home_path = aiki_home.path().to_path_buf();
         fs::create_dir_all(aiki_home_path.join("sessions")).unwrap();
 
-        let guard = EnvGuard::new(global::AIKI_HOME_ENV, Some(aiki_home_path.to_str().unwrap()));
+        let guard = EnvGuard::new(
+            global::AIKI_HOME_ENV,
+            Some(aiki_home_path.to_str().unwrap()),
+        );
 
         (repo_dir, aiki_home, guard)
     }
@@ -1639,7 +1642,10 @@ mod tests {
         let aiki_home_path = aiki_home.path().to_path_buf();
         fs::create_dir_all(aiki_home_path.join("sessions")).unwrap();
 
-        let guard = EnvGuard::new(global::AIKI_HOME_ENV, Some(aiki_home_path.to_str().unwrap()));
+        let guard = EnvGuard::new(
+            global::AIKI_HOME_ENV,
+            Some(aiki_home_path.to_str().unwrap()),
+        );
 
         (aiki_home, guard)
     }

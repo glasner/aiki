@@ -9,7 +9,6 @@ use std::env;
 use std::path::Path;
 
 use crate::agents::AgentType;
-use crate::commands::review::{detect_target, ReviewScope, ReviewScopeKind};
 use crate::commands::OutputFormat;
 use crate::error::{AikiError, Result};
 use crate::output_utils;
@@ -21,6 +20,7 @@ use crate::tasks::{
     get_current_scope_set, get_in_progress, get_ready_queue_for_scope_set, materialize_graph,
     read_events, reassign_task, start_task_core, Task, TaskStatus,
 };
+use crate::workflow::steps::review::{detect_target, ReviewScope, ReviewScopeKind};
 
 /// Arguments for the explore command
 #[derive(clap::Args)]

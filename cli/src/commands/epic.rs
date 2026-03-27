@@ -562,7 +562,6 @@ mod tests {
         assert_eq!(result.unwrap().id, "epic_new");
     }
 
-
     #[test]
     fn test_output_format_id_variant() {
         let fmt = OutputFormat::Id;
