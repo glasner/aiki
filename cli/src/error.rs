@@ -292,6 +292,10 @@ Alternatively, install the agent globally:
     #[error("Invalid preferred instruction file: '{0}'. Must be AGENTS.md or CLAUDE.md")]
     InvalidPreferred(String),
 
+    // Workflow errors
+    #[error("Unexpected workflow result: {0}")]
+    UnexpectedWorkflowResult(String),
+
     // Generic wrapper for underlying errors
     #[error(transparent)]
     Other(#[from] anyhow::Error),
