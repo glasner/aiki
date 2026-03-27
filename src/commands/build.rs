@@ -27,6 +27,12 @@ use crate::tasks::{
     find_task, get_subtasks, materialize_graph, read_events, write_event, write_link_event, Task,
     TaskEvent, TaskOutcome, TaskStatus,
 };
+use crate::workflow::builders::{build_workflow, build_workflow_from_epic, BuildOpts};
+use crate::workflow::steps::decompose::{
+    check_epic_blockers, close_epic, close_epic_as_invalid, restart_epic,
+    undo_completed_subtasks,
+};
+use crate::workflow::steps::plan::{cleanup_stale_builds, validate_plan_path};
 use crate::workflow::{RunMode, Step, StepResult, Workflow, WorkflowContext};
 use std::collections::VecDeque;
 
@@ -100,105 +106,8 @@ pub struct BuildArgs {
     pub subcommand: Option<BuildSubcommands>,
 }
 
-/// Options for assembling a build workflow.
-pub struct BuildOpts {
-    pub restart: bool,
-    pub decompose_template: Option<String>,
-    pub loop_template: Option<String>,
-    pub agent: Option<AgentType>,
-    pub agent_str: Option<String>,
-    pub review_after: bool,
-    pub review_template: Option<String>,
-    pub fix_after: bool,
-    pub fix_template: Option<String>,
-}
-
 /// Maximum number of fix iterations before giving up.
 const MAX_BUILD_ITERATIONS: usize = 10;
-
-/// Assemble a build workflow for a plan path (includes Plan step).
-///
-/// When `opts.fix_after` is true, the static Fix step is omitted — fix iteration
-/// is handled dynamically by [`drive_build`] via [`Workflow::run_build`].
-pub fn build_workflow(cwd: &Path, plan_path: &str, opts: &BuildOpts) -> Workflow {
-    let mut steps: Vec<Step> = vec![
-        Step::Plan,
-        Step::Decompose {
-            restart: opts.restart,
-            template: opts.decompose_template.clone(),
-            agent: opts.agent.clone(),
-        },
-        Step::Loop {
-            template: opts.loop_template.clone(),
-            agent: opts.agent.clone(),
-        },
-    ];
-
-    if opts.review_after {
-        steps.push(Step::Review {
-            scope: None, // derive from ctx.plan_path
-            template: opts.review_template.clone(),
-            agent: opts.agent_str.clone(),
-            fix_template: None,
-            autorun: false,
-        });
-
-        // Static Fix step only when NOT using drive_build (fix_after = false means
-        // review-only mode; fix_after = true delegates iteration to drive_build).
-        if !opts.fix_after {
-            // No fix step needed in review-only mode
-        }
-    }
-
-    Workflow {
-        steps,
-        ctx: WorkflowContext {
-            task_id: None,
-            plan_path: Some(plan_path.to_string()),
-            cwd: cwd.to_path_buf(),
-        },
-    }
-}
-
-/// Assemble a build workflow for an existing epic (skips Plan step).
-fn build_workflow_from_epic(
-    cwd: &Path,
-    epic_id: &str,
-    plan_path: &str,
-    opts: &BuildOpts,
-) -> Workflow {
-    let mut steps: Vec<Step> = vec![
-        Step::Decompose {
-            restart: false,
-            template: opts.decompose_template.clone(),
-            agent: opts.agent.clone(),
-        },
-        Step::Loop {
-            template: opts.loop_template.clone(),
-            agent: opts.agent.clone(),
-        },
-    ];
-
-    if opts.review_after {
-        steps.push(Step::Review {
-            scope: None, // derive from ctx.plan_path
-            template: opts.review_template.clone(),
-            agent: opts.agent_str.clone(),
-            fix_template: None,
-            autorun: false,
-        });
-        // Fix iteration is handled dynamically by drive_build via run_build.
-    }
-
-    Workflow {
-        steps,
-        ctx: WorkflowContext {
-            task_id: Some(epic_id.to_string()),
-            plan_path: Some(plan_path.to_string()),
-            cwd: cwd.to_path_buf(),
-        },
-    }
-}
 
 /// Check whether a review task has actionable issues (issue_count > 0).
 fn has_review_issues(ctx: &WorkflowContext, review_task_id: &str) -> anyhow::Result<bool> {
@@ -254,7 +163,10 @@ pub fn drive_build(
             RunMode::Quiet => step.run(&mut ctx)?,
         };
 
-        // After Review or RegressionReview: inject fix cycle if issues found
+        // After Review or RegressionReview: inject Fix step if issues found.
+        // run_fix_step drives the full quality loop internally (plan → decompose
+        // → loop → review → regression review), so we only need to inject the
+        // single Fix step — no Decompose/Loop/Review/RegressionReview after it.
         if (is_review || is_regression_review) && iteration < MAX_BUILD_ITERATIONS {
             if let Some(ref review_task_id) = result.task_id {
                 if has_review_issues(&ctx, review_task_id)? {
@@ -265,26 +177,6 @@ pub fn drive_build(
                         assignee: None,
                         template: opts.fix_template.clone(),
                         autorun: false,
-                    });
-                    queue.push_back(Step::Decompose {
-                        restart: false,
-                        template: opts.decompose_template.clone(),
-                        agent: opts.agent.clone(),
-                    });
-                    queue.push_back(Step::Loop {
-                        template: opts.loop_template.clone(),
-                        agent: opts.agent.clone(),
-                    });
-                    queue.push_back(Step::Review {
-                        scope: None,
-                        template: opts.review_template.clone(),
-                        agent: opts.agent_str.clone(),
-                        fix_template: None,
-                        autorun: false,
-                    });
-                    queue.push_back(Step::RegressionReview {
-                        template: opts.review_template.clone(),
-                        agent: opts.agent_str.clone(),
                     });
                 }
             }
@@ -541,7 +433,7 @@ fn run_build_plan(
         let is_existing_epic = epic_id.is_some();
         let epic_id = match epic_id {
             Some(id) => id,
-            None => super::epic::create_epic_task(cwd, plan_path)?,
+            None => crate::workflow::steps::decompose::create_epic_task(cwd, plan_path)?,
         };
 
         if is_existing_epic {
@@ -764,7 +656,7 @@ pub(crate) fn run_decompose_step(
 
         let epic_id = match epic_id {
             Some(id) => id,
-            None => super::epic::create_epic_task(&ctx.cwd, &plan_path)?,
+            None => crate::workflow::steps::decompose::create_epic_task(&ctx.cwd, &plan_path)?,
         };
 
         ctx.task_id = Some(epic_id);
@@ -1026,221 +918,7 @@ fn run_show(cwd: &Path, plan_path: &str, output_format: Option<OutputFormat>) ->
     Ok(())
 }
 
-/// Validate that the plan path is a .md file and exists
-fn validate_plan_path(cwd: &Path, plan_path: &str) -> Result<()> {
-    if !plan_path.ends_with(".md") {
-        return Err(AikiError::InvalidArgument(
-            "Plan file must be markdown (.md)".to_string(),
-        ));
-    }
 
-    let full_path = if plan_path.starts_with('/') {
-        std::path::PathBuf::from(plan_path)
-    } else {
-        cwd.join(plan_path)
-    };
-
-    if !full_path.exists() {
-        return Err(AikiError::InvalidArgument(format!(
-            "Plan file not found: {}",
-            plan_path
-        )));
-    }
-
-    if !full_path.is_file() {
-        return Err(AikiError::InvalidArgument(format!(
-            "Not a file: {}",
-            plan_path
-        )));
-    }
-
-    Ok(())
-}
-
-/// Clean up stale build tasks for this plan.
-///
-/// Finds any in_progress or open build tasks with `data.plan` matching the plan path
-/// and closes them as wont_do with a comment.
-fn cleanup_stale_builds(cwd: &Path, plan_path: &str) -> Result<()> {
-    let events = read_events(cwd)?;
-    let tasks = materialize_graph(&events).tasks;
-
-    let stale_builds: Vec<String> = tasks
-        .values()
-        .filter(|t| {
-            t.task_type.as_deref() == Some("orchestrator")
-                && t.data.get("plan").map(|s| s.as_str()) == Some(plan_path)
-                && (t.status == TaskStatus::InProgress || t.status == TaskStatus::Open)
-        })
-        .map(|t| t.id.clone())
-        .collect();
-
-    for build_id in &stale_builds {
-        let comment_event = TaskEvent::CommentAdded {
-            task_ids: vec![build_id.clone()],
-            text: "Stale build cleaned up".to_string(),
-            data: std::collections::HashMap::new(),
-            timestamp: chrono::Utc::now(),
-        };
-        write_event(cwd, &comment_event)?;
-
-        let close_event = TaskEvent::Closed {
-            task_ids: vec![build_id.clone()],
-            outcome: TaskOutcome::WontDo,
-            summary: Some("Stale build cleaned up".to_string()),
-            session_id: None,
-            turn_id: None,
-            timestamp: chrono::Utc::now(),
-        };
-        write_event(cwd, &close_event)?;
-    }
-
-    Ok(())
-}
-
-/// Undo file changes made by completed subtasks of an epic.
-///
-/// Invokes `aiki task undo <epic-id> --completed` to revert changes before
-/// closing the epic. If no completed subtasks exist, this is a no-op.
-fn undo_completed_subtasks(cwd: &Path, epic_id: &str) -> Result<()> {
-    let output = std::process::Command::new(get_aiki_binary_path())
-        .current_dir(cwd)
-        .args(["task", "undo", epic_id, "--completed"])
-        .output()
-        .map_err(|e| AikiError::JjCommandFailed(format!("Failed to run task undo: {}", e)))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        // If there are no completed subtasks, that's fine - nothing to undo
-        if stderr.contains("no completed subtasks") || stderr.contains("NoCompletedSubtasks") {
-            return Ok(());
-        }
-        return Err(AikiError::JjCommandFailed(format!(
-            "task undo failed: {}",
-            stderr.trim()
-        )));
-    }
-
-    // Forward undo output to stderr so user sees what was reverted
-    let stderr_output = String::from_utf8_lossy(&output.stderr);
-    if !stderr_output.is_empty() {
-        eprint!("{}", stderr_output);
-    }
-
-    Ok(())
-}
-
-/// Close an existing epic as wont_do
-fn close_epic(cwd: &Path, epic_id: &str) -> Result<()> {
-    let timestamp = chrono::Utc::now();
-
-    // Add comment before closing
-    let comment_event = TaskEvent::CommentAdded {
-        task_ids: vec![epic_id.to_string()],
-        text: "Closed by --restart".to_string(),
-        data: std::collections::HashMap::new(),
-        timestamp: timestamp - chrono::Duration::milliseconds(1),
-    };
-    write_event(cwd, &comment_event)?;
-
-    let close_event = TaskEvent::Closed {
-        task_ids: vec![epic_id.to_string()],
-        outcome: TaskOutcome::WontDo,
-        summary: Some("Closed by --restart".to_string()),
-        session_id: None,
-        turn_id: None,
-        timestamp,
-    };
-    write_event(cwd, &close_event)?;
-    Ok(())
-}
-
-/// Restart an epic by stopping it and re-starting via `aiki task start`.
-///
-/// `aiki task start` on a parent with subtasks stops any stale in-progress
-/// subtasks, giving the new orchestrator a clean slate.
-fn restart_epic(cwd: &Path, epic_id: &str) -> Result<()> {
-    // Stop the epic to record why it was restarted
-    let stop_event = TaskEvent::Stopped {
-        task_ids: vec![epic_id.to_string()],
-        reason: Some("Restarted by new build".to_string()),
-        session_id: None,
-        turn_id: None,
-        timestamp: chrono::Utc::now(),
-    };
-    write_event(cwd, &stop_event)?;
-
-    // Re-start via `aiki task start` which handles stopping stale subtasks
-    let output = std::process::Command::new(get_aiki_binary_path())
-        .current_dir(cwd)
-        .args(["task", "start", epic_id])
-        .output()
-        .map_err(|e| AikiError::JjCommandFailed(format!("Failed to restart epic: {}", e)))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(AikiError::JjCommandFailed(format!(
-            "Failed to restart epic: {}",
-            stderr.trim()
-        )));
-    }
-
-    Ok(())
-}
-
-/// Check if an epic is blocked by unresolved dependencies.
-///
-/// Returns an error if the epic has `depends-on` links to tasks that are not yet
-/// Closed with Done outcome. This prevents starting a build on a blocked epic.
-fn check_epic_blockers(graph: &crate::tasks::graph::TaskGraph, epic_id: &str) -> Result<()> {
-    let blocker_ids: Vec<&str> = graph
-        .edges
-        .targets(epic_id, "depends-on")
-        .iter()
-        .filter(|tid| {
-            graph.tasks.get(tid.as_str()).map_or(true, |t| {
-                !(t.status == TaskStatus::Closed && t.closed_outcome == Some(TaskOutcome::Done))
-            })
-        })
-        .map(|s| s.as_str())
-        .collect();
-
-    if !blocker_ids.is_empty() {
-        let blocker_names: Vec<String> = blocker_ids
-            .iter()
-            .map(|id| {
-                let name = graph
-                    .tasks
-                    .get(*id)
-                    .map(|t| t.name.as_str())
-                    .unwrap_or("unknown");
-                let short = &id[..id.len().min(8)];
-                format!("{} ({})", short, name)
-            })
-            .collect();
-        return Err(AikiError::InvalidArgument(format!(
-            "Epic {} is blocked by unresolved dependencies: {}. Rerun with --restart to start over",
-            &epic_id[..epic_id.len().min(8)],
-            blocker_names.join(", ")
-        )));
-    }
-
-    Ok(())
-}
-
-/// Close an epic as invalid (no subtasks created).
-fn close_epic_as_invalid(cwd: &Path, epic_id: &str) -> Result<()> {
-    let close_event = TaskEvent::Closed {
-        task_ids: vec![epic_id.to_string()],
-        outcome: TaskOutcome::WontDo,
-        summary: Some("No subtasks created — epic invalid".to_string()),
-        session_id: None,
-        turn_id: None,
-        timestamp: chrono::Utc::now(),
-    };
-    write_event(cwd, &close_event)?;
-    Ok(())
-}
 
 /// Output build show (detailed status display)
 fn output_build_show(
@@ -1542,54 +1220,6 @@ mod tests {
         assert!(!is_task_id("Mvslrspmoynoxyyywqyutmovxpvztkls"));
     }
 
-    // --- validate_plan_path tests ---
-
-    #[test]
-    fn test_validate_plan_path_not_md() {
-        let temp_dir = tempfile::TempDir::new().unwrap();
-        let result = validate_plan_path(temp_dir.path(), "not-markdown.txt");
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("must be markdown"));
-    }
-
-    #[test]
-    fn test_validate_plan_path_not_found() {
-        let temp_dir = tempfile::TempDir::new().unwrap();
-        let result = validate_plan_path(temp_dir.path(), "nonexistent.md");
-        assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Plan file not found"));
-    }
-
-    #[test]
-    fn test_validate_plan_path_exists() {
-        let temp_dir = tempfile::TempDir::new().unwrap();
-        let plan_file = temp_dir.path().join("my-plan.md");
-        std::fs::write(&plan_file, "# My Plan").unwrap();
-        let result = validate_plan_path(temp_dir.path(), "my-plan.md");
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_validate_plan_path_absolute() {
-        let temp_dir = tempfile::TempDir::new().unwrap();
-        let plan_file = temp_dir.path().join("absolute-plan.md");
-        std::fs::write(&plan_file, "# Plan").unwrap();
-        let result = validate_plan_path(temp_dir.path(), &plan_file.to_string_lossy());
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_validate_plan_path_directory() {
-        let temp_dir = tempfile::TempDir::new().unwrap();
-        let dir_path = temp_dir.path().join("subdir.md");
-        std::fs::create_dir_all(&dir_path).unwrap();
-        let result = validate_plan_path(temp_dir.path(), "subdir.md");
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Not a file"));
-    }
 
     // --- Build show output formatting tests ---
 
