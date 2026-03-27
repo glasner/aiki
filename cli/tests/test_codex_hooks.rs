@@ -1,8 +1,8 @@
-//! Integration tests for Codex hooks (OTel + notify)
+//! Integration tests for Codex hooks (OTel + native stdin hooks)
 //!
 //! Tests the end-to-end flow of:
 //! - OTel protobuf parsing → session state updates
-//! - Notify payload parsing → turn completion handling
+//! - Native hook config generation
 //! - Hook installation (config.toml generation)
 
 use aiki::editors::codex::otel::{self, CodexOtelEvent};
@@ -169,45 +169,6 @@ fn test_otel_deferred_events_not_mapped() {
 }
 
 #[test]
-fn test_notify_payload_parsing() {
-    use aiki::editors::codex::NotifyPayload;
-
-    let json = r#"{
-        "type": "agent-turn-complete",
-        "thread-id": "conv_notify_1",
-        "turn-id": "turn_abc",
-        "cwd": "/home/user/project",
-        "last-assistant-message": "I fixed the bug in login.rs by updating the auth check.",
-        "input-messages": [{"role": "user", "content": "Fix the login bug"}]
-    }"#;
-
-    let payload: NotifyPayload = serde_json::from_str(json).unwrap();
-    assert_eq!(payload.thread_id, "conv_notify_1");
-    assert_eq!(payload.cwd, "/home/user/project");
-    assert_eq!(
-        payload.last_assistant_message.as_deref(),
-        Some("I fixed the bug in login.rs by updating the auth check.")
-    );
-}
-
-#[test]
-fn test_notify_payload_minimal() {
-    use aiki::editors::codex::NotifyPayload;
-
-    // Minimal payload with only required fields
-    let json = r#"{
-        "type": "agent-turn-complete",
-        "thread-id": "conv_minimal",
-        "cwd": "/tmp"
-    }"#;
-
-    let payload: NotifyPayload = serde_json::from_str(json).unwrap();
-    assert_eq!(payload.thread_id, "conv_minimal");
-    assert_eq!(payload.cwd, "/tmp");
-    assert!(payload.last_assistant_message.is_none());
-}
-
-#[test]
 fn test_codex_config_toml_generation() {
     let tmp = tempfile::TempDir::new().unwrap();
     let config_path = tmp.path().join("config.toml");
@@ -234,16 +195,23 @@ fn test_codex_config_toml_generation() {
     otel_table.insert("log_user_prompt".to_string(), toml::Value::Boolean(true));
     config.insert("otel".to_string(), toml::Value::Table(otel_table));
 
-    let notify_cmd = vec![
-        toml::Value::String("/usr/local/bin/aiki".to_string()),
-        toml::Value::String("hooks".to_string()),
-        toml::Value::String("handle".to_string()),
-        toml::Value::String("--agent".to_string()),
-        toml::Value::String("codex".to_string()),
-        toml::Value::String("--event".to_string()),
-        toml::Value::String("agent-turn-complete".to_string()),
-    ];
-    config.insert("notify".to_string(), toml::Value::Array(notify_cmd));
+    let hook_events = ["sessionStart", "userPromptSubmit", "preToolUse", "stop"];
+    let mut hooks = toml::map::Map::new();
+    for event_name in hook_events {
+        let cmd = vec![
+            toml::Value::String("/usr/local/bin/aiki".to_string()),
+            toml::Value::String("hooks".to_string()),
+            toml::Value::String("stdin".to_string()),
+            toml::Value::String("--agent".to_string()),
+            toml::Value::String("codex".to_string()),
+            toml::Value::String("--event".to_string()),
+            toml::Value::String(event_name.to_string()),
+        ];
+        let mut hook_entry = toml::map::Map::new();
+        hook_entry.insert("command".to_string(), toml::Value::Array(cmd));
+        hooks.insert(event_name.to_string(), toml::Value::Table(hook_entry));
+    }
+    config.insert("hooks".to_string(), toml::Value::Table(hooks));
 
     let content = toml::to_string_pretty(&toml::Value::Table(config)).unwrap();
     fs::write(&config_path, &content).unwrap();
@@ -269,13 +237,18 @@ fn test_codex_config_toml_generation() {
         "binary"
     );
 
-    let notify = parsed.get("notify").unwrap().as_array().unwrap();
-    assert!(notify
-        .iter()
-        .any(|v| v.as_str().is_some_and(|s| s.contains("aiki"))));
-    assert!(notify
-        .iter()
-        .any(|v| v.as_str() == Some("agent-turn-complete")));
+    assert!(parsed.get("notify").is_none());
+
+    let hooks = parsed.get("hooks").unwrap().as_table().unwrap();
+    for event_name in ["sessionStart", "userPromptSubmit", "preToolUse", "stop"] {
+        let hook = hooks.get(event_name).unwrap().as_table().unwrap();
+        let command = hook.get("command").unwrap().as_array().unwrap();
+        assert!(command
+            .iter()
+            .any(|v| v.as_str().is_some_and(|s| s.contains("aiki"))));
+        assert!(command.iter().any(|v| v.as_str() == Some("stdin")));
+        assert!(command.iter().any(|v| v.as_str() == Some(event_name)));
+    }
 }
 
 #[test]
