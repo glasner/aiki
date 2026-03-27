@@ -36,6 +36,10 @@ impl AgentRuntime for ClaudeCodeRuntime {
         let mut cmd = Command::new("claude");
         cmd.current_dir(&options.cwd)
             .args(["--print", "--dangerously-skip-permissions", &prompt])
+            // Pass thread ID so blocking sessions inherit thread-scoped task filtering
+            .env("AIKI_THREAD", &options.thread.serialize())
+            // Mark as background so task.closed hook doesn't auto-end this session
+            .env("AIKI_SESSION_MODE", "background")
             // Unset nesting guard so child Claude Code sessions can start
             .env_remove("CLAUDECODE")
             .env_remove("CLAUDE_CODE_ENTRYPOINT");
@@ -86,8 +90,8 @@ impl AgentRuntime for ClaudeCodeRuntime {
             // Unset nesting guard so child Claude Code sessions can start
             .env_remove("CLAUDECODE")
             .env_remove("CLAUDE_CODE_ENTRYPOINT")
-            // Pass task ID so session system can track this as a task-driven session
-            .env("AIKI_TASK", &options.task_id)
+            // Pass thread ID so session system can track this as a thread-driven session
+            .env("AIKI_THREAD", &options.thread.serialize())
             // Mark as background session for mode detection
             .env("AIKI_SESSION_MODE", "background")
             // Detach stdin/stdout/stderr so process runs independently
@@ -102,7 +106,7 @@ impl AgentRuntime for ClaudeCodeRuntime {
 
         match child {
             Ok(_child) => Ok(BackgroundHandle {
-                task_id: options.task_id.clone(),
+                thread: options.thread.clone(),
                 session_id: None,
             }),
             Err(e) => Err(AikiError::AgentSpawnFailed(format!(
@@ -123,8 +127,8 @@ impl AgentRuntime for ClaudeCodeRuntime {
             // Unset nesting guard so child Claude Code sessions can start
             .env_remove("CLAUDECODE")
             .env_remove("CLAUDE_CODE_ENTRYPOINT")
-            // Pass task ID so session system can track this as a task-driven session
-            .env("AIKI_TASK", &options.task_id)
+            // Pass thread ID so session system can track this as a thread-driven session
+            .env("AIKI_THREAD", &options.thread.serialize())
             // Mark as monitored session for mode detection
             .env("AIKI_SESSION_MODE", "monitored")
             // Detach stdin so process runs independently
