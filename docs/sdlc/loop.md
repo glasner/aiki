@@ -1,6 +1,6 @@
 # Loop
 
-`aiki loop` orchestrates a parent task's subtasks via parallel lanes. It derives an execution graph from subtask dependencies, schedules independent work concurrently, and runs sessions until all lanes complete.
+`aiki loop` orchestrates a parent task's subtasks via parallel lanes. It derives an execution graph from subtask dependencies, schedules independent work concurrently, and runs threads until all lanes complete.
 
 ## Usage
 
@@ -33,9 +33,9 @@ aiki loop <parent-task-id> -o id
 
 5. **Execute** — The loop agent iterates:
    - Get ready lanes via `aiki task lane <parent-id>`
-   - Start each ready lane with `aiki run <parent-id> --next-session --lane <lane-id> --async`
-   - Wait for any session to finish with `aiki task wait <ids> --any`
-   - Loop back — finished sessions may unblock new lanes
+   - Start each ready lane with `aiki run <parent-id> --next-thread --lane <lane-id> --async`
+   - Wait for any thread to finish with `aiki task wait <ids> --any`
+   - Loop back — finished threads may unblock new lanes
    - Exit when no ready lanes remain
 
 ## Lanes
@@ -44,11 +44,11 @@ Lanes are the execution units derived from the subtask dependency graph. They ar
 
 ### How lanes are derived
 
-1. **`needs-context` chains** form sessions — tasks linked by `needs-context` run in a single agent session (same process, shared memory).
+1. **`needs-context` chains** form threads — tasks linked by `needs-context` run in a single thread (same process, shared memory).
 
-2. **`depends-on` edges** between sessions form the lane DAG:
+2. **`depends-on` edges** between threads form the lane DAG:
    - **Independent roots** (no dependencies) become separate parallel lanes
-   - **Linear `depends-on` paths** stay in one lane as sequential sessions
+   - **Linear `depends-on` paths** stay in one lane as sequential threads
    - **Fan-out** creates separate parallel lanes
    - **Fan-in** creates a lane that waits on predecessor lanes
 
@@ -75,8 +75,8 @@ Lane 3: D          (waits for Lanes 1 and 2)
 
 | Status | Meaning |
 |--------|---------|
-| `● ready` | Prerequisites met, next session can start |
-| `▶ in-progress` | A session in this lane is currently running |
+| `● ready` | Prerequisites met, next thread can start |
+| `▶ in-progress` | A thread in this lane is currently running |
 | `◌ blocked` | Waiting on predecessor lanes |
 | `✓ complete` | All tasks in the lane are done |
 | `✗ failed` | At least one task stopped or closed as won't-do |
@@ -91,18 +91,18 @@ aiki task lane <parent-id>
 aiki task lane <parent-id> --all
 ```
 
-## Sessions
+## Threads
 
-Within a lane, work is divided into **sessions**. Each session is one agent invocation.
+Within a lane, work is divided into **threads**. Each thread is one agent invocation.
 
-- A single-task session runs one subtask in a fresh agent
-- A `needs-context` chain runs multiple tasks in the same agent session, preserving in-memory context between them
+- A single-task thread runs one subtask in a fresh agent
+- A `needs-context` chain runs multiple tasks in the same thread, preserving in-memory context between them
 
-The loop orchestrator starts sessions via `aiki run <parent-id> --next-session --lane <lane-id>`, which automatically picks the next ready task (or chain) in the lane.
+The loop orchestrator starts threads via `aiki run <parent-id> --next-thread --lane <lane-id>`, which automatically picks the next ready task (or chain) in the lane.
 
 ## Failure Handling
 
-- If a session fails, its lane cannot proceed
+- If a thread fails, its lane cannot proceed
 - Dependent lanes (via `depends-on`) are also blocked
 - Independent lanes continue running
 - Use `aiki task lane <parent-id> --all` to see which lanes are blocked

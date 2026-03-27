@@ -536,11 +536,12 @@ fn run_epic(
     // Spawn claude interactively - inherits stdin/stdout/stderr for user interaction
     // Note: We don't use --print or --dangerously-skip-permissions here because
     // plan sessions are interactive and the user can approve actions themselves
-    // AIKI_TASK is set so the session tracks which task is driving it, enabling
-    // auto-end when the plan task closes
+    // AIKI_THREAD is set so the session tracks which thread is driving it, enabling
+    // auto-end when the thread's tail task closes
+    let thread = crate::tasks::lanes::ThreadId::single(plan_task_id.clone());
     let status = Command::new("claude")
         .current_dir(cwd)
-        .env("AIKI_TASK", &plan_task_id)
+        .env("AIKI_THREAD", &thread.serialize())
         .arg(&prompt)
         .status();
 
@@ -592,7 +593,7 @@ fn create_plan_task(
     assignee: Option<String>,
     timestamp: chrono::DateTime<chrono::Utc>,
 ) -> Result<String> {
-    use crate::tasks::templates::get_working_copy_change_id;
+    use crate::jj::get_working_copy_change_id;
 
     let working_copy = get_working_copy_change_id(cwd);
 

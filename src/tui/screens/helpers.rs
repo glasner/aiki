@@ -68,10 +68,7 @@ pub fn find_fix_review<'a>(graph: &'a TaskGraph, fix_parent_id: &str) -> Option<
 }
 
 /// Find the regression review task (linked via "validates" to the original review).
-pub fn find_regression_review<'a>(
-    graph: &'a TaskGraph,
-    review_id: &str,
-) -> Option<&'a Task> {
+pub fn find_regression_review<'a>(graph: &'a TaskGraph, review_id: &str) -> Option<&'a Task> {
     let referrers = graph.edges.referrers(review_id, "validates");
     referrers
         .iter()
@@ -87,10 +84,7 @@ pub fn find_fix_parent(graph: &TaskGraph, epic_id: &str, iteration: u16) -> Opti
         .into_iter()
         .find(|t| {
             t.task_type.as_deref() == Some("fix")
-                && t.data
-                    .get("iteration")
-                    .and_then(|v| v.parse::<u16>().ok())
-                    == Some(iteration)
+                && t.data.get("iteration").and_then(|v| v.parse::<u16>().ok()) == Some(iteration)
         })
         .map(|t| t.id.clone())
 }
@@ -136,12 +130,7 @@ pub fn no_actionable_issues(graph: &TaskGraph, review_id: &str) -> bool {
 pub fn extract_issues(task: &Task) -> Vec<Issue> {
     task.comments
         .iter()
-        .filter(|c| {
-            c.data
-                .get("type")
-                .map(|t| t == "issue")
-                .unwrap_or(false)
-        })
+        .filter(|c| c.data.get("type").map(|t| t == "issue").unwrap_or(false))
         .map(|c| Issue {
             title: c.text.clone(),
             severity: c
@@ -210,7 +199,10 @@ pub fn review_phase_lines(group: u16, review: &Task, graph: &TaskGraph) -> Vec<L
             review.elapsed_str(),
         )],
         TaskStatus::Closed => {
-            vec![ChildLine::done(&format!("{} approved", crate::tui::theme::SYM_CHECK), review.elapsed_str())]
+            vec![ChildLine::done(
+                &format!("{} approved", crate::tui::theme::SYM_CHECK),
+                review.elapsed_str(),
+            )]
         }
         _ => vec![],
     };
@@ -291,32 +283,20 @@ pub fn render_phase_line(
                 if !heartbeat.is_empty() {
                     ChildLine::active_with_elapsed(heartbeat, elapsed)
                 } else {
-                    ChildLine::normal(
-                        phase.worker_status.as_deref().unwrap_or(""),
-                        elapsed,
-                    )
+                    ChildLine::normal(phase.worker_status.as_deref().unwrap_or(""), elapsed)
                 }
             } else {
                 // No task_id — use worker_status
-                ChildLine::normal(
-                    phase.worker_status.as_deref().unwrap_or(""),
-                    elapsed,
-                )
+                ChildLine::normal(phase.worker_status.as_deref().unwrap_or(""), elapsed)
             };
             (true, vec![child])
         }
         PhaseLifecycle::Done { result } => {
-            let child = ChildLine::done(
-                &format!("{} {}", theme::SYM_CHECK, result),
-                elapsed,
-            );
+            let child = ChildLine::done(&format!("{} {}", theme::SYM_CHECK, result), elapsed);
             (false, vec![child])
         }
         PhaseLifecycle::Failed { error } => {
-            let child = ChildLine::error(
-                &format!("{} {}", theme::SYM_FAILED, error),
-                elapsed,
-            );
+            let child = ChildLine::error(&format!("{} {}", theme::SYM_FAILED, error), elapsed);
             (false, vec![child])
         }
     };
@@ -365,11 +345,7 @@ pub fn render_lane_blocks(
 }
 
 /// Render numbered issue list for a review task.
-pub fn render_issue_list(
-    graph: &TaskGraph,
-    task_id: &str,
-    _window: &WindowState,
-) -> Vec<Line> {
+pub fn render_issue_list(graph: &TaskGraph, task_id: &str, _window: &WindowState) -> Vec<Line> {
     let task = match graph.tasks.get(task_id) {
         Some(t) => t,
         None => return vec![],
@@ -399,7 +375,11 @@ pub fn render_summary_line(model: &Model) -> Vec<Line> {
     };
 
     let children = model.graph.children_of(root_id);
-    let sessions = if children.is_empty() { 1 } else { children.len() };
+    let sessions = if children.is_empty() {
+        1
+    } else {
+        children.len()
+    };
 
     // Sum tokens from graph children
     let mut total_tokens: u64 = 0;
@@ -451,7 +431,7 @@ pub fn lane_to_render_data(
     all_lanes: &[Lane],
 ) -> LaneData {
     let all_task_ids: Vec<&str> = lane
-        .sessions
+        .threads
         .iter()
         .flat_map(|s| s.task_ids.iter())
         .map(|s| s.as_str())
@@ -587,10 +567,20 @@ mod tests {
         let parent = make_task("parent1", "Epic", TaskStatus::InProgress, None);
         let work1 = make_task("work1", "Implement feature A", TaskStatus::Open, None);
         let work2 = make_task("work2", "Implement feature B", TaskStatus::InProgress, None);
-        let decompose = make_task("decomp1", "Decompose", TaskStatus::Closed, Some("decompose"));
+        let decompose = make_task(
+            "decomp1",
+            "Decompose",
+            TaskStatus::Closed,
+            Some("decompose"),
+        );
         let review = make_task("review1", "Review", TaskStatus::Open, Some("review"));
         let fix = make_task("fix1", "Fix issues", TaskStatus::Open, Some("fix"));
-        let orchestrator = make_task("orch1", "Orchestrator", TaskStatus::Open, Some("orchestrator"));
+        let orchestrator = make_task(
+            "orch1",
+            "Orchestrator",
+            TaskStatus::Open,
+            Some("orchestrator"),
+        );
 
         graph.tasks.insert("parent1".to_string(), parent);
         graph.tasks.insert("work1".to_string(), work1);
@@ -617,6 +607,8 @@ mod tests {
         let ids: Vec<&str> = work.iter().map(|t| t.id.as_str()).collect();
         assert!(ids.contains(&"work1"));
         assert!(ids.contains(&"work2"));
-        assert!(!ids.iter().any(|id| ["decomp1", "review1", "fix1", "orch1"].contains(id)));
+        assert!(!ids
+            .iter()
+            .any(|id| ["decomp1", "review1", "fix1", "orch1"].contains(id)));
     }
 }

@@ -473,18 +473,22 @@ pub fn list_conversations(cwd: &Path, limit: Option<usize>) -> Result<Vec<Conver
     Ok(summaries)
 }
 
-/// Find the most recent session started for a specific `aiki run` task.
-pub fn find_session_started_for_run_task(cwd: &Path, task_id: &str) -> Result<Option<String>> {
+/// Find the most recent session started for a specific `aiki run` thread.
+pub fn find_session_started_for_thread(cwd: &Path, thread_id: &str) -> Result<Option<String>> {
     let events = read_events(cwd)?;
+    Ok(find_session_in_events(&events, thread_id))
+}
 
-    Ok(events.iter().rev().find_map(|event| match event {
+/// Search events (in reverse) for a SessionStart whose run_thread_id exactly matches `thread_id`.
+fn find_session_in_events(events: &[ConversationEvent], thread_id: &str) -> Option<String> {
+    events.iter().rev().find_map(|event| match event {
         ConversationEvent::SessionStart {
             session_id,
-            run_task_id: Some(run_task_id),
+            run_thread_id: Some(run_thread_id),
             ..
-        } if run_task_id == task_id => Some(session_id.clone()),
+        } if run_thread_id == thread_id => Some(session_id.clone()),
         _ => None,
-    }))
+    })
 }
 
 /// Escape a string value for metadata storage
@@ -612,7 +616,7 @@ fn event_to_metadata_block(event: &ConversationEvent) -> String {
             session_id,
             agent_type,
             timestamp,
-            run_task_id,
+            run_thread_id,
             repo_id,
             cwd,
             session_mode,
@@ -620,8 +624,8 @@ fn event_to_metadata_block(event: &ConversationEvent) -> String {
             add_metadata("event", "session_start", &mut lines);
             add_metadata("session", session_id, &mut lines);
             add_metadata("agent_type", agent_type, &mut lines);
-            if let Some(task_id) = run_task_id {
-                add_metadata("run_task", task_id, &mut lines);
+            if let Some(thread_id) = run_thread_id {
+                add_metadata("run_thread", thread_id, &mut lines);
             }
             if let Some(mode) = session_mode {
                 add_metadata("session_mode", mode.to_string(), &mut lines);
@@ -790,8 +794,8 @@ fn parse_metadata_block(block: &str) -> Option<ConversationEvent> {
                 .and_then(|v| v.first())
                 .and_then(|s| AgentType::from_str(s))
                 .unwrap_or(AgentType::Unknown);
-            let run_task_id = fields
-                .get("run_task")
+            let run_thread_id = fields
+                .get("run_thread")
                 .and_then(|v| v.first())
                 .map(|s| s.to_string());
             let session_mode = fields
@@ -803,7 +807,7 @@ fn parse_metadata_block(block: &str) -> Option<ConversationEvent> {
                 session_id,
                 agent_type,
                 timestamp,
-                run_task_id,
+                run_thread_id,
                 repo_id,
                 cwd,
                 session_mode,
@@ -1339,5 +1343,149 @@ timestamp=2026-01-09T10:30:00Z
                 // Expected - no JJ repo means command fails
             }
         }
+    }
+
+    #[test]
+    fn test_session_start_serialization_with_thread() {
+        let thread_str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        let event = ConversationEvent::SessionStart {
+            session_id: "sess-thread-1".to_string(),
+            agent_type: AgentType::ClaudeCode,
+            timestamp: DateTime::parse_from_rfc3339("2026-03-27T12:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+            run_thread_id: Some(thread_str.to_string()),
+            repo_id: None,
+            cwd: None,
+            session_mode: None,
+        };
+
+        let block = event_to_metadata_block(&event);
+        assert!(
+            block.contains(&format!("run_thread={}", thread_str)),
+            "Serialized block should contain run_thread=head:tail"
+        );
+
+        // Deserialize back
+        let start = block.find(METADATA_START).unwrap() + METADATA_START.len();
+        let end = block.find(METADATA_END).unwrap();
+        let parsed = parse_metadata_block(&block[start..end]).expect("Should parse");
+
+        match parsed {
+            ConversationEvent::SessionStart {
+                session_id,
+                run_thread_id,
+                ..
+            } => {
+                assert_eq!(session_id, "sess-thread-1");
+                assert_eq!(run_thread_id, Some(thread_str.to_string()));
+            }
+            _ => panic!("Expected SessionStart event"),
+        }
+    }
+
+    #[test]
+    fn test_session_start_serialization_without_thread() {
+        let event = ConversationEvent::SessionStart {
+            session_id: "sess-no-thread".to_string(),
+            agent_type: AgentType::ClaudeCode,
+            timestamp: DateTime::parse_from_rfc3339("2026-03-27T12:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+            run_thread_id: None,
+            repo_id: None,
+            cwd: None,
+            session_mode: None,
+        };
+
+        let block = event_to_metadata_block(&event);
+        assert!(
+            !block.contains("run_thread="),
+            "Serialized block should NOT contain run_thread when None"
+        );
+
+        // Deserialize back
+        let start = block.find(METADATA_START).unwrap() + METADATA_START.len();
+        let end = block.find(METADATA_END).unwrap();
+        let parsed = parse_metadata_block(&block[start..end]).expect("Should parse");
+
+        match parsed {
+            ConversationEvent::SessionStart {
+                session_id,
+                run_thread_id,
+                ..
+            } => {
+                assert_eq!(session_id, "sess-no-thread");
+                assert_eq!(run_thread_id, None);
+            }
+            _ => panic!("Expected SessionStart event"),
+        }
+    }
+
+    #[test]
+    fn test_find_session_started_for_thread_exact_match() {
+        let head = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let tail_b = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        let tail_c = "cccccccccccccccccccccccccccccccc";
+        let thread_ab = format!("{}:{}", head, tail_b);
+        let thread_ac = format!("{}:{}", head, tail_c);
+
+        let events = vec![
+            ConversationEvent::SessionStart {
+                session_id: "session-A".to_string(),
+                agent_type: AgentType::ClaudeCode,
+                timestamp: Utc::now(),
+                run_thread_id: Some(thread_ab.clone()),
+                repo_id: None,
+                cwd: None,
+                session_mode: None,
+            },
+            ConversationEvent::SessionStart {
+                session_id: "session-B".to_string(),
+                agent_type: AgentType::ClaudeCode,
+                timestamp: Utc::now(),
+                run_thread_id: Some(thread_ac.clone()),
+                repo_id: None,
+                cwd: None,
+                session_mode: None,
+            },
+        ];
+
+        // Exact match on thread_ab → session A
+        assert_eq!(find_session_in_events(&events, &thread_ab), Some("session-A".to_string()));
+        // Exact match on thread_ac → session B
+        assert_eq!(find_session_in_events(&events, &thread_ac), Some("session-B".to_string()));
+        // Head-only query does NOT match (exact-match semantics)
+        assert_eq!(find_session_in_events(&events, head), None);
+    }
+
+    #[test]
+    fn test_find_session_started_for_thread_no_match() {
+        let events = vec![
+            ConversationEvent::SessionStart {
+                session_id: "session-X".to_string(),
+                agent_type: AgentType::ClaudeCode,
+                timestamp: Utc::now(),
+                run_thread_id: None,
+                repo_id: None,
+                cwd: None,
+                session_mode: None,
+            },
+            ConversationEvent::SessionStart {
+                session_id: "session-Y".to_string(),
+                agent_type: AgentType::Cursor,
+                timestamp: Utc::now(),
+                run_thread_id: None,
+                repo_id: None,
+                cwd: None,
+                session_mode: None,
+            },
+        ];
+
+        assert_eq!(
+            find_session_in_events(&events, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+            None
+        );
+        assert_eq!(find_session_in_events(&events, "anything"), None);
     }
 }

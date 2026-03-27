@@ -1,12 +1,12 @@
 use serde::Deserialize;
 use std::path::PathBuf;
 
+use super::session::create_session;
 use crate::error::Result;
 use crate::events::{
     AikiEvent, AikiSessionClearedPayload, AikiSessionResumedPayload, AikiSessionStartPayload,
     AikiShellPermissionAskedPayload, AikiTurnCompletedPayload, AikiTurnStartedPayload,
 };
-use super::session::create_session;
 
 // ============================================================================
 // Hook Payload Structures (matches Codex native hooks API)

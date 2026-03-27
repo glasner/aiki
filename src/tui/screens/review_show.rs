@@ -21,7 +21,10 @@ pub fn view(graph: &TaskGraph, review_id: &str, _window: &WindowState) -> Vec<Li
             review.elapsed_str(),
         )
     } else {
-        ChildLine::done(&format!("{} approved", theme::SYM_CHECK), review.elapsed_str())
+        ChildLine::done(
+            &format!("{} approved", theme::SYM_CHECK),
+            review.elapsed_str(),
+        )
     };
     lines.extend(components::phase(
         0,

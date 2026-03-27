@@ -55,7 +55,7 @@ signal-hook = "0.3"
 ahash = "0.8"
 fd-lock = "4.0"
 hashbrown = "0.14"
-rhai = "1.24"
+rhai = { version = "1.24", features = ["internals"] }
 ratatui = { version = "0.30", features = ["scrolling-regions"] }
 ratatui-macros = "0.7"
 terminal-colorsaurus = "0.4"

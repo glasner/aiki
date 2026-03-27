@@ -86,7 +86,7 @@ aiki task link fix --remediates review-task
 
 ### `needs-context`
 
-Session-context link. The `from` task must run in the same agent session as the `to` task, and the `to` task must complete first. Forms linear chains only.
+Thread-context link. The `from` task must run in the same thread as the `to` task, and the `to` task must complete first. Forms linear chains only.
 
 ```bash
 aiki task add "Apply fix" --needs-context <investigation-id>
@@ -94,7 +94,7 @@ aiki task add "Apply fix" --needs-context <investigation-id>
 
 - **Cardinality:** max 1 forward, max 1 reverse (linear chains)
 - **Autorun:** supported
-- **Use case:** When task B needs the in-memory context from task A (e.g., an investigation followed by a fix)
+- **Use case:** When task B needs the in-memory context from task A (e.g., an investigation followed by a fix) — they run in the same thread
 
 ---
 

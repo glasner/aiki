@@ -124,7 +124,12 @@ fn task_stdout(path: &std::path::Path, args: &[&str]) -> String {
 fn tasks_section(output: &str) -> &str {
     // The context footer starts with a blank line followed by a status header
     // like "Ready (N):" or "In Progress:". Split at the first such boundary.
-    for footer in &["\nReady (", "\nReady:\n", "\nIn Progress:", "\nIn Progress ("] {
+    for footer in &[
+        "\nReady (",
+        "\nReady:\n",
+        "\nIn Progress:",
+        "\nIn Progress (",
+    ] {
         if let Some(pos) = output.find(footer) {
             return &output[..pos];
         }

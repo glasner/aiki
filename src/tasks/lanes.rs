@@ -1,33 +1,135 @@
 //! Lane derivation from the subtask DAG
 //!
-//! A **lane** is a sequence of sessions derived from `needs-context` and
+//! A **lane** is a sequence of threads derived from `needs-context` and
 //! `depends-on` edges.  Lanes are independent of each other and can run
 //! concurrently.  Lane structure is a query-time derivation — nothing is
 //! persisted.
 
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::fmt;
+
+use anyhow::{bail, Result};
 
 use super::graph::TaskGraph;
-use super::manager::get_subtasks;
+use super::manager::{get_subtasks, resolve_task_id_in_graph};
+use super::md::short_id;
 use super::types::{TaskOutcome, TaskStatus};
 
 // ── Types ───────────────────────────────────────────────────────────
 
-/// A session within a lane: one or more task IDs that run in a single
-/// agent session.
+/// Identifies a thread — a sequential chunk of tasks within a lane.
+/// Single-task threads have head == tail.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct ThreadId {
+    /// First task ID in the chain.
+    pub head: String,
+    /// Last task ID in the chain.
+    pub tail: String,
+}
+
+impl ThreadId {
+    /// Parse from wire format: `"head:tail"` or `"head"` (single-task shortcut).
+    ///
+    /// Expects full 32-char lowercase task IDs. No prefix resolution.
+    /// Used by session files, env vars, history metadata.
+    pub fn parse(input: &str) -> Result<Self> {
+        if let Some((head, tail)) = input.split_once(':') {
+            Self::validate_full_id(head, "head", input)?;
+            Self::validate_full_id(tail, "tail", input)?;
+            Ok(Self {
+                head: head.to_string(),
+                tail: tail.to_string(),
+            })
+        } else {
+            Self::validate_full_id(input, "id", input)?;
+            Ok(Self {
+                head: input.to_string(),
+                tail: input.to_string(),
+            })
+        }
+    }
+
+    /// Validate that a string is a canonical full 32-char lowercase task ID.
+    fn validate_full_id(id: &str, label: &str, context: &str) -> Result<()> {
+        if id.is_empty() {
+            bail!("ThreadId: empty {label} in '{context}'");
+        }
+        if id.len() != 32 {
+            bail!(
+                "ThreadId: {label} must be 32 chars, got {} in '{context}'",
+                id.len()
+            );
+        }
+        if !id.bytes().all(|b| b.is_ascii_lowercase()) {
+            bail!("ThreadId: {label} must be lowercase a-z in '{context}'");
+        }
+        Ok(())
+    }
+
+    /// Parse from CLI input, resolving both halves via prefix resolution.
+    ///
+    /// Used only at CLI entry points (`--thread` flag).
+    pub fn resolve(input: &str, graph: &TaskGraph) -> Result<Self> {
+        if let Some((head_prefix, tail_prefix)) = input.split_once(':') {
+            let head = resolve_task_id_in_graph(graph, head_prefix)?;
+            let tail = resolve_task_id_in_graph(graph, tail_prefix)?;
+            Ok(Self { head, tail })
+        } else {
+            let id = resolve_task_id_in_graph(graph, input)?;
+            Ok(Self {
+                head: id.clone(),
+                tail: id,
+            })
+        }
+    }
+
+    /// Single-task thread (head == tail).
+    pub fn single(task_id: String) -> Self {
+        Self {
+            head: task_id.clone(),
+            tail: task_id,
+        }
+    }
+
+    /// Full-ID serialization for env vars, session files, history metadata.
+    pub fn serialize(&self) -> String {
+        if self.is_single() {
+            self.head.clone()
+        } else {
+            format!("{}:{}", self.head, self.tail)
+        }
+    }
+
+    pub fn is_single(&self) -> bool {
+        self.head == self.tail
+    }
+}
+
+impl fmt::Display for ThreadId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.is_single() {
+            write!(f, "{}", short_id(&self.head))
+        } else {
+            write!(f, "{}:{}", short_id(&self.head), short_id(&self.tail))
+        }
+    }
+}
+
+/// A thread within a lane: one or more task IDs that run in a single
+/// agent session sharing context.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LaneSession {
-    /// Ordered task IDs in this session
+pub struct Thread {
+    /// Ordered task IDs in this thread.
     pub task_ids: Vec<String>,
 }
 
-/// A derived lane: sequence of sessions in execution order.
+/// A derived lane: sequence of threads in execution order.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Lane {
     /// First task in the lane — also serves as the lane ID.
     pub head_task_id: String,
-    /// Sessions in execution order.
-    pub sessions: Vec<LaneSession>,
+    /// Threads in execution order.
+    pub threads: Vec<Thread>,
     /// Head IDs of predecessor lanes (cross-lane `depends-on`).
     pub depends_on_lanes: Vec<String>,
 }
@@ -45,7 +147,7 @@ pub enum LaneStatus {
     Complete,
     /// At least one task `Stopped` or `Closed(WontDo)`
     Failed,
-    /// Lane's prerequisites are met and next session can run
+    /// Lane's prerequisites are met and next thread can run
     Ready,
     /// Lane is waiting on predecessor lanes or blocked tasks
     Blocked,
@@ -273,9 +375,9 @@ pub fn derive_lanes(graph: &TaskGraph, parent_id: &str) -> LaneDecomposition {
     let mut lanes = Vec::new();
     for lane_head in &lane_head_order {
         let session_heads_in_lane = &lane_sessions[lane_head];
-        let lane_sessions_list: Vec<LaneSession> = session_heads_in_lane
+        let lane_threads_list: Vec<Thread> = session_heads_in_lane
             .iter()
-            .map(|sh| LaneSession {
+            .map(|sh| Thread {
                 task_ids: sessions[sh].clone(),
             })
             .collect();
@@ -291,7 +393,7 @@ pub fn derive_lanes(graph: &TaskGraph, parent_id: &str) -> LaneDecomposition {
 
         lanes.push(Lane {
             head_task_id: lane_head.clone(),
-            sessions: lane_sessions_list,
+            threads: lane_threads_list,
             depends_on_lanes: depends_on,
         });
     }
@@ -334,7 +436,7 @@ pub fn is_lane_failed(lane: &Lane, graph: &TaskGraph) -> bool {
 
 /// A lane is ready when:
 /// 1. All predecessor lanes are complete, AND
-/// 2. No task in the lane's next uncompleted session is blocked or in-progress.
+/// 2. No task in the lane's next uncompleted thread is blocked or in-progress.
 ///
 /// `all_lanes` must be the full decomposition so we can check predecessors.
 pub fn is_lane_ready_with_decomposition(
@@ -361,8 +463,8 @@ pub fn is_lane_ready_with_decomposition(
         }
     }
 
-    // Find the next uncompleted session
-    let next_session = lane.sessions.iter().find(|s| {
+    // Find the next uncompleted thread
+    let next_thread = lane.threads.iter().find(|s| {
         !s.task_ids.iter().all(|tid| {
             graph.tasks.get(tid).map_or(false, |t| {
                 t.status == TaskStatus::Closed && t.closed_outcome == Some(TaskOutcome::Done)
@@ -370,10 +472,10 @@ pub fn is_lane_ready_with_decomposition(
         })
     });
 
-    match next_session {
-        Some(session) => {
-            // A session with InProgress tasks is already running, not "ready"
-            let any_in_progress = session.task_ids.iter().any(|tid| {
+    match next_thread {
+        Some(thread) => {
+            // A thread with InProgress tasks is already running, not "ready"
+            let any_in_progress = thread.task_ids.iter().any(|tid| {
                 graph
                     .tasks
                     .get(tid)
@@ -382,11 +484,11 @@ pub fn is_lane_ready_with_decomposition(
             if any_in_progress {
                 return false;
             }
-            // No task in the next session should be blocked
-            !session.task_ids.iter().any(|tid| graph.is_blocked(tid))
+            // No task in the next thread should be blocked
+            !thread.task_ids.iter().any(|tid| graph.is_blocked(tid))
         }
         None => {
-            // All sessions complete — lane is done, not "ready"
+            // All threads complete — lane is done, not "ready"
             false
         }
     }
@@ -404,7 +506,7 @@ pub fn get_lane_task_ids(
         .iter()
         .find(|l| l.head_task_id == lane_head)
         .map(|lane| {
-            lane.sessions
+            lane.threads
                 .iter()
                 .flat_map(|s| s.task_ids.iter().cloned())
                 .collect()
@@ -442,9 +544,9 @@ pub fn resolve_lane_prefix(
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
-/// Iterate over all task IDs in a lane (across all sessions).
+/// Iterate over all task IDs in a lane (across all threads).
 fn all_lane_tasks(lane: &Lane) -> impl Iterator<Item = &str> {
-    lane.sessions
+    lane.threads
         .iter()
         .flat_map(|s| s.task_ids.iter().map(|id| id.as_str()))
 }
@@ -542,8 +644,8 @@ mod tests {
 
         assert_eq!(decomp.lanes.len(), 1);
         assert_eq!(decomp.lanes[0].head_task_id, "A");
-        assert_eq!(decomp.lanes[0].sessions.len(), 1);
-        assert_eq!(decomp.lanes[0].sessions[0].task_ids, vec!["A"]);
+        assert_eq!(decomp.lanes[0].threads.len(), 1);
+        assert_eq!(decomp.lanes[0].threads[0].task_ids, vec!["A"]);
         assert!(decomp.lanes[0].depends_on_lanes.is_empty());
     }
 
@@ -565,8 +667,8 @@ mod tests {
 
         assert_eq!(decomp.lanes.len(), 1);
         assert_eq!(decomp.lanes[0].head_task_id, "A");
-        assert_eq!(decomp.lanes[0].sessions.len(), 1);
-        assert_eq!(decomp.lanes[0].sessions[0].task_ids, vec!["A", "B", "C"]);
+        assert_eq!(decomp.lanes[0].threads.len(), 1);
+        assert_eq!(decomp.lanes[0].threads[0].task_ids, vec!["A", "B", "C"]);
     }
 
     #[test]
@@ -587,10 +689,10 @@ mod tests {
 
         assert_eq!(decomp.lanes.len(), 1);
         assert_eq!(decomp.lanes[0].head_task_id, "A");
-        assert_eq!(decomp.lanes[0].sessions.len(), 3);
-        assert_eq!(decomp.lanes[0].sessions[0].task_ids, vec!["A"]);
-        assert_eq!(decomp.lanes[0].sessions[1].task_ids, vec!["B"]);
-        assert_eq!(decomp.lanes[0].sessions[2].task_ids, vec!["C"]);
+        assert_eq!(decomp.lanes[0].threads.len(), 3);
+        assert_eq!(decomp.lanes[0].threads[0].task_ids, vec!["A"]);
+        assert_eq!(decomp.lanes[0].threads[1].task_ids, vec!["B"]);
+        assert_eq!(decomp.lanes[0].threads[2].task_ids, vec!["C"]);
     }
 
     #[test]
@@ -673,10 +775,10 @@ mod tests {
         assert_eq!(decomp.lanes.len(), 1);
         let lane = &decomp.lanes[0];
         assert_eq!(lane.head_task_id, "E");
-        assert_eq!(lane.sessions.len(), 3);
-        assert_eq!(lane.sessions[0].task_ids, vec!["E", "PL"]);
-        assert_eq!(lane.sessions[1].task_ids, vec!["I"]);
-        assert_eq!(lane.sessions[2].task_ids, vec!["T", "V"]);
+        assert_eq!(lane.threads.len(), 3);
+        assert_eq!(lane.threads[0].task_ids, vec!["E", "PL"]);
+        assert_eq!(lane.threads[1].task_ids, vec!["I"]);
+        assert_eq!(lane.threads[2].task_ids, vec!["T", "V"]);
     }
 
     #[test]
@@ -718,7 +820,10 @@ mod tests {
         let decomp = derive_lanes(&graph, "P");
         assert!(is_lane_complete(&decomp.lanes[0], &graph));
         assert!(!is_lane_failed(&decomp.lanes[0], &graph));
-        assert_eq!(lane_status(&decomp.lanes[0], &graph, &decomp.lanes), LaneStatus::Complete);
+        assert_eq!(
+            lane_status(&decomp.lanes[0], &graph, &decomp.lanes),
+            LaneStatus::Complete
+        );
     }
 
     #[test]
@@ -732,7 +837,10 @@ mod tests {
         let graph = materialize_graph(&events);
         let decomp = derive_lanes(&graph, "P");
         assert!(is_lane_failed(&decomp.lanes[0], &graph));
-        assert_eq!(lane_status(&decomp.lanes[0], &graph, &decomp.lanes), LaneStatus::Failed);
+        assert_eq!(
+            lane_status(&decomp.lanes[0], &graph, &decomp.lanes),
+            LaneStatus::Failed
+        );
     }
 
     #[test]
@@ -746,7 +854,10 @@ mod tests {
         let graph = materialize_graph(&events);
         let decomp = derive_lanes(&graph, "P");
         assert!(is_lane_failed(&decomp.lanes[0], &graph));
-        assert_eq!(lane_status(&decomp.lanes[0], &graph, &decomp.lanes), LaneStatus::Failed);
+        assert_eq!(
+            lane_status(&decomp.lanes[0], &graph, &decomp.lanes),
+            LaneStatus::Failed
+        );
     }
 
     #[test]
@@ -763,7 +874,10 @@ mod tests {
             &graph,
             &decomp.lanes
         ));
-        assert_eq!(lane_status(&decomp.lanes[0], &graph, &decomp.lanes), LaneStatus::Ready);
+        assert_eq!(
+            lane_status(&decomp.lanes[0], &graph, &decomp.lanes),
+            LaneStatus::Ready
+        );
     }
 
     #[test]
@@ -860,8 +974,8 @@ mod tests {
         assert_eq!(decomp.lanes.len(), 4);
 
         let lane_e = decomp.lanes.iter().find(|l| l.head_task_id == "E").unwrap();
-        assert_eq!(lane_e.sessions.len(), 1);
-        assert_eq!(lane_e.sessions[0].task_ids, vec!["E", "PL"]);
+        assert_eq!(lane_e.threads.len(), 1);
+        assert_eq!(lane_e.threads[0].task_ids, vec!["E", "PL"]);
         assert!(lane_e.depends_on_lanes.is_empty());
 
         let lane_fe = decomp
@@ -869,7 +983,7 @@ mod tests {
             .iter()
             .find(|l| l.head_task_id == "FE")
             .unwrap();
-        assert_eq!(lane_fe.sessions.len(), 1);
+        assert_eq!(lane_fe.threads.len(), 1);
         assert_eq!(lane_fe.depends_on_lanes, vec!["E"]);
 
         let lane_be = decomp
@@ -877,7 +991,7 @@ mod tests {
             .iter()
             .find(|l| l.head_task_id == "BE")
             .unwrap();
-        assert_eq!(lane_be.sessions.len(), 1);
+        assert_eq!(lane_be.threads.len(), 1);
         assert_eq!(lane_be.depends_on_lanes, vec!["E"]);
 
         let lane_ts = decomp
@@ -885,7 +999,7 @@ mod tests {
             .iter()
             .find(|l| l.head_task_id == "TS")
             .unwrap();
-        assert_eq!(lane_ts.sessions.len(), 1);
+        assert_eq!(lane_ts.threads.len(), 1);
         let mut ts_deps = lane_ts.depends_on_lanes.clone();
         ts_deps.sort();
         assert_eq!(ts_deps, vec!["BE", "FE"]);
@@ -912,12 +1026,12 @@ mod tests {
         assert_eq!(decomp.lanes.len(), 2);
 
         let lane_e = decomp.lanes.iter().find(|l| l.head_task_id == "E").unwrap();
-        assert_eq!(lane_e.sessions.len(), 1);
-        assert_eq!(lane_e.sessions[0].task_ids, vec!["E", "PL", "I"]);
+        assert_eq!(lane_e.threads.len(), 1);
+        assert_eq!(lane_e.threads[0].task_ids, vec!["E", "PL", "I"]);
 
         let lane_r = decomp.lanes.iter().find(|l| l.head_task_id == "R").unwrap();
-        assert_eq!(lane_r.sessions.len(), 1);
-        assert_eq!(lane_r.sessions[0].task_ids, vec!["R"]);
+        assert_eq!(lane_r.threads.len(), 1);
+        assert_eq!(lane_r.threads[0].task_ids, vec!["R"]);
     }
 
     // ── Prefix resolution tests ─────────────────────────────────────
@@ -965,7 +1079,7 @@ mod tests {
     // Note: `is_lane_ready_with_decomposition` checks sessions, and sessions
     // with needs-context chains may show as blocked when the head is ready but
     // later tasks are needs-context blocked. The real orchestrator uses
-    // `resolve_next_session_in_lane` which handles this correctly by resolving
+    // `resolve_next_thread_in_lane` which handles this correctly by resolving
     // individual ready tasks. These tests use `lane_status` for completeness
     // checks and standalone tasks for readiness checks.
 
@@ -1025,7 +1139,10 @@ mod tests {
             .iter()
             .find(|l| l.head_task_id == "TS")
             .unwrap();
-        assert_eq!(lane_status(ts_lane, &graph, &decomp.lanes), LaneStatus::Blocked);
+        assert_eq!(
+            lane_status(ts_lane, &graph, &decomp.lanes),
+            LaneStatus::Blocked
+        );
 
         // Orchestrator runs both FE and BE — complete them
         events.push(make_closed("FE"));
@@ -1059,7 +1176,10 @@ mod tests {
 
         // All lanes should be complete
         for lane in &decomp.lanes {
-            assert_eq!(lane_status(lane, &graph, &decomp.lanes), LaneStatus::Complete);
+            assert_eq!(
+                lane_status(lane, &graph, &decomp.lanes),
+                LaneStatus::Complete
+            );
         }
     }
 
@@ -1197,7 +1317,10 @@ mod tests {
 
         // Lane A should be Failed
         let a_lane = decomp.lanes.iter().find(|l| l.head_task_id == "A").unwrap();
-        assert_eq!(lane_status(a_lane, &graph, &decomp.lanes), LaneStatus::Failed);
+        assert_eq!(
+            lane_status(a_lane, &graph, &decomp.lanes),
+            LaneStatus::Failed
+        );
 
         // Lane B should still be Ready (independent)
         let b_lane = decomp.lanes.iter().find(|l| l.head_task_id == "B").unwrap();
@@ -1221,7 +1344,10 @@ mod tests {
         let decomp = derive_lanes(&graph, "P");
 
         let b_lane = decomp.lanes.iter().find(|l| l.head_task_id == "B").unwrap();
-        assert_eq!(lane_status(b_lane, &graph, &decomp.lanes), LaneStatus::Complete);
+        assert_eq!(
+            lane_status(b_lane, &graph, &decomp.lanes),
+            LaneStatus::Complete
+        );
 
         // C remains blocked (A is failed)
         let c_lane = decomp.lanes.iter().find(|l| l.head_task_id == "C").unwrap();
@@ -1251,7 +1377,7 @@ mod tests {
         let graph = materialize_graph(&events);
         let decomp = derive_lanes(&graph, "P");
         assert_eq!(decomp.lanes.len(), 1);
-        assert_eq!(decomp.lanes[0].sessions.len(), 3);
+        assert_eq!(decomp.lanes[0].threads.len(), 3);
 
         // Only 1 ready lane
         let ready: Vec<_> = decomp
@@ -1294,7 +1420,10 @@ mod tests {
         let decomp = derive_lanes(&graph, "P");
         let lane = &decomp.lanes[0];
         assert!(is_lane_complete(lane, &graph));
-        assert_eq!(lane_status(lane, &graph, &decomp.lanes), LaneStatus::Complete);
+        assert_eq!(
+            lane_status(lane, &graph, &decomp.lanes),
+            LaneStatus::Complete
+        );
 
         // No more ready lanes
         let ready: Vec<_> = decomp
@@ -1337,11 +1466,7 @@ mod tests {
         let graph = materialize_graph(&events);
         let decomp = derive_lanes(&graph, "P");
         // The lane with A as head should not be ready since A is InProgress
-        let lane_a = decomp
-            .lanes
-            .iter()
-            .find(|l| l.head_task_id == "A")
-            .unwrap();
+        let lane_a = decomp.lanes.iter().find(|l| l.head_task_id == "A").unwrap();
         assert!(!is_lane_ready_with_decomposition(
             lane_a,
             &graph,
@@ -1368,36 +1493,148 @@ mod tests {
         let decomp = derive_lanes(&graph, "P");
 
         // Lane A should be Ready (no predecessors)
-        let a_lane = decomp
-            .lanes
-            .iter()
-            .find(|l| l.head_task_id == "A")
-            .unwrap();
+        let a_lane = decomp.lanes.iter().find(|l| l.head_task_id == "A").unwrap();
         assert_eq!(
             lane_status(a_lane, &graph, &decomp.lanes),
             LaneStatus::Ready
         );
 
         // Lane B should be Blocked (A not complete)
-        let b_lane = decomp
-            .lanes
-            .iter()
-            .find(|l| l.head_task_id == "B")
-            .unwrap();
+        let b_lane = decomp.lanes.iter().find(|l| l.head_task_id == "B").unwrap();
         assert_eq!(
             lane_status(b_lane, &graph, &decomp.lanes),
             LaneStatus::Blocked
         );
 
         // Lane C should be Blocked (A not complete)
-        let c_lane = decomp
-            .lanes
-            .iter()
-            .find(|l| l.head_task_id == "C")
-            .unwrap();
+        let c_lane = decomp.lanes.iter().find(|l| l.head_task_id == "C").unwrap();
         assert_eq!(
             lane_status(c_lane, &graph, &decomp.lanes),
             LaneStatus::Blocked
         );
+    }
+
+    // ── ThreadId tests ──────────────────────────────────────────────
+
+    #[test]
+    fn test_thread_id_parse_single() {
+        let tid = ThreadId::parse("abcdefghijklmnopqrstuvwxyzabcdef").unwrap();
+        assert_eq!(tid.head, "abcdefghijklmnopqrstuvwxyzabcdef");
+        assert_eq!(tid.tail, "abcdefghijklmnopqrstuvwxyzabcdef");
+        assert!(tid.is_single());
+    }
+
+    #[test]
+    fn test_thread_id_parse_head_tail() {
+        let tid =
+            ThreadId::parse("abcdefghijklmnopqrstuvwxyzabcdef:fedcbazyxwvutsrqponmlkjihgfedcba")
+                .unwrap();
+        assert_eq!(tid.head, "abcdefghijklmnopqrstuvwxyzabcdef");
+        assert_eq!(tid.tail, "fedcbazyxwvutsrqponmlkjihgfedcba");
+        assert!(!tid.is_single());
+    }
+
+    #[test]
+    fn test_thread_id_parse_empty_errors() {
+        assert!(ThreadId::parse("").is_err());
+        assert!(ThreadId::parse(":tail").is_err());
+        assert!(ThreadId::parse("head:").is_err());
+    }
+
+    #[test]
+    fn test_thread_id_parse_rejects_short_ids() {
+        // Prefix / short IDs must be rejected
+        assert!(ThreadId::parse("abcdefg").is_err());
+        assert!(ThreadId::parse("abcdefghijklmnop").is_err()); // 16 chars
+    }
+
+    #[test]
+    fn test_thread_id_parse_rejects_too_long() {
+        let too_long = "a".repeat(33);
+        assert!(ThreadId::parse(&too_long).is_err());
+    }
+
+    #[test]
+    fn test_thread_id_parse_rejects_non_lowercase() {
+        // Uppercase
+        assert!(ThreadId::parse("ABCDEFGHIJKLMNOPQRSTUVWXYZABCDEF").is_err());
+        // Digits
+        assert!(ThreadId::parse("abcdefghijklmnopqrstuvwxyz123456").is_err());
+        // Mixed case
+        assert!(ThreadId::parse("Abcdefghijklmnopqrstuvwxyzabcdef").is_err());
+    }
+
+    #[test]
+    fn test_thread_id_parse_rejects_short_halves_in_pair() {
+        let valid = "abcdefghijklmnopqrstuvwxyzabcdef";
+        // Short head with valid tail
+        assert!(ThreadId::parse(&format!("short:{valid}")).is_err());
+        // Valid head with short tail
+        assert!(ThreadId::parse(&format!("{valid}:short")).is_err());
+    }
+
+    #[test]
+    fn test_thread_id_single_constructor() {
+        let tid = ThreadId::single("mytaskid".to_string());
+        assert_eq!(tid.head, "mytaskid");
+        assert_eq!(tid.tail, "mytaskid");
+        assert!(tid.is_single());
+    }
+
+    #[test]
+    fn test_thread_id_serialize_roundtrip() {
+        // Single
+        let tid = ThreadId::parse("abcdefghijklmnopqrstuvwxyzabcdef").unwrap();
+        let serialized = tid.serialize();
+        assert_eq!(serialized, "abcdefghijklmnopqrstuvwxyzabcdef");
+        let roundtripped = ThreadId::parse(&serialized).unwrap();
+        assert_eq!(roundtripped, tid);
+
+        // Head:tail
+        let tid =
+            ThreadId::parse("abcdefghijklmnopqrstuvwxyzabcdef:fedcbazyxwvutsrqponmlkjihgfedcba")
+                .unwrap();
+        let serialized = tid.serialize();
+        assert_eq!(
+            serialized,
+            "abcdefghijklmnopqrstuvwxyzabcdef:fedcbazyxwvutsrqponmlkjihgfedcba"
+        );
+        let roundtripped = ThreadId::parse(&serialized).unwrap();
+        assert_eq!(roundtripped, tid);
+    }
+
+    #[test]
+    fn test_thread_id_display_uses_short_ids() {
+        let tid = ThreadId::single("abcdefghijklmnopqrstuvwxyzabcdef".to_string());
+        assert_eq!(format!("{tid}"), "abcdefg");
+
+        let tid = ThreadId {
+            head: "abcdefghijklmnopqrstuvwxyzabcdef".to_string(),
+            tail: "zyxwvutsrqponmlkjihgfedcbazyxwvu".to_string(),
+        };
+        assert_eq!(format!("{tid}"), "abcdefg:zyxwvut");
+    }
+
+    #[test]
+    fn test_thread_id_resolve() {
+        let events = vec![
+            make_created("P", "Parent"),
+            make_created("abcdefghijklmnopqrstuvwxyzabcdef", "Task A"),
+            make_created("zyxwvutsrqponmlkjihgfedcbazyxwvu", "Task B"),
+            make_link("abcdefghijklmnopqrstuvwxyzabcdef", "P", "subtask-of"),
+            make_link("zyxwvutsrqponmlkjihgfedcbazyxwvu", "P", "subtask-of"),
+        ];
+        let graph = materialize_graph(&events);
+
+        // Single prefix
+        let tid = ThreadId::resolve("abcdefg", &graph).unwrap();
+        assert_eq!(tid.head, "abcdefghijklmnopqrstuvwxyzabcdef");
+        assert_eq!(tid.tail, "abcdefghijklmnopqrstuvwxyzabcdef");
+        assert!(tid.is_single());
+
+        // Head:tail prefixes
+        let tid = ThreadId::resolve("abcdefg:zyxwvut", &graph).unwrap();
+        assert_eq!(tid.head, "abcdefghijklmnopqrstuvwxyzabcdef");
+        assert_eq!(tid.tail, "zyxwvutsrqponmlkjihgfedcbazyxwvu");
     }
 }

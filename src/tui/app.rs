@@ -351,7 +351,9 @@ pub struct Line {
 
 #[derive(Clone, Copy)]
 pub enum LineStyle {
-    PhaseHeader { active: bool },
+    PhaseHeader {
+        active: bool,
+    },
     /// Failed phase header — red+bold `合` icon and text.
     PhaseHeaderFailed,
     /// Subtask table header — `[short-id] title` with dim brackets+id, fg title.
@@ -362,7 +364,9 @@ pub enum LineStyle {
     ChildError,
     ChildWarning,
     ChildBold,
-    Subtask { status: SubtaskStatus },
+    Subtask {
+        status: SubtaskStatus,
+    },
     Separator,
     SectionHeader,
     Issue,
@@ -372,12 +376,12 @@ pub enum LineStyle {
 
 #[derive(Clone, Copy)]
 pub enum SubtaskStatus {
-    PendingUnassigned,  // ◌ — no lane has claimed this yet
-    Pending,            // ○ — in active lane, not yet started
-    Assigned,           // ⧗ — assigned to session
-    Active,             // ▸
-    Done,               // ✔
-    Failed,             // ✘
+    PendingUnassigned, // ◌ — no lane has claimed this yet
+    Pending,           // ○ — in active lane, not yet started
+    Assigned,          // ⧗ — assigned to session
+    Active,            // ▸
+    Done,              // ✔
+    Failed,            // ✘
 }
 
 /// Run the Elm loop until done or detached.
@@ -438,7 +442,14 @@ fn run_inner(model: Model, cwd: &Path) -> Result<Effect> {
         }
     });
 
-    let result = run_loop(model, &rx, &stop, &theme, &mut terminal, &mut current_height);
+    let result = run_loop(
+        model,
+        &rx,
+        &stop,
+        &theme,
+        &mut terminal,
+        &mut current_height,
+    );
 
     // Cleanup: signal the JJ thread to stop and restore terminal
     stop.store(true, Ordering::Relaxed);
@@ -485,23 +496,21 @@ where
     let (jj_tx, jj_rx) = mpsc::channel::<TaskGraph>();
     let cwd_owned = cwd.to_owned();
     let jj_stop = Arc::clone(&stop);
-    let _jj_thread = thread::spawn(move || {
-        loop {
-            if jj_stop.load(Ordering::Relaxed) {
+    let _jj_thread = thread::spawn(move || loop {
+        if jj_stop.load(Ordering::Relaxed) {
+            break;
+        }
+        if let Ok(events) = read_events(&cwd_owned) {
+            let graph = materialize_graph(&events);
+            if jj_tx.send(graph).is_err() {
                 break;
             }
-            if let Ok(events) = read_events(&cwd_owned) {
-                let graph = materialize_graph(&events);
-                if jj_tx.send(graph).is_err() {
-                    break;
-                }
+        }
+        for _ in 0..10 {
+            if jj_stop.load(Ordering::Relaxed) {
+                return;
             }
-            for _ in 0..10 {
-                if jj_stop.load(Ordering::Relaxed) {
-                    return;
-                }
-                thread::sleep(Duration::from_millis(100));
-            }
+            thread::sleep(Duration::from_millis(100));
         }
     });
 
@@ -793,18 +802,25 @@ pub fn view(model: &Model) -> Vec<Line> {
 /// Fallback: dispatch to per-screen view functions (graph-only rendering).
 fn view_from_screen(model: &Model) -> Vec<Line> {
     match &model.screen {
-        Screen::TaskRun { task_id } =>
-            super::screens::task_run::view(&model.graph, task_id, &model.window),
-        Screen::Build { epic_id, plan_path } =>
-            super::screens::build::view(&model.graph, epic_id, plan_path, &model.window),
-        Screen::Review { review_id, target } =>
-            super::screens::review::view(&model.graph, review_id, target, &model.window),
-        Screen::Fix { fix_parent_id, review_id } =>
-            super::screens::fix::view(&model.graph, fix_parent_id, review_id, &model.window),
-        Screen::EpicShow { epic_id } =>
-            super::screens::epic_show::view(&model.graph, epic_id, &model.window),
-        Screen::ReviewShow { review_id } =>
-            super::screens::review_show::view(&model.graph, review_id, &model.window),
+        Screen::TaskRun { task_id } => {
+            super::screens::task_run::view(&model.graph, task_id, &model.window)
+        }
+        Screen::Build { epic_id, plan_path } => {
+            super::screens::build::view(&model.graph, epic_id, plan_path, &model.window)
+        }
+        Screen::Review { review_id, target } => {
+            super::screens::review::view(&model.graph, review_id, target, &model.window)
+        }
+        Screen::Fix {
+            fix_parent_id,
+            review_id,
+        } => super::screens::fix::view(&model.graph, fix_parent_id, review_id, &model.window),
+        Screen::EpicShow { epic_id } => {
+            super::screens::epic_show::view(&model.graph, epic_id, &model.window)
+        }
+        Screen::ReviewShow { review_id } => {
+            super::screens::review_show::view(&model.graph, review_id, &model.window)
+        }
     }
 }
 
@@ -826,28 +842,16 @@ fn render_entries(model: &Model) -> Vec<Line> {
                 if let Some(orch_id) = &phase.orchestrates_id {
                     // Lane blocks inside loop phases
                     if phase.name == "loop" {
-                        lines.extend(render_lane_blocks(
-                            &model.graph,
-                            orch_id,
-                            &model.window,
-                        ));
+                        lines.extend(render_lane_blocks(&model.graph, orch_id, &model.window));
                     }
                     // Subtask table for any phase with orchestrates_id
-                    lines.extend(render_subtask_table(
-                        &model.graph,
-                        orch_id,
-                        &model.window,
-                    ));
+                    lines.extend(render_subtask_table(&model.graph, orch_id, &model.window));
                 }
 
                 // Issue list for review phases
                 if phase.name == "review" {
                     if let Some(task_id) = &phase.task_id {
-                        lines.extend(render_issue_list(
-                            &model.graph,
-                            task_id,
-                            &model.window,
-                        ));
+                        lines.extend(render_issue_list(&model.graph, task_id, &model.window));
                     }
                 }
             }
@@ -927,7 +931,9 @@ mod tests {
                 edges: EdgeStore::default(),
                 slug_index: FastHashMap::default(),
             }),
-            screen: Screen::TaskRun { task_id: "test".into() },
+            screen: Screen::TaskRun {
+                task_id: "test".into(),
+            },
             window: WindowState::new(80),
             entries,
             finished: false,
@@ -1077,8 +1083,13 @@ mod tests {
 
     #[test]
     fn phase_started_appends_entry() {
-        let model = make_model(Screen::TaskRun { task_id: "abc".into() });
-        let (model, effect) = update(model, Msg::Worker(WorkerStatusMsg::PhaseStarted { name: "build" }));
+        let model = make_model(Screen::TaskRun {
+            task_id: "abc".into(),
+        });
+        let (model, effect) = update(
+            model,
+            Msg::Worker(WorkerStatusMsg::PhaseStarted { name: "build" }),
+        );
         assert!(matches!(effect, Effect::Continue));
         assert_eq!(model.entries.len(), 1);
         match &model.entries[0] {
@@ -1095,11 +1106,19 @@ mod tests {
 
     #[test]
     fn worker_update_sets_status_on_last_phase() {
-        let mut model = make_model(Screen::TaskRun { task_id: "abc".into() });
+        let mut model = make_model(Screen::TaskRun {
+            task_id: "abc".into(),
+        });
         // First create a phase
-        let (m, _) = update(model, Msg::Worker(WorkerStatusMsg::PhaseStarted { name: "deploy" }));
+        let (m, _) = update(
+            model,
+            Msg::Worker(WorkerStatusMsg::PhaseStarted { name: "deploy" }),
+        );
         model = m;
-        let (model, _) = update(model, Msg::Worker(WorkerStatusMsg::Update("running...".into())));
+        let (model, _) = update(
+            model,
+            Msg::Worker(WorkerStatusMsg::Update("running...".into())),
+        );
         match &model.entries[0] {
             Entry::Phase(p) => assert_eq!(p.worker_status.as_deref(), Some("running...")),
             _ => panic!("expected Phase entry"),
@@ -1108,9 +1127,17 @@ mod tests {
 
     #[test]
     fn agent_resolved_sets_agent() {
-        let model = make_model(Screen::TaskRun { task_id: "abc".into() });
-        let (model, _) = update(model, Msg::Worker(WorkerStatusMsg::PhaseStarted { name: "test" }));
-        let (model, _) = update(model, Msg::Worker(WorkerStatusMsg::AgentResolved("claude".into())));
+        let model = make_model(Screen::TaskRun {
+            task_id: "abc".into(),
+        });
+        let (model, _) = update(
+            model,
+            Msg::Worker(WorkerStatusMsg::PhaseStarted { name: "test" }),
+        );
+        let (model, _) = update(
+            model,
+            Msg::Worker(WorkerStatusMsg::AgentResolved("claude".into())),
+        );
         match &model.entries[0] {
             Entry::Phase(p) => assert_eq!(p.agent.as_deref(), Some("claude")),
             _ => panic!("expected Phase entry"),
@@ -1119,9 +1146,17 @@ mod tests {
 
     #[test]
     fn task_bound_sets_task_id() {
-        let model = make_model(Screen::TaskRun { task_id: "abc".into() });
-        let (model, _) = update(model, Msg::Worker(WorkerStatusMsg::PhaseStarted { name: "test" }));
-        let (model, _) = update(model, Msg::Worker(WorkerStatusMsg::TaskBound("task123".into())));
+        let model = make_model(Screen::TaskRun {
+            task_id: "abc".into(),
+        });
+        let (model, _) = update(
+            model,
+            Msg::Worker(WorkerStatusMsg::PhaseStarted { name: "test" }),
+        );
+        let (model, _) = update(
+            model,
+            Msg::Worker(WorkerStatusMsg::TaskBound("task123".into())),
+        );
         match &model.entries[0] {
             Entry::Phase(p) => assert_eq!(p.task_id.as_deref(), Some("task123")),
             _ => panic!("expected Phase entry"),
@@ -1130,9 +1165,17 @@ mod tests {
 
     #[test]
     fn orchestrates_sets_orchestrates_id() {
-        let model = make_model(Screen::TaskRun { task_id: "abc".into() });
-        let (model, _) = update(model, Msg::Worker(WorkerStatusMsg::PhaseStarted { name: "test" }));
-        let (model, _) = update(model, Msg::Worker(WorkerStatusMsg::Orchestrates("parent1".into())));
+        let model = make_model(Screen::TaskRun {
+            task_id: "abc".into(),
+        });
+        let (model, _) = update(
+            model,
+            Msg::Worker(WorkerStatusMsg::PhaseStarted { name: "test" }),
+        );
+        let (model, _) = update(
+            model,
+            Msg::Worker(WorkerStatusMsg::Orchestrates("parent1".into())),
+        );
         match &model.entries[0] {
             Entry::Phase(p) => assert_eq!(p.orchestrates_id.as_deref(), Some("parent1")),
             _ => panic!("expected Phase entry"),
@@ -1141,37 +1184,68 @@ mod tests {
 
     #[test]
     fn phase_done_marks_done() {
-        let model = make_model(Screen::TaskRun { task_id: "abc".into() });
-        let (model, _) = update(model, Msg::Worker(WorkerStatusMsg::PhaseStarted { name: "test" }));
-        let (model, _) = update(model, Msg::Worker(WorkerStatusMsg::PhaseDone { result: "ok".into() }));
+        let model = make_model(Screen::TaskRun {
+            task_id: "abc".into(),
+        });
+        let (model, _) = update(
+            model,
+            Msg::Worker(WorkerStatusMsg::PhaseStarted { name: "test" }),
+        );
+        let (model, _) = update(
+            model,
+            Msg::Worker(WorkerStatusMsg::PhaseDone {
+                result: "ok".into(),
+            }),
+        );
         match &model.entries[0] {
-            Entry::Phase(p) => assert!(matches!(&p.state, PhaseLifecycle::Done { result } if result == "ok")),
+            Entry::Phase(p) => {
+                assert!(matches!(&p.state, PhaseLifecycle::Done { result } if result == "ok"))
+            }
             _ => panic!("expected Phase entry"),
         }
     }
 
     #[test]
     fn phase_failed_marks_failed() {
-        let model = make_model(Screen::TaskRun { task_id: "abc".into() });
-        let (model, _) = update(model, Msg::Worker(WorkerStatusMsg::PhaseStarted { name: "test" }));
-        let (model, _) = update(model, Msg::Worker(WorkerStatusMsg::PhaseFailed { error: "boom".into() }));
+        let model = make_model(Screen::TaskRun {
+            task_id: "abc".into(),
+        });
+        let (model, _) = update(
+            model,
+            Msg::Worker(WorkerStatusMsg::PhaseStarted { name: "test" }),
+        );
+        let (model, _) = update(
+            model,
+            Msg::Worker(WorkerStatusMsg::PhaseFailed {
+                error: "boom".into(),
+            }),
+        );
         match &model.entries[0] {
-            Entry::Phase(p) => assert!(matches!(&p.state, PhaseLifecycle::Failed { error } if error == "boom")),
+            Entry::Phase(p) => {
+                assert!(matches!(&p.state, PhaseLifecycle::Failed { error } if error == "boom"))
+            }
             _ => panic!("expected Phase entry"),
         }
     }
 
     #[test]
     fn section_appends_section_entry() {
-        let model = make_model(Screen::TaskRun { task_id: "abc".into() });
-        let (model, _) = update(model, Msg::Worker(WorkerStatusMsg::Section("Header".into())));
+        let model = make_model(Screen::TaskRun {
+            task_id: "abc".into(),
+        });
+        let (model, _) = update(
+            model,
+            Msg::Worker(WorkerStatusMsg::Section("Header".into())),
+        );
         assert_eq!(model.entries.len(), 1);
         assert!(matches!(&model.entries[0], Entry::Section(s) if s == "Header"));
     }
 
     #[test]
     fn worker_done_sets_finished() {
-        let model = make_model(Screen::TaskRun { task_id: "abc".into() });
+        let model = make_model(Screen::TaskRun {
+            task_id: "abc".into(),
+        });
         let (model, effect) = update(model, Msg::Worker(WorkerStatusMsg::Done));
         assert!(model.finished);
         assert!(matches!(effect, Effect::Continue));
@@ -1179,22 +1253,39 @@ mod tests {
 
     #[test]
     fn worker_disconnected_marks_phase_failed_and_finished() {
-        let model = make_model(Screen::TaskRun { task_id: "abc".into() });
-        let (model, _) = update(model, Msg::Worker(WorkerStatusMsg::PhaseStarted { name: "test" }));
+        let model = make_model(Screen::TaskRun {
+            task_id: "abc".into(),
+        });
+        let (model, _) = update(
+            model,
+            Msg::Worker(WorkerStatusMsg::PhaseStarted { name: "test" }),
+        );
         let (model, effect) = update(model, Msg::WorkerDisconnected);
         assert!(model.finished);
         assert!(matches!(effect, Effect::Continue));
         match &model.entries[0] {
-            Entry::Phase(p) => assert!(matches!(&p.state, PhaseLifecycle::Failed { error } if error.contains("unexpectedly"))),
+            Entry::Phase(p) => assert!(
+                matches!(&p.state, PhaseLifecycle::Failed { error } if error.contains("unexpectedly"))
+            ),
             _ => panic!("expected Phase entry"),
         }
     }
 
     #[test]
     fn worker_disconnected_does_not_overwrite_done_phase() {
-        let model = make_model(Screen::TaskRun { task_id: "abc".into() });
-        let (model, _) = update(model, Msg::Worker(WorkerStatusMsg::PhaseStarted { name: "test" }));
-        let (model, _) = update(model, Msg::Worker(WorkerStatusMsg::PhaseDone { result: "ok".into() }));
+        let model = make_model(Screen::TaskRun {
+            task_id: "abc".into(),
+        });
+        let (model, _) = update(
+            model,
+            Msg::Worker(WorkerStatusMsg::PhaseStarted { name: "test" }),
+        );
+        let (model, _) = update(
+            model,
+            Msg::Worker(WorkerStatusMsg::PhaseDone {
+                result: "ok".into(),
+            }),
+        );
         let (model, _) = update(model, Msg::WorkerDisconnected);
         // Phase should still be Done, not Failed
         match &model.entries[0] {
@@ -1206,7 +1297,9 @@ mod tests {
     #[test]
     fn update_on_empty_entries_is_noop() {
         // Worker messages that target "last phase" should be harmless when entries is empty
-        let model = make_model(Screen::TaskRun { task_id: "abc".into() });
+        let model = make_model(Screen::TaskRun {
+            task_id: "abc".into(),
+        });
         let (model, _) = update(model, Msg::Worker(WorkerStatusMsg::Update("text".into())));
         assert!(model.entries.is_empty());
     }
@@ -1214,8 +1307,13 @@ mod tests {
     #[test]
     fn update_on_section_last_entry_is_noop() {
         // Worker messages targeting last phase should skip Section entries
-        let model = make_model(Screen::TaskRun { task_id: "abc".into() });
-        let (model, _) = update(model, Msg::Worker(WorkerStatusMsg::Section("Header".into())));
+        let model = make_model(Screen::TaskRun {
+            task_id: "abc".into(),
+        });
+        let (model, _) = update(
+            model,
+            Msg::Worker(WorkerStatusMsg::Section("Header".into())),
+        );
         let (model, _) = update(model, Msg::Worker(WorkerStatusMsg::Update("text".into())));
         // Section should be unchanged, no panic
         assert_eq!(model.entries.len(), 1);
@@ -1224,12 +1322,23 @@ mod tests {
 
     #[test]
     fn agent_resolved_doesnt_affect_non_last_phases() {
-        let model = make_model(Screen::TaskRun { task_id: "abc".into() });
+        let model = make_model(Screen::TaskRun {
+            task_id: "abc".into(),
+        });
         // Create two phases
-        let (model, _) = update(model, Msg::Worker(WorkerStatusMsg::PhaseStarted { name: "first" }));
-        let (model, _) = update(model, Msg::Worker(WorkerStatusMsg::PhaseStarted { name: "second" }));
+        let (model, _) = update(
+            model,
+            Msg::Worker(WorkerStatusMsg::PhaseStarted { name: "first" }),
+        );
+        let (model, _) = update(
+            model,
+            Msg::Worker(WorkerStatusMsg::PhaseStarted { name: "second" }),
+        );
         // AgentResolved should only affect the last (second) phase
-        let (model, _) = update(model, Msg::Worker(WorkerStatusMsg::AgentResolved("claude".into())));
+        let (model, _) = update(
+            model,
+            Msg::Worker(WorkerStatusMsg::AgentResolved("claude".into())),
+        );
         match &model.entries[0] {
             Entry::Phase(p) => assert!(p.agent.is_none(), "first phase agent should remain None"),
             _ => panic!("expected Phase entry"),
@@ -1242,10 +1351,20 @@ mod tests {
 
     #[test]
     fn worker_disconnected_noop_when_finished() {
-        let mut model = make_model(Screen::TaskRun { task_id: "abc".into() });
-        let (m, _) = update(model, Msg::Worker(WorkerStatusMsg::PhaseStarted { name: "test" }));
+        let mut model = make_model(Screen::TaskRun {
+            task_id: "abc".into(),
+        });
+        let (m, _) = update(
+            model,
+            Msg::Worker(WorkerStatusMsg::PhaseStarted { name: "test" }),
+        );
         model = m;
-        let (m, _) = update(model, Msg::Worker(WorkerStatusMsg::PhaseDone { result: "ok".into() }));
+        let (m, _) = update(
+            model,
+            Msg::Worker(WorkerStatusMsg::PhaseDone {
+                result: "ok".into(),
+            }),
+        );
         model = m;
         let (m, _) = update(model, Msg::Worker(WorkerStatusMsg::Done));
         model = m;
@@ -1255,28 +1374,52 @@ mod tests {
         assert!(model.finished);
         assert!(matches!(effect, Effect::Continue));
         match &model.entries[0] {
-            Entry::Phase(p) => assert!(matches!(&p.state, PhaseLifecycle::Done { .. }), "phase should still be Done"),
+            Entry::Phase(p) => assert!(
+                matches!(&p.state, PhaseLifecycle::Done { .. }),
+                "phase should still be Done"
+            ),
             _ => panic!("expected Phase entry"),
         }
     }
 
     #[test]
     fn multiple_phases_update_and_done_affect_only_last() {
-        let model = make_model(Screen::TaskRun { task_id: "abc".into() });
+        let model = make_model(Screen::TaskRun {
+            task_id: "abc".into(),
+        });
         // Phase 1: start, update, done
-        let (model, _) = update(model, Msg::Worker(WorkerStatusMsg::PhaseStarted { name: "phase1" }));
-        let (model, _) = update(model, Msg::Worker(WorkerStatusMsg::Update("running phase1".into())));
-        let (model, _) = update(model, Msg::Worker(WorkerStatusMsg::PhaseDone { result: "phase1 ok".into() }));
+        let (model, _) = update(
+            model,
+            Msg::Worker(WorkerStatusMsg::PhaseStarted { name: "phase1" }),
+        );
+        let (model, _) = update(
+            model,
+            Msg::Worker(WorkerStatusMsg::Update("running phase1".into())),
+        );
+        let (model, _) = update(
+            model,
+            Msg::Worker(WorkerStatusMsg::PhaseDone {
+                result: "phase1 ok".into(),
+            }),
+        );
         // Phase 2: start
-        let (model, _) = update(model, Msg::Worker(WorkerStatusMsg::PhaseStarted { name: "phase2" }));
-        let (model, _) = update(model, Msg::Worker(WorkerStatusMsg::Update("running phase2".into())));
+        let (model, _) = update(
+            model,
+            Msg::Worker(WorkerStatusMsg::PhaseStarted { name: "phase2" }),
+        );
+        let (model, _) = update(
+            model,
+            Msg::Worker(WorkerStatusMsg::Update("running phase2".into())),
+        );
 
         assert_eq!(model.entries.len(), 2);
         // Phase 1 should retain its Done state and original status
         match &model.entries[0] {
             Entry::Phase(p) => {
                 assert_eq!(p.name, "phase1");
-                assert!(matches!(&p.state, PhaseLifecycle::Done { result } if result == "phase1 ok"));
+                assert!(
+                    matches!(&p.state, PhaseLifecycle::Done { result } if result == "phase1 ok")
+                );
                 assert_eq!(p.worker_status.as_deref(), Some("running phase1"));
             }
             _ => panic!("expected Phase entry"),

@@ -1,10 +1,17 @@
+pub mod builders;
+pub mod orchestrate;
+pub mod steps;
+
 use std::path::PathBuf;
 
 use anyhow::Result;
 
 use crate::agents::AgentType;
-use crate::commands::review::ReviewScope;
-use crate::commands::{build, fix, review};
+use crate::commands::{fix, review};
+
+pub use steps::review::{
+    CreateReviewParams, CreateReviewResult, Location, ReviewScope, ReviewScopeKind,
+};
 
 /// Context shared across all steps in a workflow.
 pub struct WorkflowContext {
@@ -106,17 +113,17 @@ impl Step {
 
     pub fn run(&self, ctx: &mut WorkflowContext) -> Result<StepResult> {
         match self {
-            Step::Plan => build::run_plan_step(ctx),
+            Step::Plan => steps::build::run_plan_step(ctx),
 
             Step::Decompose {
                 restart,
                 template,
                 agent,
-            } => build::run_decompose_step(ctx, *restart, template.clone(), agent.clone()),
+            } => steps::build::run_decompose_step(ctx, *restart, template.clone(), agent.clone()),
 
             Step::Loop { template, agent } => {
                 if agent.is_some() {
-                    build::run_loop_step(ctx, template.clone(), agent.clone())
+                    steps::build::run_loop_step(ctx, template.clone(), agent.clone())
                 } else {
                     let task_id = match ctx.task_id {
                         Some(ref id) => id.clone(),
@@ -159,7 +166,7 @@ impl Step {
                 template,
                 agent,
                 ..
-            } => build::run_review_step(ctx, template.clone(), agent.clone()),
+            } => steps::build::run_review_step(ctx, template.clone(), agent.clone()),
 
             Step::Fix {
                 review_id,
@@ -178,7 +185,7 @@ impl Step {
                         *autorun,
                     )
                 } else {
-                    build::run_fix_step(ctx, review_id, template.clone(), None)
+                    steps::build::run_fix_step(ctx, review_id, template.clone(), None)
                 }
             }
 

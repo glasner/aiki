@@ -20,8 +20,7 @@ use crate::tasks::{
 use crate::workflow::{StepResult, WorkflowContext};
 
 use super::decompose::{
-    check_epic_blockers, close_epic, close_epic_as_invalid, create_epic_task, restart_epic,
-    undo_completed_subtasks,
+    close_epic, close_epic_as_invalid, create_epic_task, restart_epic, undo_completed_subtasks,
 };
 use super::plan::{cleanup_stale_builds, validate_plan_path};
 
@@ -113,7 +112,12 @@ pub(crate) fn run_decompose_step(
     // Check blockers
     let events = read_events(&ctx.cwd)?;
     let graph = materialize_graph(&events);
-    check_epic_blockers(&graph, &epic_id)?;
+    if graph.is_blocked(&epic_id) {
+        return Err(anyhow::anyhow!(
+            "Epic {} is blocked by unresolved dependencies. Rerun with --restart to start over",
+            &epic_id[..epic_id.len().min(8)]
+        ));
+    }
 
     // Run decompose if no subtasks exist
     let subtasks = get_subtasks(&graph, &epic_id);

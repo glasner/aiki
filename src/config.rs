@@ -527,7 +527,9 @@ fn get_otlp_http_endpoint(otel: &toml::map::Map<String, toml::Value>) -> Option<
 /// Codex native hooks execute inside the session sandbox, so they need the
 /// global Aiki directory added as an extra writable root in order to create
 /// session files and update the global JJ repo.
-fn ensure_codex_writable_root(config_table: &mut toml::map::Map<String, toml::Value>) -> Result<()> {
+fn ensure_codex_writable_root(
+    config_table: &mut toml::map::Map<String, toml::Value>,
+) -> Result<()> {
     let global_aiki = crate::global::global_aiki_dir();
     let global_aiki = global_aiki
         .to_str()

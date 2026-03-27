@@ -939,7 +939,8 @@ fn validate_condition(condition_str: &str, line: usize) -> Result<(), Conditiona
 
     // Warn about deprecated $var syntax
     if crate::expressions::uses_dollar_syntax(condition_str) {
-        eprintln!( // stderr-ok: template validation, never called during monitoring
+        eprintln!(
+            // stderr-ok: template validation, never called during monitoring
             "[aiki] Warning: `$var` syntax is deprecated, use `var` instead: {}",
             condition_str
         );

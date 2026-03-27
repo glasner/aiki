@@ -327,6 +327,26 @@ pub fn get_repo_root(cwd: &Path) -> Result<PathBuf> {
     Ok(ws_root.to_path_buf())
 }
 
+/// Get the change ID of the working copy (`@`) in the given directory.
+pub fn get_working_copy_change_id(cwd: &Path) -> Option<String> {
+    let output = jj_cmd()
+        .args(["log", "-r", "@", "-T", "change_id", "--no-graph"])
+        .current_dir(cwd)
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let change_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if change_id.is_empty() {
+        None
+    } else {
+        Some(change_id)
+    }
+}
+
 /// Implementation: check if branch exists via `jj bookmark list`, create if missing.
 fn ensure_branch_impl(cwd: &Path, branch: &str) -> Result<()> {
     let output = jj_cmd()

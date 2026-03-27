@@ -107,10 +107,7 @@ fn build_pre_tool_use_output(response: &HookResult) -> HookCommandOutput {
 fn build_stop_output(response: &HookResult) -> HookCommandOutput {
     if response.context.is_some() {
         // Block the stop to continue the session
-        let reason = response
-            .context
-            .as_deref()
-            .unwrap_or("Continue session");
+        let reason = response.context.as_deref().unwrap_or("Continue session");
         let json_value = json!({
             "decision": "block",
             "reason": reason
@@ -178,7 +175,10 @@ mod tests {
         let response = make_allow_response();
         let output = build_command_output(response, "PreToolUse");
         assert_eq!(output.exit_code, 0);
-        assert!(output.json_value.is_none(), "Allow should produce no output");
+        assert!(
+            output.json_value.is_none(),
+            "Allow should produce no output"
+        );
     }
 
     #[test]
@@ -203,7 +203,10 @@ mod tests {
         let output = build_command_output(response, "PreToolUse");
         let value = output.json_value.unwrap();
         let json_str = serde_json::to_string(&value).unwrap();
-        assert!(!json_str.contains("approve"), "Must never emit 'approve' for Codex PreToolUse");
+        assert!(
+            !json_str.contains("approve"),
+            "Must never emit 'approve' for Codex PreToolUse"
+        );
     }
 
     // Stop output tests
@@ -255,7 +258,10 @@ mod tests {
         assert_eq!(output.exit_code, 0);
         let value = output.json_value.unwrap();
         assert_eq!(value["decision"].as_str().unwrap(), "block");
-        assert!(value["reason"].as_str().unwrap().contains("Task is blocked"));
+        assert!(value["reason"]
+            .as_str()
+            .unwrap()
+            .contains("Task is blocked"));
     }
 
     // Unknown event test

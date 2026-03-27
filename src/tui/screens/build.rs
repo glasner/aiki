@@ -10,25 +10,20 @@ use crate::tasks::types::TaskStatus;
 use crate::tasks::TaskGraph;
 use crate::tui::app::{Line, LineStyle, WindowState};
 use crate::tui::components::{self, ChildLine, LaneData, SubtaskData};
-use crate::tui::theme;
 use crate::tui::screens::fix;
 use crate::tui::screens::helpers::{
     current_iteration, decompose_in_progress, extract_issues, find_build_review,
     find_decompose_task, find_fix_parent, get_work_subtasks, is_build_complete, review_id_for_epic,
     review_phase_lines,
 };
+use crate::tui::theme;
 
 /// Max quality iterations — mirrors the constant in commands/fix.rs.
 const MAX_QUALITY_ITERATIONS: u16 = 10;
 
 // ── Main view ────────────────────────────────────────────────────────
 
-pub fn view(
-    graph: &TaskGraph,
-    epic_id: &str,
-    plan_path: &str,
-    _window: &WindowState,
-) -> Vec<Line> {
+pub fn view(graph: &TaskGraph, epic_id: &str, plan_path: &str, _window: &WindowState) -> Vec<Line> {
     let mut lines = vec![];
     let mut group: u16 = 0;
 
@@ -38,7 +33,10 @@ pub fn view(
         "plan",
         Some("claude"),
         false,
-        vec![ChildLine::done(&format!("{} {}", theme::SYM_CHECK, plan_path), None)],
+        vec![ChildLine::done(
+            &format!("{} {}", theme::SYM_CHECK, plan_path),
+            None,
+        )],
     ));
     group += 1;
 
@@ -132,11 +130,14 @@ fn derive_lanes(graph: &TaskGraph, parent_id: &str) -> Option<Vec<LaneData>> {
 
     // Check if any lane has tasks with sessions assigned
     let has_sessions = decomposition.lanes.iter().any(|lane| {
-        lane.sessions.iter().any(|session| {
-            session
-                .task_ids
-                .iter()
-                .any(|tid| graph.tasks.get(tid).and_then(|t| t.claimed_by_session.as_ref()).is_some())
+        lane.threads.iter().any(|session| {
+            session.task_ids.iter().any(|tid| {
+                graph
+                    .tasks
+                    .get(tid)
+                    .and_then(|t| t.claimed_by_session.as_ref())
+                    .is_some()
+            })
         })
     });
     if !has_sessions {
@@ -149,7 +150,7 @@ fn derive_lanes(graph: &TaskGraph, parent_id: &str) -> Option<Vec<LaneData>> {
         .enumerate()
         .map(|(i, lane)| {
             let all_task_ids: Vec<&str> = lane
-                .sessions
+                .threads
                 .iter()
                 .flat_map(|s| s.task_ids.iter())
                 .map(|s| s.as_str())
@@ -209,12 +210,7 @@ fn derive_lanes(graph: &TaskGraph, parent_id: &str) -> Option<Vec<LaneData>> {
 
 // ── Build summary ────────────────────────────────────────────────────
 
-fn build_summary_lines(
-    graph: &TaskGraph,
-    epic_id: &str,
-    plan_path: &str,
-    group: u16,
-) -> Vec<Line> {
+fn build_summary_lines(graph: &TaskGraph, epic_id: &str, plan_path: &str, group: u16) -> Vec<Line> {
     let mut lines = vec![];
     let mut children = vec![];
 
@@ -294,10 +290,7 @@ fn aggregate_agent_stats(graph: &TaskGraph, epic_id: &str) -> Vec<AgentStat> {
     let mut by_agent: HashMap<String, (usize, i64, u64)> = HashMap::new(); // (sessions, seconds, tokens)
 
     for task in &children {
-        let agent = task
-            .agent_label()
-            .unwrap_or("agent")
-            .to_string();
+        let agent = task.agent_label().unwrap_or("agent").to_string();
 
         let entry = by_agent.entry(agent).or_insert((0, 0, 0));
         entry.0 += 1; // sessions
@@ -481,9 +474,7 @@ mod tests {
 
         graph.tasks.insert("epic1x".to_string(), epic);
         graph.tasks.insert("decomp1".to_string(), decompose);
-        graph
-            .edges
-            .add("decomp1", "epic1x", "subtask-of");
+        graph.edges.add("decomp1", "epic1x", "subtask-of");
 
         let window = WindowState::new(80);
         let lines = view(&graph, "epic1x", "ops/now/plan.md", &window);
@@ -504,13 +495,9 @@ mod tests {
         let lines = view(&graph, "epic1x", "ops/now/plan.md", &window);
 
         // Should contain build completed summary
-        assert!(lines
-            .iter()
-            .any(|l| l.text.contains("build completed")));
+        assert!(lines.iter().any(|l| l.text.contains("build completed")));
         // Should contain hint
-        assert!(lines
-            .iter()
-            .any(|l| l.text.contains("aiki task diff")));
+        assert!(lines.iter().any(|l| l.text.contains("aiki task diff")));
     }
 
     #[test]
@@ -566,9 +553,7 @@ mod tests {
 
         graph.tasks.insert("epic1x".to_string(), epic);
         graph.tasks.insert("decomp1".to_string(), decompose);
-        graph
-            .edges
-            .add("decomp1", "epic1x", "subtask-of");
+        graph.edges.add("decomp1", "epic1x", "subtask-of");
 
         let window = WindowState::new(80);
         let lines = view(&graph, "epic1x", "ops/now/plan.md", &window);

@@ -13,17 +13,18 @@ use clap::Subcommand;
 use super::decompose::{run_decompose, DecomposeOptions};
 use super::OutputFormat;
 use crate::agents::AgentType;
-use crate::config::get_aiki_binary_path;
 use crate::error::{AikiError, Result};
 use crate::output_utils;
 use crate::plans::{parse_plan_metadata, PlanGraph};
 use crate::tasks::id::is_task_id;
 use crate::tasks::md::MdBuilder;
-use crate::tasks::templates::get_working_copy_change_id;
 use crate::tasks::{
-    find_task, generate_task_id, get_subtasks, is_task_id_prefix, materialize_graph, read_events,
-    write_event, Task, TaskEvent, TaskOutcome, TaskPriority, TaskStatus,
+    find_task, get_subtasks, is_task_id_prefix, materialize_graph, read_events, Task, TaskStatus,
 };
+use crate::workflow::steps::decompose::{
+    close_epic, close_epic_as_invalid, create_epic_task, undo_completed_subtasks,
+};
+use crate::workflow::steps::plan::validate_plan_path;
 
 /// Epic subcommands
 #[derive(Subcommand)]
@@ -197,55 +198,6 @@ pub(super) fn create_epic(
     Ok(epic_id)
 }
 
-/// Create the epic task — the container that holds subtasks.
-///
-/// Extracts the plan title from the H1 heading (or filename as fallback).
-/// Sets `data.plan` and source. The `implements-plan` link is written by
-/// `run_decompose()` which is called after this function.
-pub(super) fn create_epic_task(cwd: &Path, plan_path: &str) -> Result<String> {
-    let full_path = if plan_path.starts_with('/') {
-        std::path::PathBuf::from(plan_path)
-    } else {
-        cwd.join(plan_path)
-    };
-    let metadata = parse_plan_metadata(&full_path);
-
-    // Use H1 title from plan, or fall back to filename without extension
-    let plan_title = metadata.title.unwrap_or_else(|| {
-        Path::new(plan_path)
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("unknown")
-            .to_string()
-    });
-
-    let epic_name = format!("Epic: {}", plan_title);
-    let epic_id = generate_task_id(&epic_name);
-    let timestamp = chrono::Utc::now();
-    let working_copy = get_working_copy_change_id(cwd);
-
-    let mut data = std::collections::HashMap::new();
-    data.insert("plan".to_string(), plan_path.to_string());
-
-    let event = TaskEvent::Created {
-        task_id: epic_id.clone(),
-        name: epic_name,
-        slug: None,
-        task_type: None,
-        priority: TaskPriority::P2,
-        assignee: None,
-        sources: vec![format!("file:{}", plan_path)],
-        template: None,
-        working_copy,
-        instructions: None,
-        data,
-        timestamp,
-    };
-    write_event(cwd, &event)?;
-
-    Ok(epic_id)
-}
-
 /// Find an existing epic or create a new one for the given plan.
 ///
 /// Deterministic behavior (no interactive prompts):
@@ -278,21 +230,6 @@ pub fn find_or_create_epic(
         }
         _ => create_epic(cwd, plan_path, decompose_template, None, show_tui),
     }
-}
-
-/// Close an epic as invalid (no subtasks — decompose agent failed).
-fn close_epic_as_invalid(cwd: &Path, epic_id: &str) -> Result<()> {
-    let timestamp = chrono::Utc::now();
-    let close_event = TaskEvent::Closed {
-        task_ids: vec![epic_id.to_string()],
-        outcome: TaskOutcome::WontDo,
-        summary: Some("No subtasks created — epic invalid".to_string()),
-        session_id: None,
-        turn_id: None,
-        timestamp,
-    };
-    write_event(cwd, &close_event)?;
-    Ok(())
 }
 
 /// Show epic status and subtasks
@@ -386,88 +323,6 @@ fn run_list(cwd: &Path) -> Result<()> {
 
     output_utils::emit(|| MdBuilder::new().build(&content));
 
-    Ok(())
-}
-
-/// Validate that the plan path is a .md file and exists
-fn validate_plan_path(cwd: &Path, plan_path: &str) -> Result<()> {
-    if !plan_path.ends_with(".md") {
-        return Err(AikiError::InvalidArgument(
-            "Plan file must be markdown (.md)".to_string(),
-        ));
-    }
-
-    let full_path = if plan_path.starts_with('/') {
-        std::path::PathBuf::from(plan_path)
-    } else {
-        cwd.join(plan_path)
-    };
-
-    if !full_path.exists() {
-        return Err(AikiError::InvalidArgument(format!(
-            "Plan file not found: {}",
-            plan_path
-        )));
-    }
-
-    if !full_path.is_file() {
-        return Err(AikiError::InvalidArgument(format!(
-            "Not a file: {}",
-            plan_path
-        )));
-    }
-
-    Ok(())
-}
-
-/// Undo file changes made by completed subtasks of an epic.
-fn undo_completed_subtasks(cwd: &Path, epic_id: &str) -> Result<()> {
-    let output = std::process::Command::new(get_aiki_binary_path())
-        .current_dir(cwd)
-        .args(["task", "undo", epic_id, "--completed"])
-        .output()
-        .map_err(|e| AikiError::JjCommandFailed(format!("Failed to run task undo: {}", e)))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        if stderr.contains("no completed subtasks") || stderr.contains("NoCompletedSubtasks") {
-            return Ok(());
-        }
-        return Err(AikiError::JjCommandFailed(format!(
-            "task undo failed: {}",
-            stderr.trim()
-        )));
-    }
-
-    let stderr_output = String::from_utf8_lossy(&output.stderr);
-    if !stderr_output.is_empty() {
-        eprint!("{}", stderr_output);
-    }
-
-    Ok(())
-}
-
-/// Close an existing epic as wont_do
-fn close_epic(cwd: &Path, epic_id: &str) -> Result<()> {
-    let timestamp = chrono::Utc::now();
-
-    let comment_event = TaskEvent::CommentAdded {
-        task_ids: vec![epic_id.to_string()],
-        text: "Closed by --restart".to_string(),
-        data: std::collections::HashMap::new(),
-        timestamp: timestamp - chrono::Duration::milliseconds(1),
-    };
-    write_event(cwd, &comment_event)?;
-
-    let close_event = TaskEvent::Closed {
-        task_ids: vec![epic_id.to_string()],
-        outcome: TaskOutcome::WontDo,
-        summary: Some("Closed by --restart".to_string()),
-        session_id: None,
-        turn_id: None,
-        timestamp,
-    };
-    write_event(cwd, &close_event)?;
     Ok(())
 }
 
@@ -621,6 +476,7 @@ mod tests {
     use super::*;
     use crate::tasks::graph::{EdgeStore, TaskGraph};
     use crate::tasks::types::FastHashMap;
+    use crate::tasks::TaskPriority;
     use std::collections::HashMap;
 
     fn make_task(id: &str, name: &str, status: TaskStatus) -> Task {
@@ -706,33 +562,6 @@ mod tests {
         assert_eq!(result.unwrap().id, "epic_new");
     }
 
-    #[test]
-    fn test_validate_plan_path_not_md() {
-        let temp_dir = tempfile::TempDir::new().unwrap();
-        let result = validate_plan_path(temp_dir.path(), "not-markdown.txt");
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("must be markdown"));
-    }
-
-    #[test]
-    fn test_validate_plan_path_not_found() {
-        let temp_dir = tempfile::TempDir::new().unwrap();
-        let result = validate_plan_path(temp_dir.path(), "nonexistent.md");
-        assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Plan file not found"));
-    }
-
-    #[test]
-    fn test_validate_plan_path_exists() {
-        let temp_dir = tempfile::TempDir::new().unwrap();
-        let plan_file = temp_dir.path().join("my-plan.md");
-        std::fs::write(&plan_file, "# My Plan").unwrap();
-        let result = validate_plan_path(temp_dir.path(), "my-plan.md");
-        assert!(result.is_ok());
-    }
 
     #[test]
     fn test_output_format_id_variant() {

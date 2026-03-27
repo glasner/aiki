@@ -620,7 +620,6 @@ fn run_show(cwd: &Path, plan_path: &str, output_format: Option<OutputFormat>) ->
 }
 
 
-
 /// Output build show (detailed status display)
 pub(crate) fn output_build_show(
     epic: &Task,
