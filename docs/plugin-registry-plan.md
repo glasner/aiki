@@ -212,20 +212,20 @@ Each bucket describes:
 
 ---
 
-## 12. Code Review & PR Automation
+## 12. Code Review & Commit Standards
 
-**User JTBD:** "Automate the tedious parts of code review — style nits, coverage checks, conventional commits."
+**User JTBD:** "Enforce review quality standards and consistent commit hygiene across AI-generated work."
 
-**Agent JTBD:** "Self-review my work before presenting it, catching issues the user would flag."
+**Agent JTBD:** "Self-review my work against project standards before presenting it, and format commits correctly."
 
-**Integration pattern:** Hook into `turn.completed` (trigger self-review via `autoreply`), `commit.message_started` (enforce conventional commit format), `task.closed` (auto-create PR with summary). Leverages Aiki's built-in review/fix loop.
+**Integration pattern:** Hook into `turn.completed` (trigger self-review via `autoreply`), `commit.message_started` (enforce commit format), `change.completed` (run quality analysis on changed files). Strengthens Aiki's built-in review/fix loop.
 
 | Integration | Functionality | Link |
 |---|---|---|
 | **Conventional Commits** | Enforce commit message format (`feat:`, `fix:`, `chore:`). Parse for changelogs. | [conventionalcommits.org](https://www.conventionalcommits.org/) |
-| **Danger** | Automated code review rules (PR too large, missing tests, changelog not updated). | [danger.systems](https://danger.systems/) |
-| **Codecov** | Coverage reporting. Block PRs that decrease coverage below threshold. | [codecov.io](https://about.codecov.io/) |
-| **SonarQube** | Comprehensive code quality — bugs, vulnerabilities, code smells, duplication. | [sonarqube.org](https://www.sonarsource.com/products/sonarqube/) |
+| **Codecov** | Coverage reporting. Gate review completion on coverage thresholds. | [codecov.io](https://about.codecov.io/) |
+| **SonarQube** | Comprehensive code quality — bugs, vulnerabilities, code smells, duplication. Run locally via SonarScanner. | [sonarqube.org](https://www.sonarsource.com/products/sonarqube/) |
+| **Codeclimate** | Automated code review for maintainability, duplication, and complexity. | [codeclimate.com](https://codeclimate.com/) |
 
 ---
 
@@ -235,7 +235,7 @@ Recommended build order based on breadth of impact and user demand:
 
 | Phase | Buckets | Rationale |
 |---|---|---|
-| **Phase 1: Foundation** | Code Quality, Testing, Security Scanning, Code Review & PR Automation | Every project needs these. Review is central to Aiki's loop. Highest daily-use frequency. |
+| **Phase 1: Foundation** | Code Quality, Testing, Security Scanning, Code Review & Commit Standards | Every project needs these. Review is central to Aiki's loop. Highest daily-use frequency. |
 | **Phase 2: Workflow** | Issue Tracking, CI/CD, Communication | Connect Aiki to the tools teams already live in. |
 | **Phase 3: Depth** | Package Management, Documentation | Deeper automation for mature teams. |
 | **Phase 4: Platform** | Observability, Cloud/Infra, Database | Specialized but high-value for platform teams. |
