@@ -235,9 +235,9 @@ Recommended build order based on breadth of impact and user demand:
 
 | Phase | Buckets | Rationale |
 |---|---|---|
-| **Phase 1: Foundation** | Code Quality, Testing, Security Scanning | Every project needs these. Highest daily-use frequency. |
+| **Phase 1: Foundation** | Code Quality, Testing, Security Scanning, Code Review & PR Automation | Every project needs these. Review is central to Aiki's loop. Highest daily-use frequency. |
 | **Phase 2: Workflow** | Issue Tracking, CI/CD, Communication | Connect Aiki to the tools teams already live in. |
-| **Phase 3: Depth** | Code Review, Package Management, Documentation | Deeper automation for mature teams. |
+| **Phase 3: Depth** | Package Management, Documentation | Deeper automation for mature teams. |
 | **Phase 4: Platform** | Observability, Cloud/Infra, Database | Specialized but high-value for platform teams. |
 
 ---
