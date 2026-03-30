@@ -797,12 +797,16 @@ fn output_plan_started(
 /// Output plan completed message
 fn output_plan_completed(plan_id: &str, plan_path: &Path) -> Result<()> {
     output_utils::emit(|| {
+        let display_path = std::env::current_dir()
+            .ok()
+            .and_then(|cwd| plan_path.strip_prefix(&cwd).ok().map(|p| p.to_path_buf()))
+            .unwrap_or_else(|| plan_path.to_path_buf());
         let content = format!(
             "## Plan Completed\n- **Task:** {}\n- **File:** {}\n- Created: {}\n\n---\nRun `aiki build {}` to build.\n",
             plan_id,
+            display_path.display(),
             plan_path.display(),
-            plan_path.display(),
-            plan_path.display()
+            display_path.display()
         );
         MdBuilder::new().build(&content)
     });
