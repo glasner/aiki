@@ -288,10 +288,14 @@ mod tests {
     use std::env;
     use std::fs;
     use std::path::PathBuf;
-    use std::sync::Mutex;
     use tempfile::TempDir;
 
-    static AIKI_HOME_MUTEX: Mutex<()> = Mutex::new(());
+    // Use the process-wide mutex from global.rs to avoid races with other modules
+    fn aiki_home_lock() -> std::sync::MutexGuard<'static, ()> {
+        crate::global::AIKI_HOME_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
 
     struct EnvGuard {
         original: Option<String>,
@@ -405,7 +409,7 @@ mod tests {
 
     #[test]
     fn test_task_closed_thread_session_lookup_is_cached() {
-        let _lock = AIKI_HOME_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = aiki_home_lock();
         let (_aiki_home, _guard) = setup_global_aiki_home();
 
         let task_id = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";

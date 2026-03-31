@@ -58,6 +58,35 @@ impl RepoDetector {
         }
     }
 
+    /// Find the aiki project root by walking up from `current_dir` looking for `.aiki/`.
+    ///
+    /// Stops at the filesystem root or home directory.
+    pub fn find_aiki_root(&self) -> Result<PathBuf> {
+        let home_dir = dirs::home_dir();
+        let mut current = self.current_dir.clone();
+
+        loop {
+            if current.join(".aiki").is_dir() {
+                return Ok(current);
+            }
+
+            // Stop at home directory
+            if let Some(ref home) = home_dir {
+                if current == *home {
+                    return Err(anyhow!(
+                        "Not in an aiki project\n\nRun 'aiki init' first to initialize this repository."
+                    ));
+                }
+            }
+
+            if !current.pop() {
+                return Err(anyhow!(
+                    "Not in an aiki project\n\nRun 'aiki init' first to initialize this repository."
+                ));
+            }
+        }
+    }
+
     /// Check if a JJ repository exists at the given path
     pub fn has_jj<P: AsRef<Path>>(path: P) -> bool {
         path.as_ref().join(".jj").exists()
@@ -140,6 +169,49 @@ mod tests {
                     .unwrap_err()
                     .to_string()
                     .contains("Not in a Git repository"));
+            }
+        }
+    }
+
+    #[test]
+    fn find_aiki_root_at_current_directory() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        fs::create_dir(temp_dir.path().join(".aiki")).unwrap();
+
+        let detector = RepoDetector::new(temp_dir.path());
+        let root = detector.find_aiki_root().unwrap();
+
+        assert_eq!(root, temp_dir.path());
+    }
+
+    #[test]
+    fn find_aiki_root_from_subdirectory() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        fs::create_dir(temp_dir.path().join(".aiki")).unwrap();
+
+        let subdir = temp_dir.path().join("src").join("components");
+        fs::create_dir_all(&subdir).unwrap();
+
+        let detector = RepoDetector::new(&subdir);
+        let root = detector.find_aiki_root().unwrap();
+
+        assert_eq!(root, temp_dir.path());
+    }
+
+    #[test]
+    fn find_aiki_root_stops_at_home_directory() {
+        // Verify that find_aiki_root stops at home (or filesystem root)
+        // and doesn't walk above it
+        if let Some(home) = dirs::home_dir() {
+            let detector = RepoDetector::new(&home);
+            let result = detector.find_aiki_root();
+
+            if !home.join(".aiki").exists() {
+                assert!(result.is_err());
+                assert!(result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("Not in an aiki project"));
             }
         }
     }

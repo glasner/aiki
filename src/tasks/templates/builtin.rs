@@ -62,8 +62,8 @@ mod tests {
         let templates = default_plugin_templates();
         assert_eq!(
             templates.len(),
-            12,
-            "Expected 12 templates, got {}",
+            14,
+            "Expected 14 templates, got {}",
             templates.len()
         );
     }
@@ -86,6 +86,7 @@ mod tests {
             "review/code.md",
             "review/plan.md",
             "review/task.md",
+            "tldr.md",
         ];
 
         for name in &expected {

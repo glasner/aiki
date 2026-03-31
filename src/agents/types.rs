@@ -11,11 +11,17 @@ use std::fmt;
 /// This is the canonical enum used throughout the codebase.
 /// Naming uses `ClaudeCode` (not `Claude`) to match CLI conventions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum AgentType {
+    #[serde(alias = "ClaudeCode")]
     ClaudeCode,
+    #[serde(alias = "Codex")]
     Codex,
+    #[serde(alias = "Cursor")]
     Cursor,
+    #[serde(alias = "Gemini")]
     Gemini,
+    #[serde(alias = "Unknown")]
     Unknown,
 }
 
@@ -273,6 +279,30 @@ mod tests {
     fn test_agent_type_display_name() {
         assert_eq!(AgentType::ClaudeCode.display_name(), "Claude");
         assert_eq!(AgentType::Codex.display_name(), "Codex");
+    }
+
+    #[test]
+    fn test_agent_type_deserializes_legacy_pascal_case() {
+        assert_eq!(
+            serde_yaml::from_str::<AgentType>("ClaudeCode").unwrap(),
+            AgentType::ClaudeCode
+        );
+        assert_eq!(
+            serde_yaml::from_str::<AgentType>("Codex").unwrap(),
+            AgentType::Codex
+        );
+        assert_eq!(
+            serde_yaml::from_str::<AgentType>("Cursor").unwrap(),
+            AgentType::Cursor
+        );
+        assert_eq!(
+            serde_yaml::from_str::<AgentType>("Gemini").unwrap(),
+            AgentType::Gemini
+        );
+        assert_eq!(
+            serde_yaml::from_str::<AgentType>("Unknown").unwrap(),
+            AgentType::Unknown
+        );
     }
 
     #[test]

@@ -1033,10 +1033,13 @@ fn lineage_contains_change(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
 
-    // Mutex to serialize tests that modify AIKI_HOME env var
-    static ENV_MUTEX: Mutex<()> = Mutex::new(());
+    // Use the process-wide mutex from global.rs to avoid races with other modules
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        crate::global::AIKI_HOME_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
 
     #[test]
     fn test_find_jj_root_with_jj_dir() {
@@ -1115,7 +1118,7 @@ mod tests {
 
     #[test]
     fn test_workspaces_dir_default() {
-        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = env_lock();
         let original = std::env::var("AIKI_WORKSPACES_DIR").ok();
         std::env::remove_var("AIKI_WORKSPACES_DIR");
 
@@ -1129,7 +1132,7 @@ mod tests {
 
     #[test]
     fn test_workspaces_dir_override() {
-        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = env_lock();
         let original = std::env::var("AIKI_WORKSPACES_DIR").ok();
         std::env::set_var("AIKI_WORKSPACES_DIR", "/custom/workspaces");
 

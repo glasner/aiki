@@ -1501,6 +1501,7 @@ fn emit_synthetic_session_ended(session_info: &SessionFileInfo, reason: SessionC
         cwd,
         timestamp: Utc::now(),
         reason: reason_str.to_string(),
+        tokens: None,
     });
 
     if let Err(e) = event_bus::dispatch(event) {
@@ -1576,11 +1577,14 @@ mod tests {
     use super::*;
     use chrono::{Datelike, Timelike};
     use std::env;
-    use std::sync::Mutex;
     use tempfile::TempDir;
 
-    // Mutex to serialize tests that modify AIKI_HOME env var
-    static ENV_MUTEX: Mutex<()> = Mutex::new(());
+    // Use the process-wide mutex from global.rs to avoid races with other modules
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        crate::global::AIKI_HOME_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
 
     /// RAII guard that restores an environment variable on drop.
     struct EnvGuard {
@@ -1659,7 +1663,7 @@ mod tests {
 
     #[test]
     fn test_create_and_query_session() {
-        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = env_lock();
         let (_aiki_home, _guard) = setup_global_aiki_home_inner();
 
         // Create a session and write its file
@@ -1687,7 +1691,7 @@ mod tests {
 
     #[test]
     fn test_multiple_creates_same_session() {
-        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = env_lock();
         let (_aiki_home, _guard) = setup_global_aiki_home_inner();
 
         // Create session file twice (idempotent via O_EXCL)
@@ -1707,7 +1711,7 @@ mod tests {
 
     #[test]
     fn test_update_parent_pid_adds_pid_to_session_file() {
-        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = env_lock();
         let (_aiki_home, _guard) = setup_global_aiki_home_inner();
 
         // Create session without PID (using new() instead of for_hook() to avoid auto-capture)
@@ -1747,7 +1751,7 @@ mod tests {
 
     #[test]
     fn test_update_parent_pid_idempotent() {
-        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = env_lock();
         let (_aiki_home, _guard) = setup_global_aiki_home_inner();
 
         // Create session without PID
@@ -1774,7 +1778,7 @@ mod tests {
 
     #[test]
     fn test_multiple_different_sessions() {
-        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = env_lock();
         let (_aiki_home, _guard) = setup_global_aiki_home_inner();
 
         // Create multiple different sessions
@@ -1830,7 +1834,7 @@ mod tests {
 
     #[test]
     fn test_session_lifecycle() {
-        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = env_lock();
         let (_aiki_home, _guard) = setup_global_aiki_home_inner();
 
         // Start
@@ -1850,7 +1854,7 @@ mod tests {
 
     #[test]
     fn test_idempotent_file_creation() {
-        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = env_lock();
         let (_aiki_home, _guard) = setup_global_aiki_home_inner();
 
         // Create same session file 5 times (idempotent via O_EXCL)
@@ -1869,7 +1873,7 @@ mod tests {
 
     #[test]
     fn test_session_file_stores_parent_pid() {
-        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = env_lock();
         let (_aiki_home, _guard) = setup_global_aiki_home_inner();
 
         // Create a session with parent_pid
@@ -1896,7 +1900,7 @@ mod tests {
 
     #[test]
     fn test_session_file_without_parent_pid() {
-        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = env_lock();
         let (_aiki_home, _guard) = setup_global_aiki_home_inner();
 
         // Create a session without parent_pid (ACP mode without agent_pid)
@@ -1956,7 +1960,7 @@ mod tests {
 
     #[test]
     fn test_find_session_by_ancestor_pid_no_sessions() {
-        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = env_lock();
         let (repo_dir, _aiki_home, _guard) = setup_test_repo_with_global_inner();
         let repo_path = repo_dir.path();
 
@@ -1967,7 +1971,7 @@ mod tests {
 
     #[test]
     fn test_find_session_by_ancestor_pid_with_matching_session() {
-        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = env_lock();
         let (repo_dir, _aiki_home, _guard) = setup_test_repo_with_global_inner();
         let repo_path = repo_dir.path();
 
@@ -1998,7 +2002,7 @@ mod tests {
 
     #[test]
     fn test_find_session_by_ancestor_pid_non_matching_pid() {
-        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = env_lock();
         let (repo_dir, _aiki_home, _guard) = setup_test_repo_with_global_inner();
         let repo_path = repo_dir.path();
 
@@ -2022,7 +2026,7 @@ mod tests {
 
     #[test]
     fn test_prune_dead_pid_sessions_removes_dead_pid() {
-        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = env_lock();
         let (_repo_dir, _aiki_home, _guard) = setup_test_repo_with_global_inner();
 
         // Create a session with a PID that definitely doesn't exist
@@ -2050,7 +2054,7 @@ mod tests {
 
     #[test]
     fn test_prune_dead_pid_sessions_keeps_live_pid() {
-        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = env_lock();
         let (_repo_dir, _aiki_home, _guard) = setup_test_repo_with_global_inner();
 
         // Create a session with our own PID (which is alive)
@@ -2079,7 +2083,7 @@ mod tests {
 
     #[test]
     fn test_for_hook_session_file_has_parent_pid() {
-        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = env_lock();
         let (_aiki_home, _guard) = setup_global_aiki_home_inner();
 
         // Create session using for_hook (which captures parent PID)
@@ -2181,7 +2185,7 @@ mod tests {
         // so in a non-JJ test environment all sessions get UNIX_EPOCH timestamps.
         // The important behavior is that we return *a* matching session.
 
-        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = env_lock();
         let (repo_dir, _aiki_home, _guard) = setup_test_repo_with_global_inner();
         let repo_path = repo_dir.path();
         let sessions_dir = global::global_sessions_dir();
@@ -2221,7 +2225,7 @@ mod tests {
 
     #[test]
     fn test_session_file_uses_new_format() {
-        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = env_lock();
         let (_aiki_home, _guard) = setup_global_aiki_home_inner();
 
         let session = AikiSession::new(
@@ -2377,7 +2381,7 @@ mod tests {
 
     #[test]
     fn test_add_repo_to_session_file() {
-        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = env_lock();
         let (_aiki_home, _guard) = setup_global_aiki_home_inner();
         let session = AikiSession::new(
             AgentType::ClaudeCode,
@@ -2400,7 +2404,7 @@ mod tests {
 
     #[test]
     fn test_add_multiple_repos() {
-        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = env_lock();
         let (_aiki_home, _guard) = setup_global_aiki_home_inner();
         let session = AikiSession::new(
             AgentType::ClaudeCode,
@@ -2426,7 +2430,7 @@ mod tests {
 
     #[test]
     fn test_add_repo_idempotent() {
-        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = env_lock();
         let (_aiki_home, _guard) = setup_global_aiki_home_inner();
         let session = AikiSession::new(
             AgentType::ClaudeCode,
@@ -2453,7 +2457,7 @@ mod tests {
 
     #[test]
     fn test_add_repo_to_nonexistent_file() {
-        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = env_lock();
         let (_aiki_home, _guard) = setup_global_aiki_home_inner();
         let session = AikiSession::new(
             AgentType::ClaudeCode,
@@ -2513,7 +2517,7 @@ mod tests {
     // --- 2c: with_thread_from_env parses single ID ---
     #[test]
     fn test_with_thread_from_env_parses_single() {
-        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = env_lock();
         let _guard = EnvGuard::new("AIKI_THREAD", Some(THREAD_ID_A));
 
         let session = AikiSession::new(
@@ -2533,7 +2537,7 @@ mod tests {
     // --- 2d: with_thread_from_env parses head:tail pair ---
     #[test]
     fn test_with_thread_from_env_parses_pair() {
-        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = env_lock();
         let pair = format!("{}:{}", THREAD_ID_A, THREAD_ID_B);
         let _guard = EnvGuard::new("AIKI_THREAD", Some(&pair));
 
@@ -2555,7 +2559,7 @@ mod tests {
     // --- 2e: with_thread_from_env when unset is None ---
     #[test]
     fn test_with_thread_from_env_unset_is_none() {
-        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = env_lock();
         let _guard = EnvGuard::new("AIKI_THREAD", None);
 
         let session = AikiSession::new(
@@ -2573,7 +2577,7 @@ mod tests {
     // --- 2f: with_thread_from_env with invalid value is None ---
     #[test]
     fn test_with_thread_from_env_invalid_is_none() {
-        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = env_lock();
         let _guard = EnvGuard::new("AIKI_THREAD", Some("bad"));
 
         let session = AikiSession::new(
@@ -2591,7 +2595,7 @@ mod tests {
     // --- 2g: session file writes thread field ---
     #[test]
     fn test_session_file_writes_thread() {
-        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = env_lock();
         let (_aiki_home, _guard) = setup_global_aiki_home_inner();
 
         let thread = ThreadId {
@@ -2623,7 +2627,7 @@ mod tests {
     // --- 2h: find_thread_session matches on tail only ---
     #[test]
     fn test_find_thread_session_matches_on_tail() {
-        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = env_lock();
         let (_aiki_home, _guard) = setup_global_aiki_home_inner();
 
         let sessions_dir = global::global_sessions_dir();
@@ -2650,7 +2654,7 @@ mod tests {
     // --- 2i: find_thread_session with single-task thread ---
     #[test]
     fn test_find_thread_session_single_task_thread() {
-        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = env_lock();
         let (_aiki_home, _guard) = setup_global_aiki_home_inner();
 
         let sessions_dir = global::global_sessions_dir();

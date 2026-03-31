@@ -1,8 +1,9 @@
 use anyhow::{Context, Result};
 use serde_json::json;
 use std::fs;
+use std::io::Write;
 use std::net::{SocketAddr, TcpStream};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
@@ -473,9 +474,11 @@ pub fn install_codex_hooks_global() -> Result<()> {
     // handlers can write global session state under workspace-write mode.
     ensure_codex_writable_root(config_table)?;
 
-    // Write updated config
+    // Write updated config atomically to prevent corruption from concurrent
+    // `aiki init` calls (e.g. multiple agent sessions starting at once).
     let content = toml::to_string_pretty(&config).context("Failed to serialize config.toml")?;
-    fs::write(&config_path, content).context("Failed to write ~/.codex/config.toml")?;
+    atomic_write_file(&config_path, content.as_bytes())
+        .context("Failed to write ~/.codex/config.toml")?;
 
     println!("✓ Installed Codex hooks at {}", config_path.display());
     println!("  - [otel.exporter]: Log events → {}", aiki_endpoint);
@@ -560,6 +563,37 @@ fn ensure_codex_writable_root(
         writable_roots.push(toml::Value::String(global_aiki));
     }
 
+    Ok(())
+}
+
+/// Write a file atomically by writing to a temp file then renaming.
+///
+/// `rename()` is atomic on POSIX — the target is either the old content or the
+/// new content, never a partial mix. This prevents corruption when multiple
+/// processes write the same config file concurrently.
+fn atomic_write_file(path: &Path, content: &[u8]) -> Result<()> {
+    let parent = path
+        .parent()
+        .context("Cannot write to a file with no parent directory")?;
+
+    let tmp_path = parent.join(format!(
+        ".{}.tmp.{}.{:?}",
+        path.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("config"),
+        std::process::id(),
+        std::thread::current().id(),
+    ));
+
+    // Write to temp file, fsync, then rename
+    let mut file = fs::File::create(&tmp_path).context("Failed to create temporary config file")?;
+    file.write_all(content)
+        .context("Failed to write temporary config file")?;
+    file.sync_all()
+        .context("Failed to sync temporary config file")?;
+    drop(file);
+
+    fs::rename(&tmp_path, path).context("Failed to rename temporary config file")?;
     Ok(())
 }
 
@@ -907,5 +941,95 @@ mod tests {
         assert!(previous_path_file.exists());
         let content = fs::read_to_string(&previous_path_file).unwrap();
         assert_eq!(content, ".custom-hooks");
+    }
+
+    #[test]
+    fn atomic_write_creates_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+
+        atomic_write_file(&path, b"[hooks]\ncommand = true\n").unwrap();
+
+        let content = fs::read_to_string(&path).unwrap();
+        assert_eq!(content, "[hooks]\ncommand = true\n");
+    }
+
+    #[test]
+    fn atomic_write_replaces_existing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+
+        fs::write(&path, "old content that is longer than new").unwrap();
+        atomic_write_file(&path, b"new").unwrap();
+
+        let content = fs::read_to_string(&path).unwrap();
+        assert_eq!(content, "new", "old content must not bleed through");
+    }
+
+    #[test]
+    fn atomic_write_leaves_no_temp_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+
+        atomic_write_file(&path, b"content").unwrap();
+
+        let temps: Vec<_> = fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().contains(".tmp."))
+            .collect();
+        assert!(temps.is_empty(), "temp file should be cleaned up by rename");
+    }
+
+    #[test]
+    fn atomic_write_concurrent_writers_never_corrupt() {
+        use std::sync::{Arc, Barrier};
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+
+        // Seed the file so we can detect bleed-through from old content
+        fs::write(&path, "x".repeat(4096)).unwrap();
+
+        let num_writers = 20;
+        let rounds = 50;
+        let barrier = Arc::new(Barrier::new(num_writers));
+
+        // Each thread writes a distinct, self-consistent payload.
+        // After all writes, the file must contain exactly one payload — not a mix.
+        std::thread::scope(|s| {
+            for writer_id in 0..num_writers {
+                let barrier = Arc::clone(&barrier);
+                let path = path.clone();
+                s.spawn(move || {
+                    // All threads start together to maximize contention
+                    barrier.wait();
+                    for round in 0..rounds {
+                        let tag = format!("w{writer_id}r{round}");
+                        // Vary length to reproduce the short-write-over-long-write bug
+                        let payload =
+                            format!("[{tag}]\nkey = \"{}\"\n", tag.repeat(1 + (writer_id % 5)));
+                        atomic_write_file(&path, payload.as_bytes()).unwrap();
+                    }
+                });
+            }
+        });
+
+        // The file must be valid: it should start with `[` and be parseable,
+        // and it must NOT contain leftover bytes from a different write.
+        let final_content = fs::read_to_string(&path).unwrap();
+        assert!(
+            final_content.starts_with('['),
+            "file should start with TOML section header, got: {:?}",
+            &final_content[..final_content.len().min(40)]
+        );
+        // Parse to confirm it's valid TOML (not a mix of two writes)
+        let parsed: Result<toml::Value, _> = toml::from_str(&final_content);
+        assert!(
+            parsed.is_ok(),
+            "file must be valid TOML after concurrent writes, got error: {:?}\ncontent: {:?}",
+            parsed.err(),
+            &final_content[..final_content.len().min(200)]
+        );
     }
 }

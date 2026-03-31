@@ -10,6 +10,8 @@ use std::path::Path;
 pub struct SyncReport {
     pub installed: usize,
     pub upgraded: usize,
+    pub installed_names: Vec<String>,
+    pub upgraded_names: Vec<String>,
     pub skipped_dirty: Vec<String>,
     pub pruned: Vec<String>,
 }
@@ -67,6 +69,8 @@ pub fn sync_plugin_templates(
     let mut report = SyncReport {
         installed: 0,
         upgraded: 0,
+        installed_names: Vec::new(),
+        upgraded_names: Vec::new(),
         skipped_dirty: Vec::new(),
         pruned: Vec::new(),
     };
@@ -98,6 +102,7 @@ pub fn sync_plugin_templates(
                             },
                         );
                         report.installed += 1;
+                        report.installed_names.push(rel_path.to_string());
                     } else {
                         // Dirty adoption — file exists on disk with different content than source.
                         // We intentionally store `source_cksum` (not `disk_cksum`) because:
@@ -132,6 +137,7 @@ pub fn sync_plugin_templates(
                         },
                     );
                     report.installed += 1;
+                    report.installed_names.push(rel_path.to_string());
                 }
             }
             Some(entry) => {
@@ -150,6 +156,7 @@ pub fn sync_plugin_templates(
                         },
                     );
                     report.installed += 1;
+                    report.installed_names.push(rel_path.to_string());
                 } else if source_cksum == entry.checksum {
                     // Up to date — skip
                 } else {
@@ -168,6 +175,7 @@ pub fn sync_plugin_templates(
                             },
                         );
                         report.upgraded += 1;
+                        report.upgraded_names.push(rel_path.to_string());
                     } else {
                         // Dirty — user modified, skip
                         report.skipped_dirty.push(rel_path.to_string());
@@ -216,10 +224,18 @@ pub fn sync_default_templates(repo_root: &Path, quiet: bool) -> Result<SyncRepor
 
     if !quiet {
         if report.installed > 0 {
-            println!("✓ Installed {} built-in template(s)", report.installed);
+            println!(
+                "✓ Installed {} built-in template(s): {}",
+                report.installed,
+                report.installed_names.join(", ")
+            );
         }
         if report.upgraded > 0 {
-            println!("✓ Updated {} built-in template(s)", report.upgraded);
+            println!(
+                "✓ Updated {} built-in template(s): {}",
+                report.upgraded,
+                report.upgraded_names.join(", ")
+            );
         }
         if !report.skipped_dirty.is_empty() {
             println!(

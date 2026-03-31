@@ -21,9 +21,9 @@ pub enum SessionCommands {
         /// Show only interactive sessions (user-driven)
         #[arg(long, conflicts_with = "background")]
         interactive: bool,
-        /// Maximum number of sessions to show (default: all)
-        #[arg(long)]
-        limit: Option<usize>,
+        /// Limit the number of results shown
+        #[arg(long, short = 'n')]
+        number: Option<usize>,
     },
     /// Show turns for a specific session
     Show {
@@ -49,8 +49,8 @@ pub fn run(command: SessionCommands) -> Result<()> {
             active,
             background,
             interactive,
-            limit,
-        } => run_list(active, background, interactive, limit),
+            number,
+        } => run_list(active, background, interactive, number),
         SessionCommands::Show { id } => run_show(&id),
         SessionCommands::Wait { ids, any, output } => run_wait(ids, any, output),
     }
@@ -125,7 +125,12 @@ fn print_session_table(rows: &[SessionRow]) {
     println!("\n{} session{}", count, if count == 1 { "" } else { "s" });
 }
 
-fn run_list(active: bool, background: bool, interactive: bool, limit: Option<usize>) -> Result<()> {
+fn run_list(
+    active: bool,
+    background: bool,
+    interactive: bool,
+    number: Option<usize>,
+) -> Result<()> {
     session::prune_dead_pid_sessions();
     let mut active_sessions = session::list_all_sessions()?;
 
@@ -152,7 +157,7 @@ fn run_list(active: bool, background: bool, interactive: bool, limit: Option<usi
             .collect();
 
         let iter = active_sessions.iter();
-        let rows: Vec<SessionRow> = match limit {
+        let rows: Vec<SessionRow> = match number {
             Some(n) => iter.take(n).collect::<Vec<_>>(),
             None => iter.collect(),
         }
@@ -247,7 +252,7 @@ fn run_list(active: bool, background: bool, interactive: bool, limit: Option<usi
         }
 
         // Apply limit after filtering
-        if let Some(n) = limit {
+        if let Some(n) = number {
             rows.truncate(n);
         }
 

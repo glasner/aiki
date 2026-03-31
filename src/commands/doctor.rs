@@ -695,7 +695,7 @@ fn check_templates(project_root: &std::path::Path, fix: bool) -> usize {
         }
 
         // Print summary header
-        println!("  Templates ({}):", plugin_ref);
+        println!("  {}:", plugin_ref);
 
         if up_to_date > 0 {
             println!("    ✓ {} template(s) up to date", up_to_date);
@@ -742,8 +742,9 @@ fn check_templates(project_root: &std::path::Path, fix: bool) -> usize {
                                 Ok(report) => {
                                     if report.installed > 0 {
                                         println!(
-                                            "    ✓ Reinstalled {} template(s)",
-                                            report.installed
+                                            "    ✓ Reinstalled {} template(s): {}",
+                                            report.installed,
+                                            report.installed_names.join(", ")
                                         );
                                     }
                                     let _ = fix_manifest.save(project_root);
@@ -1218,6 +1219,37 @@ mod tests {
     use super::*;
     use std::io::Write;
     use tempfile::NamedTempFile;
+
+    struct EnvGuard {
+        name: String,
+        original: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn set(name: &str, value: &str, _proof: &std::sync::MutexGuard<'_, ()>) -> Self {
+            let original = std::env::var(name).ok();
+            // SAFETY: Thread safety is handled by AIKI_HOME_TEST_MUTEX; the `_proof`
+            // parameter guarantees the caller holds the mutex lock.
+            unsafe {
+                std::env::set_var(name, value);
+            }
+            Self {
+                name: name.to_string(),
+                original,
+            }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            // SAFETY: Thread safety is handled by AIKI_HOME_TEST_MUTEX; these tests
+            // run serially under the mutex lock.
+            match &self.original {
+                Some(v) => unsafe { std::env::set_var(&self.name, v) },
+                None => unsafe { std::env::remove_var(&self.name) },
+            }
+        }
+    }
 
     #[test]
     fn test_find_missing_claude_code_hooks_complete() {
@@ -1698,10 +1730,14 @@ mod tests {
 
     #[test]
     fn test_check_codex_hooks_complete() {
+        let _lock = crate::global::AIKI_HOME_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+
+        let fake_home = "/tmp/fake-aiki-home";
+        let _guard = EnvGuard::set("AIKI_HOME", fake_home, &_lock);
+
         let mut file = NamedTempFile::new().unwrap();
-        let global_aiki = crate::global::global_aiki_dir()
-            .to_string_lossy()
-            .to_string();
         let config = format!(
             r#"
 [hooks.sessionStart]
@@ -1718,12 +1754,14 @@ endpoint = "http://127.0.0.1:19876/v1/logs"
 protocol = "binary"
 
 [sandbox_workspace_write]
-writable_roots = ["{global_aiki}"]
+writable_roots = ["{fake_home}"]
 "#
         );
         write!(file, "{}", config).unwrap();
 
-        assert!(check_codex_hooks(file.path()));
+        let result = check_codex_hooks(file.path());
+
+        assert!(result);
     }
 
     #[test]

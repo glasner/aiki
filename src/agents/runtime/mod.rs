@@ -193,10 +193,12 @@ impl AgentSpawnOptions {
             r#"You are assigned thread `{thread}`. Work through all tasks in order.
 
 SCOPE: Only tasks in this thread. Do not pick up other work.
+START: Run `aiki task list` to see your backlog. Start the next task with
+       `aiki task start <task-id>`. The start output includes the task's
+       instructions and context; review that output, then begin working immediately.
 EXIT: When `aiki task list` returns no tasks, you are done — exit immediately.
      Do not close parent/sibling tasks.
-
-Run `aiki task list` to see your backlog."#,
+"#,
             thread = self.thread,
         )
     }
@@ -355,10 +357,15 @@ mod tests {
         );
         assert!(prompt.contains("thread"), "prompt should mention 'thread'");
         assert!(prompt.contains("SCOPE"), "prompt should mention 'SCOPE'");
+        assert!(prompt.contains("START"), "prompt should mention 'START'");
         assert!(prompt.contains("EXIT"), "prompt should mention 'EXIT'");
         assert!(
             prompt.contains("aiki task list"),
             "prompt should mention 'aiki task list'"
+        );
+        assert!(
+            prompt.contains("aiki task start <task-id>"),
+            "prompt should mention starting the task before working"
         );
     }
 

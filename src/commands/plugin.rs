@@ -27,7 +27,11 @@ pub enum PluginCommands {
         reference: Option<String>,
     },
     /// List installed plugins
-    List,
+    List {
+        /// Limit the number of results shown
+        #[arg(long, short = 'n')]
+        number: Option<usize>,
+    },
     /// Remove an installed plugin
     Remove {
         /// Plugin reference to remove (e.g., aiki/way)
@@ -39,7 +43,7 @@ pub fn run(command: PluginCommands) -> Result<()> {
     match command {
         PluginCommands::Install { reference } => run_install(reference),
         PluginCommands::Update { reference } => run_update(reference),
-        PluginCommands::List => run_list(),
+        PluginCommands::List { number } => run_list(number),
         PluginCommands::Remove { reference } => run_remove(reference),
     }
 }
@@ -181,7 +185,7 @@ fn update_single(plugin: &PluginRef, plugins_base: &Path) -> Result<()> {
     Ok(())
 }
 
-fn run_list() -> Result<()> {
+fn run_list(number: Option<usize>) -> Result<()> {
     let plugins_base = plugins_base_dir()?;
     let cwd = env::current_dir()?;
 
@@ -191,7 +195,10 @@ fn run_list() -> Result<()> {
     match aiki_dir {
         Some(aiki_dir) => {
             // In repo: show project context
-            let project_refs = derive_plugin_refs(&aiki_dir, None);
+            let mut project_refs = derive_plugin_refs(&aiki_dir, None);
+            if let Some(n) = number {
+                project_refs.truncate(n);
+            }
 
             if project_refs.is_empty() {
                 println!("No plugin references found in project.");
@@ -288,6 +295,9 @@ fn run_list() -> Result<()> {
                     .collect()
             };
 
+            if let Some(n) = number {
+                plugin_deps.truncate(n);
+            }
             println!("Installed (~/.aiki/plugins/):");
             for (plugin, deps) in &plugin_deps {
                 if hidden.contains(plugin) {
