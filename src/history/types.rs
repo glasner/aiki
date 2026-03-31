@@ -66,6 +66,10 @@ pub enum ConversationEvent {
         files_written: Vec<String>,
         /// Full response text
         content: Option<String>,
+        /// Token usage for this turn
+        tokens: Option<crate::events::TokenUsage>,
+        /// Model used for this turn (extracted from transcript)
+        model: Option<String>,
         timestamp: DateTime<Utc>,
         /// Stable repository identifier (from repo-id file)
         repo_id: Option<String>,

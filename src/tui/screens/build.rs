@@ -3,6 +3,7 @@
 //! Phases: plan → section header → decompose → subtask table → loop →
 //! (review → fix iterations) → summary.
 
+use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 
 use crate::tasks::lanes::{derive_lanes as derive_lane_decomposition, lane_status, LaneStatus};
@@ -221,7 +222,8 @@ fn build_summary_lines(graph: &TaskGraph, epic_id: &str, plan_path: &str, group:
 
     // Per-agent breakdown: aggregate sessions, time, and tokens by agent type.
     // Only show per-agent lines when multiple agent types were used.
-    let agent_stats = aggregate_agent_stats(graph, epic_id);
+    let epic_closed_at = graph.tasks.get(epic_id).and_then(|t| t.closed_at);
+    let agent_stats = aggregate_agent_stats(graph, epic_id, epic_closed_at);
     if agent_stats.len() > 1 {
         for stat in &agent_stats {
             children.push(ChildLine::normal(
@@ -285,7 +287,12 @@ struct AgentStat {
 }
 
 /// Aggregate sessions, time, and tokens per agent type from epic children.
-fn aggregate_agent_stats(graph: &TaskGraph, epic_id: &str) -> Vec<AgentStat> {
+/// `epic_closed_at` caps elapsed time for non-terminal tasks (abandoned in-progress).
+fn aggregate_agent_stats(
+    graph: &TaskGraph,
+    epic_id: &str,
+    epic_closed_at: Option<DateTime<Utc>>,
+) -> Vec<AgentStat> {
     let children = graph.children_of(epic_id);
     let mut by_agent: HashMap<String, (usize, i64, u64)> = HashMap::new(); // (sessions, seconds, tokens)
 
@@ -295,9 +302,13 @@ fn aggregate_agent_stats(graph: &TaskGraph, epic_id: &str) -> Vec<AgentStat> {
         let entry = by_agent.entry(agent).or_insert((0, 0, 0));
         entry.0 += 1; // sessions
 
-        // Elapsed seconds from started_at to closed_at (or now)
+        // Elapsed seconds: use closed_at if available, otherwise cap at epic's
+        // close time (for abandoned in-progress tasks), falling back to now.
         if let Some(started) = task.started_at {
-            let end = task.closed_at.unwrap_or_else(chrono::Utc::now);
+            let end = task
+                .closed_at
+                .or(epic_closed_at)
+                .unwrap_or_else(chrono::Utc::now);
             let secs = (end - started).num_seconds().max(0);
             entry.1 += secs;
         }
@@ -429,6 +440,7 @@ mod tests {
             } else {
                 None
             },
+            confidence: None,
             summary: None,
             turn_started: None,
             closed_at: None,

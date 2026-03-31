@@ -6,6 +6,7 @@ use crate::error::Result;
 use crate::events::{
     AikiEvent, AikiSessionClearedPayload, AikiSessionResumedPayload, AikiSessionStartPayload,
     AikiShellPermissionAskedPayload, AikiTurnCompletedPayload, AikiTurnStartedPayload,
+    TokenUsage,
 };
 
 // ============================================================================
@@ -130,13 +131,11 @@ struct StopPayload {
     #[allow(dead_code)]
     #[serde(default)]
     turn_id: Option<String>,
-    #[allow(dead_code)]
     #[serde(default)]
     model: Option<String>,
     #[allow(dead_code)]
     #[serde(default)]
     permission_mode: Option<String>,
-    #[allow(dead_code)]
     #[serde(default)]
     transcript_path: Option<String>,
 }
@@ -225,7 +224,13 @@ fn build_shell_permission_asked_event(payload: PreToolUsePayload) -> AikiEvent {
 ///
 /// Codex carries `last_assistant_message` directly in the payload,
 /// so no transcript file parsing is needed (unlike Claude Code).
+/// Token usage is extracted from the session JSONL transcript file.
 fn build_turn_completed_event(payload: StopPayload) -> AikiEvent {
+    let tokens = payload
+        .transcript_path
+        .as_deref()
+        .and_then(parse_token_usage_from_transcript);
+
     AikiEvent::TurnCompleted(AikiTurnCompletedPayload {
         session: create_session(&payload.session_id, &payload.cwd),
         cwd: PathBuf::from(&payload.cwd),
@@ -234,7 +239,76 @@ fn build_turn_completed_event(payload: StopPayload) -> AikiEvent {
         response: payload.last_assistant_message.unwrap_or_default(),
         modified_files: vec![],
         tasks: Default::default(),
+        tokens,
+        model: payload.model,
     })
+}
+
+// ============================================================================
+// Token Usage Parsing
+// ============================================================================
+
+/// A `token_count` event from a Codex session JSONL file.
+#[derive(Deserialize, Debug, Clone)]
+struct CodexTokenCount {
+    input: u64,
+    output: u64,
+    #[serde(default)]
+    cached_input: u64,
+}
+
+/// Parse per-turn token usage from a Codex session JSONL transcript file.
+///
+/// Codex writes cumulative `token_count` events to the session JSONL.
+/// Per-turn usage is the delta between the last two such events.
+/// If there is only one event, it is used as-is (first turn).
+fn parse_token_usage_from_transcript(path: &str) -> Option<TokenUsage> {
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(_) => return None,
+    };
+    parse_token_usage_from_lines(&content)
+}
+
+/// Parse per-turn token usage from JSONL content (testable without filesystem).
+fn parse_token_usage_from_lines(content: &str) -> Option<TokenUsage> {
+    let mut prev: Option<CodexTokenCount> = None;
+    let mut last: Option<CodexTokenCount> = None;
+
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        // Quick check before full parse
+        if !line.contains("\"token_count\"") {
+            continue;
+        }
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(line) {
+            if val.get("type").and_then(|t| t.as_str()) == Some("token_count") {
+                if let Ok(tc) = serde_json::from_value::<CodexTokenCount>(val) {
+                    prev = last;
+                    last = Some(tc);
+                }
+            }
+        }
+    }
+
+    let last = last?;
+    match prev {
+        None => Some(TokenUsage {
+            input: last.input,
+            output: last.output,
+            cache_read: last.cached_input,
+            cache_created: 0,
+        }),
+        Some(prev) => Some(TokenUsage {
+            input: last.input.saturating_sub(prev.input),
+            output: last.output.saturating_sub(prev.output),
+            cache_read: last.cached_input.saturating_sub(prev.cached_input),
+            cache_created: 0,
+        }),
+    }
 }
 
 #[cfg(test)]
@@ -440,5 +514,87 @@ mod tests {
             }
             _ => panic!("Expected TurnCompleted"),
         }
+    }
+
+    #[test]
+    fn test_turn_completed_extracts_model() {
+        let payload = StopPayload {
+            session_id: "test-session".to_string(),
+            cwd: "/tmp/test".to_string(),
+            last_assistant_message: None,
+            stop_hook_active: None,
+            turn_id: None,
+            model: Some("o3".to_string()),
+            permission_mode: None,
+            transcript_path: None,
+        };
+        let event = build_turn_completed_event(payload);
+        match event {
+            AikiEvent::TurnCompleted(p) => {
+                assert_eq!(p.model, Some("o3".to_string()));
+            }
+            _ => panic!("Expected TurnCompleted"),
+        }
+    }
+
+    #[test]
+    fn test_parse_token_usage_single_event() {
+        let content = r#"{"type":"message","content":"hello"}
+{"type":"token_count","input":1000,"output":500,"cached_input":200,"reasoning":50,"total":1750}
+"#;
+        let usage = parse_token_usage_from_lines(content).unwrap();
+        assert_eq!(usage.input, 1000);
+        assert_eq!(usage.output, 500);
+        assert_eq!(usage.cache_read, 200);
+        assert_eq!(usage.cache_created, 0);
+    }
+
+    #[test]
+    fn test_parse_token_usage_delta_two_events() {
+        let content = r#"{"type":"token_count","input":1000,"output":500,"cached_input":200,"reasoning":50,"total":1750}
+{"type":"message","content":"working..."}
+{"type":"token_count","input":2500,"output":1200,"cached_input":800,"reasoning":100,"total":4600}
+"#;
+        let usage = parse_token_usage_from_lines(content).unwrap();
+        assert_eq!(usage.input, 1500);
+        assert_eq!(usage.output, 700);
+        assert_eq!(usage.cache_read, 600);
+        assert_eq!(usage.cache_created, 0);
+    }
+
+    #[test]
+    fn test_parse_token_usage_delta_three_events() {
+        // Only the last two matter
+        let content = r#"{"type":"token_count","input":500,"output":200,"cached_input":100,"reasoning":0,"total":800}
+{"type":"token_count","input":1000,"output":500,"cached_input":200,"reasoning":50,"total":1750}
+{"type":"token_count","input":2500,"output":1200,"cached_input":800,"reasoning":100,"total":4600}
+"#;
+        let usage = parse_token_usage_from_lines(content).unwrap();
+        assert_eq!(usage.input, 1500);
+        assert_eq!(usage.output, 700);
+        assert_eq!(usage.cache_read, 600);
+    }
+
+    #[test]
+    fn test_parse_token_usage_no_events() {
+        let content = r#"{"type":"message","content":"hello"}
+{"type":"message","content":"world"}
+"#;
+        assert!(parse_token_usage_from_lines(content).is_none());
+    }
+
+    #[test]
+    fn test_parse_token_usage_empty_content() {
+        assert!(parse_token_usage_from_lines("").is_none());
+    }
+
+    #[test]
+    fn test_parse_token_usage_missing_cached_input_defaults_zero() {
+        let content = r#"{"type":"token_count","input":1000,"output":500}
+"#;
+        let usage = parse_token_usage_from_lines(content).unwrap();
+        assert_eq!(usage.input, 1000);
+        assert_eq!(usage.output, 500);
+        assert_eq!(usage.cache_read, 0);
     }
 }

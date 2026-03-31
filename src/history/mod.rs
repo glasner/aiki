@@ -13,6 +13,6 @@ pub use recorder::{
 };
 pub use storage::{
     get_current_turn_info, get_current_turn_number, get_latest_prompt_change_id,
-    get_prompt_by_change_id, has_pending_autoreply,
+    get_prompt_by_change_id, has_pending_autoreply, last_session_model,
 };
 pub use types::TurnSource;

@@ -124,6 +124,8 @@ pub fn record_response(
     timestamp: DateTime<Utc>,
     repo_id: Option<&str>,
     event_cwd: Option<&str>,
+    tokens: Option<crate::events::TokenUsage>,
+    model: Option<String>,
 ) -> Result<()> {
     // Store full response content (truncated to same limit as prompts)
     let content = if response_text.trim().is_empty() {
@@ -138,6 +140,8 @@ pub fn record_response(
         turn,
         files_written: truncate_file_list(files_written),
         content,
+        tokens,
+        model,
         timestamp,
         repo_id: repo_id.map(String::from),
         cwd: event_cwd.map(String::from),

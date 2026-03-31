@@ -237,6 +237,14 @@ pub struct EventHandlers {
     )]
     pub commit_message_started: Vec<HookStatement>,
 
+    // Model Transition Events
+    #[serde(
+        rename = "model.changed",
+        default,
+        deserialize_with = "deserialize_null_as_empty_vec"
+    )]
+    pub model_changed: Vec<HookStatement>,
+
     // Repo Transition Events
     #[serde(
         rename = "repo.changed",

@@ -543,6 +543,7 @@ mod tests {
             } else {
                 None
             },
+            confidence: None,
             summary: None,
             turn_started: None,
             closed_at: None,

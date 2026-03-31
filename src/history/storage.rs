@@ -491,6 +491,22 @@ fn find_session_in_events(events: &[ConversationEvent], thread_id: &str) -> Opti
     })
 }
 
+/// Get the most recent model used in a session by scanning Response events.
+///
+/// Returns the `model` field from the last Response event for the given session,
+/// or `None` if no Response events exist for that session (or none have a model).
+pub fn last_session_model(cwd: &Path, session_id: &str) -> Result<Option<String>> {
+    let events = read_events(cwd)?;
+    Ok(events.iter().rev().find_map(|event| match event {
+        ConversationEvent::Response {
+            session_id: sid,
+            model: Some(m),
+            ..
+        } if sid == session_id => Some(m.clone()),
+        _ => None,
+    }))
+}
+
 /// Escape a string value for metadata storage
 /// Encodes characters that would break key=value parsing: %, =, \n, \r
 fn escape_metadata_value(value: &str) -> String {
@@ -597,6 +613,8 @@ fn event_to_metadata_block(event: &ConversationEvent) -> String {
             turn,
             files_written,
             content,
+            tokens,
+            model,
             timestamp,
             repo_id,
             cwd,
@@ -608,6 +626,15 @@ fn event_to_metadata_block(event: &ConversationEvent) -> String {
             add_metadata_list("files_written", files_written, &mut lines);
             if let Some(c) = content {
                 add_metadata_escaped("content", c, &mut lines);
+            }
+            if let Some(t) = tokens {
+                add_metadata("tokens_input", t.input, &mut lines);
+                add_metadata("tokens_output", t.output, &mut lines);
+                add_metadata("tokens_cache_read", t.cache_read, &mut lines);
+                add_metadata("tokens_cache_created", t.cache_created, &mut lines);
+            }
+            if let Some(m) = model {
+                add_metadata("model", m, &mut lines);
             }
             add_location_metadata(repo_id, cwd, &mut lines);
             add_metadata_timestamp(timestamp, &mut lines);
@@ -776,12 +803,32 @@ fn parse_metadata_block(block: &str) -> Option<ConversationEvent> {
                 .and_then(|v| v.first())
                 .map(|s| unescape_metadata_value(s));
 
+            // Parse token usage if any token fields are present
+            let tokens = {
+                let input = fields.get("tokens_input").and_then(|v| v.first()).and_then(|s| s.parse::<u64>().ok());
+                let output = fields.get("tokens_output").and_then(|v| v.first()).and_then(|s| s.parse::<u64>().ok());
+                if input.is_some() || output.is_some() {
+                    Some(crate::events::TokenUsage {
+                        input: input.unwrap_or(0),
+                        output: output.unwrap_or(0),
+                        cache_read: fields.get("tokens_cache_read").and_then(|v| v.first()).and_then(|s| s.parse().ok()).unwrap_or(0),
+                        cache_created: fields.get("tokens_cache_created").and_then(|v| v.first()).and_then(|s| s.parse().ok()).unwrap_or(0),
+                    })
+                } else {
+                    None
+                }
+            };
+
+            let model = fields.get("model").and_then(|v| v.first()).map(|s| s.to_string());
+
             Some(ConversationEvent::Response {
                 session_id,
                 agent_type,
                 turn,
                 files_written,
                 content,
+                tokens,
+                model,
                 timestamp,
                 repo_id,
                 cwd,
@@ -922,6 +969,8 @@ mod tests {
             turn: 2,
             files_written: vec!["auth.rs".to_string(), "tests.rs".to_string()],
             content: Some("Updated auth module\n\nMore details here.".to_string()),
+            tokens: None,
+            model: None,
             timestamp: DateTime::parse_from_rfc3339("2026-01-09T10:30:00Z")
                 .unwrap()
                 .with_timezone(&Utc),
@@ -1173,6 +1222,8 @@ timestamp=2026-01-09T10:30:00Z
             turn: 4,
             files_written: vec!["b.rs".to_string()],
             content: Some("Summary text\n\nFull response with details.".to_string()),
+            tokens: None,
+            model: None,
             timestamp: Utc::now(),
             repo_id: Some("abc123".to_string()),
             cwd: Some("/path/to/project".to_string()),
@@ -1205,6 +1256,78 @@ timestamp=2026-01-09T10:30:00Z
                 assert_eq!(c1, c2);
             }
             _ => panic!("Event type mismatch"),
+        }
+    }
+
+    #[test]
+    fn test_response_with_tokens_roundtrip() {
+        let original = ConversationEvent::Response {
+            session_id: "sess-tok".to_string(),
+            agent_type: AgentType::ClaudeCode,
+            turn: 1,
+            files_written: vec![],
+            content: Some("test".to_string()),
+            tokens: Some(crate::events::TokenUsage {
+                input: 1000,
+                output: 500,
+                cache_read: 200,
+                cache_created: 50,
+            }),
+            model: None,
+            timestamp: Utc::now(),
+            repo_id: None,
+            cwd: None,
+        };
+
+        let block = event_to_metadata_block(&original);
+        assert!(block.contains("tokens_input=1000"));
+        assert!(block.contains("tokens_output=500"));
+        assert!(block.contains("tokens_cache_read=200"));
+        assert!(block.contains("tokens_cache_created=50"));
+
+        let start = block.find(METADATA_START).unwrap() + METADATA_START.len();
+        let end = block.find(METADATA_END).unwrap();
+        let parsed = parse_metadata_block(&block[start..end]).expect("Should parse");
+
+        match parsed {
+            ConversationEvent::Response { tokens, .. } => {
+                let t = tokens.expect("tokens should be Some");
+                assert_eq!(t.input, 1000);
+                assert_eq!(t.output, 500);
+                assert_eq!(t.cache_read, 200);
+                assert_eq!(t.cache_created, 50);
+            }
+            _ => panic!("Expected Response event"),
+        }
+    }
+
+    #[test]
+    fn test_response_without_tokens_roundtrip() {
+        let original = ConversationEvent::Response {
+            session_id: "sess-notok".to_string(),
+            agent_type: AgentType::ClaudeCode,
+            turn: 1,
+            files_written: vec![],
+            content: None,
+            tokens: None,
+            model: None,
+            timestamp: Utc::now(),
+            repo_id: None,
+            cwd: None,
+        };
+
+        let block = event_to_metadata_block(&original);
+        assert!(!block.contains("tokens_input"));
+
+        let start = block.find(METADATA_START).unwrap() + METADATA_START.len();
+        let end = block.find(METADATA_END).unwrap();
+        let parsed = parse_metadata_block(&block[start..end]).expect("Should parse");
+
+        match parsed {
+            ConversationEvent::Response { tokens, .. } => {
+                assert!(tokens.is_none());
+            }
+            _ => panic!("Expected Response event"),
         }
     }
 

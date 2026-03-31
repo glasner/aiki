@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use crate::cache::debug_log;
 use crate::error::Result;
 use crate::events::FileOperation;
+use crate::events::TokenUsage;
 use crate::events::{
     parse_mcp_server, AikiChangeCompletedPayload, AikiChangePermissionAskedPayload, AikiEvent,
     AikiMcpCompletedPayload, AikiMcpPermissionAskedPayload, AikiReadCompletedPayload,
@@ -811,32 +812,45 @@ fn build_web_completed_event(payload: PostToolUsePayload, tool: ClaudeTool) -> A
     })
 }
 
+/// Data extracted from the last assistant entry in a Claude Code JSONL transcript.
+struct TranscriptExtract {
+    response: String,
+    tokens: Option<TokenUsage>,
+    model: Option<String>,
+}
+
 /// Build turn.completed event (maps from Stop hook)
 fn build_turn_completed_event(payload: StopPayload) -> AikiEvent {
-    let response = payload
+    let extract = payload
         .transcript_path
         .as_deref()
-        .and_then(|path| extract_last_assistant_response(path))
-        .unwrap_or_default();
+        .and_then(extract_last_assistant_entry)
+        .unwrap_or(TranscriptExtract {
+            response: String::new(),
+            tokens: None,
+            model: None,
+        });
 
     AikiEvent::TurnCompleted(AikiTurnCompletedPayload {
         session: create_session(&payload.session_id, &payload.cwd),
         cwd: PathBuf::from(&payload.cwd),
         timestamp: chrono::Utc::now(),
         turn: crate::events::Turn::unknown(), // Set by handle_turn_completed
-        response,
+        response: extract.response,
         modified_files: vec![],
         tasks: Default::default(), // Populated by handle_turn_completed
+        tokens: extract.tokens,
+        model: extract.model,
     })
 }
 
-/// Extract the last assistant response text from a Claude Code JSONL transcript file.
+/// Extract the last assistant entry from a Claude Code JSONL transcript file.
 ///
 /// The transcript is a JSONL file where each line is a JSON object. Assistant entries
 /// have `"type": "assistant"` with a `message.content` array containing blocks like
-/// `{"type": "text", "text": "..."}`. We find the last assistant entry and concatenate
-/// all text blocks.
-fn extract_last_assistant_response(path: &str) -> Option<String> {
+/// `{"type": "text", "text": "..."}`. We find the last assistant entry and extract
+/// the response text, token usage, and model.
+fn extract_last_assistant_entry(path: &str) -> Option<TranscriptExtract> {
     let content = match std::fs::read_to_string(path) {
         Ok(c) => c,
         Err(e) => {
@@ -860,12 +874,10 @@ fn extract_last_assistant_response(path: &str) -> Option<String> {
             continue;
         }
 
+        let message = entry.get("message")?;
+
         // Extract text from message.content array
-        let Some(content_arr) = entry
-            .get("message")
-            .and_then(|m| m.get("content"))
-            .and_then(|c| c.as_array())
-        else {
+        let Some(content_arr) = message.get("content").and_then(|c| c.as_array()) else {
             continue;
         };
 
@@ -878,9 +890,37 @@ fn extract_last_assistant_response(path: &str) -> Option<String> {
             .collect::<Vec<_>>()
             .join("\n");
 
-        if !text.is_empty() {
-            return Some(text);
+        if text.is_empty() {
+            continue;
         }
+
+        // Extract model string
+        let model = message
+            .get("model")
+            .and_then(|m| m.as_str())
+            .map(|s| s.to_string());
+
+        // Extract token usage from message.usage
+        let tokens = message.get("usage").and_then(|usage| {
+            Some(TokenUsage {
+                input: usage.get("input_tokens")?.as_u64()?,
+                output: usage.get("output_tokens")?.as_u64()?,
+                cache_read: usage
+                    .get("cache_read_input_tokens")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0),
+                cache_created: usage
+                    .get("cache_creation_input_tokens")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0),
+            })
+        });
+
+        return Some(TranscriptExtract {
+            response: text,
+            tokens,
+            model,
+        });
     }
 
     debug_log(|| format!("No assistant response found in transcript '{}'", path));
@@ -894,6 +934,7 @@ fn build_session_ended_event(payload: SessionEndPayload) -> AikiEvent {
         cwd: PathBuf::from(&payload.cwd),
         timestamp: chrono::Utc::now(),
         reason: payload.reason,
+        tokens: None,
     })
 }
 
@@ -1003,6 +1044,98 @@ mod tests {
                 assert_eq!(payload.trigger, "manual");
             }
             _ => panic!("Expected PreCompact variant"),
+        }
+    }
+
+    #[test]
+    fn test_extract_last_assistant_entry_with_usage_and_model() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("transcript.jsonl");
+        let content = r#"{"type":"user","message":{"content":"hello"}}
+{"type":"assistant","message":{"model":"claude-sonnet-4-20250514","content":[{"type":"text","text":"Hi there!"}],"usage":{"input_tokens":100,"output_tokens":50,"cache_read_input_tokens":30,"cache_creation_input_tokens":10}}}"#;
+        std::fs::write(&path, content).unwrap();
+
+        let extract = extract_last_assistant_entry(path.to_str().unwrap()).unwrap();
+        assert_eq!(extract.response, "Hi there!");
+        assert_eq!(extract.model.as_deref(), Some("claude-sonnet-4-20250514"));
+        let tokens = extract.tokens.unwrap();
+        assert_eq!(tokens.input, 100);
+        assert_eq!(tokens.output, 50);
+        assert_eq!(tokens.cache_read, 30);
+        assert_eq!(tokens.cache_created, 10);
+    }
+
+    #[test]
+    fn test_extract_last_assistant_entry_without_usage() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("transcript.jsonl");
+        let content = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Response without usage"}]}}"#;
+        std::fs::write(&path, content).unwrap();
+
+        let extract = extract_last_assistant_entry(path.to_str().unwrap()).unwrap();
+        assert_eq!(extract.response, "Response without usage");
+        assert!(extract.tokens.is_none());
+        assert!(extract.model.is_none());
+    }
+
+    #[test]
+    fn test_extract_last_assistant_entry_partial_usage() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("transcript.jsonl");
+        // Has usage but missing cache fields
+        let content = r#"{"type":"assistant","message":{"model":"claude-opus-4-20250514","content":[{"type":"text","text":"Hello"}],"usage":{"input_tokens":200,"output_tokens":80}}}"#;
+        std::fs::write(&path, content).unwrap();
+
+        let extract = extract_last_assistant_entry(path.to_str().unwrap()).unwrap();
+        assert_eq!(extract.response, "Hello");
+        assert_eq!(extract.model.as_deref(), Some("claude-opus-4-20250514"));
+        let tokens = extract.tokens.unwrap();
+        assert_eq!(tokens.input, 200);
+        assert_eq!(tokens.output, 80);
+        assert_eq!(tokens.cache_read, 0);
+        assert_eq!(tokens.cache_created, 0);
+    }
+
+    #[test]
+    fn test_extract_last_assistant_entry_no_file() {
+        let result = extract_last_assistant_entry("/nonexistent/path.jsonl");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_extract_last_assistant_entry_empty_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("transcript.jsonl");
+        std::fs::write(&path, "").unwrap();
+
+        let result = extract_last_assistant_entry(path.to_str().unwrap());
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_build_turn_completed_populates_tokens_and_model() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("transcript.jsonl");
+        let content = r#"{"type":"assistant","message":{"model":"claude-sonnet-4-20250514","content":[{"type":"text","text":"Done!"}],"usage":{"input_tokens":500,"output_tokens":100,"cache_read_input_tokens":50,"cache_creation_input_tokens":0}}}"#;
+        std::fs::write(&path, content).unwrap();
+
+        let payload = StopPayload {
+            session_id: "test-session".to_string(),
+            cwd: "/tmp/test".to_string(),
+            transcript_path: Some(path.to_str().unwrap().to_string()),
+        };
+        let event = build_turn_completed_event(payload);
+        match event {
+            AikiEvent::TurnCompleted(p) => {
+                assert_eq!(p.response, "Done!");
+                assert_eq!(p.model.as_deref(), Some("claude-sonnet-4-20250514"));
+                let tokens = p.tokens.unwrap();
+                assert_eq!(tokens.input, 500);
+                assert_eq!(tokens.output, 100);
+                assert_eq!(tokens.cache_read, 50);
+                assert_eq!(tokens.cache_created, 0);
+            }
+            _ => panic!("Expected TurnCompleted"),
         }
     }
 }

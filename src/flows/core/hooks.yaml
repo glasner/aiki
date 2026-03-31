@@ -85,7 +85,11 @@ session.compacted:
                     ---
                     ACTIVE TASKS (context was compacted — here's what you were working on):
                     {{active_tasks}}
-                    Continue these tasks or close them with: aiki task close <id> --summary "..."
+                    Continue these tasks, or if you are closing done work use:
+                    `aiki task close <id> --confidence 1|2|3|4 --summary "..."`
+                    For won't-do closes use:
+                    `aiki task close <id> --wont-do --summary "..."`
+                    Do not use `--confidence` with `--wont-do`.
 
     - let: task_count = self.task_list_size
     - if: task_count

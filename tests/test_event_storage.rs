@@ -130,7 +130,6 @@ fn test_task_write_event_and_read_back() {
         assignee: Some("claude-code".to_string()),
         sources: Vec::new(),
         template: None,
-        working_copy: None,
         instructions: None,
         data: std::collections::HashMap::new(),
         timestamp: Utc::now(),
@@ -178,7 +177,6 @@ fn test_task_event_chaining_multiple_writes() {
             assignee: None,
             sources: Vec::new(),
             template: None,
-            working_copy: None,
             instructions: None,
             data: std::collections::HashMap::new(),
             timestamp: t,
@@ -188,6 +186,7 @@ fn test_task_event_chaining_multiple_writes() {
             agent_type: "claude-code".to_string(),
             session_id: Some("test-session".to_string()),
             turn_id: None,
+            working_copy: None,
             timestamp: t + chrono::Duration::seconds(1),
         },
         TaskEvent::Closed {

@@ -354,6 +354,18 @@ impl HookEngine {
                 // No event-specific variables for unsupported events
             }
 
+            // Model transition events
+            crate::events::AikiEvent::ModelChanged(e) => {
+                resolver.add_var(
+                    "event.session_id".to_string(),
+                    e.session.external_id().to_string(),
+                );
+                resolver.add_var("event.new_model".to_string(), e.new_model.clone());
+                if let Some(ref prev) = e.previous_model {
+                    resolver.add_var("event.previous_model".to_string(), prev.clone());
+                }
+            }
+
             // Task lifecycle events
             crate::events::AikiEvent::RepoChanged(e) => {
                 resolver.add_var(
@@ -989,8 +1001,8 @@ impl HookEngine {
     /// `review: { task_id: X, template: Y }` is equivalent to
     /// `aiki review X --template Y --async`. Flows always use async mode.
     fn execute_review(action: &ReviewAction, state: &mut AikiState) -> Result<ActionResult> {
+        use crate::reviews::{create_review, detect_target, CreateReviewParams};
         use crate::tasks::runner::{task_run_async, TaskRunOptions};
-        use crate::workflow::steps::review::{create_review, detect_target, CreateReviewParams};
 
         // Create variable resolver
         let mut resolver = Self::create_resolver(state);
@@ -2277,6 +2289,7 @@ fn extract_session(event: &AikiEvent) -> Result<&crate::session::AikiSession> {
         AikiEvent::WebCompleted(e) => Ok(&e.session),
         AikiEvent::McpPermissionAsked(e) => Ok(&e.session),
         AikiEvent::McpCompleted(e) => Ok(&e.session),
+        AikiEvent::ModelChanged(e) => Ok(&e.session),
         AikiEvent::RepoChanged(e) => Ok(&e.session),
         _ => Err(AikiError::Other(anyhow::anyhow!(
             "workspace functions require an event with a session"
@@ -4487,7 +4500,12 @@ mod tests {
 
     // ── Mutex + helpers for session-file-based tests (env mutation) ──
 
-    static SESSION_TEST_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    // Use the process-wide mutex from global.rs to avoid races with other modules
+    fn session_test_lock() -> std::sync::MutexGuard<'static, ()> {
+        crate::global::AIKI_HOME_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
 
     struct EnvGuard {
         original: Option<String>,
@@ -4536,7 +4554,7 @@ mod tests {
     // --- 5a: task.closed resolves session.thread.{tail,head} and session.thread ---
     #[test]
     fn test_task_closed_resolves_session_thread_tail() {
-        let _lock = SESSION_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = session_test_lock();
         let (aiki_home, _guard) = setup_aiki_home();
 
         // Write session file with thread=head:tail
@@ -4569,7 +4587,7 @@ mod tests {
     // --- 5b: No session file on disk → empty strings ---
     #[test]
     fn test_task_closed_session_thread_empty_when_no_session() {
-        let _lock = SESSION_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = session_test_lock();
         let (_aiki_home, _guard) = setup_aiki_home();
         // No session files written
 
@@ -4584,7 +4602,7 @@ mod tests {
     // --- 5c: Only tail triggers session.end (head does not) ---
     #[test]
     fn test_task_closed_only_tail_triggers_session_end() {
-        let _lock = SESSION_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = session_test_lock();
         let (aiki_home, _guard) = setup_aiki_home();
 
         let sessions_dir = aiki_home.path().join("sessions");
@@ -4638,7 +4656,7 @@ mod tests {
     // --- 5d: Single-task thread (head==tail) triggers session.end ---
     #[test]
     fn test_task_closed_single_task_thread_triggers_session_end() {
-        let _lock = SESSION_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = session_test_lock();
         let (aiki_home, _guard) = setup_aiki_home();
 
         let sessions_dir = aiki_home.path().join("sessions");
@@ -4684,7 +4702,7 @@ mod tests {
     // This tests the FULL condition through evaluate_condition (the real code path).
     #[test]
     fn test_task_closed_background_mode_blocks_hook_condition() {
-        let _lock = SESSION_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = session_test_lock();
         let (aiki_home, _guard) = setup_aiki_home();
 
         // Write session file with mode=background (as spawn_blocking now sets)
@@ -4722,7 +4740,7 @@ mod tests {
     // --- 5f: Interactive mode allows the full hook condition ---
     #[test]
     fn test_task_closed_interactive_mode_allows_hook_condition() {
-        let _lock = SESSION_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = session_test_lock();
         let (aiki_home, _guard) = setup_aiki_home();
 
         let sessions_dir = aiki_home.path().join("sessions");

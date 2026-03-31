@@ -71,6 +71,8 @@ fn test_build_context_returns_none_when_empty() {
         response: "Done".to_string(),
         modified_files: vec![],
         tasks: Default::default(),
+        tokens: None,
+        model: None,
     };
 
     let state = AikiState::new(event);
@@ -101,6 +103,8 @@ fn test_build_context_returns_some_with_chunks() {
         response: "Done".to_string(),
         modified_files: vec![],
         tasks: Default::default(),
+        tokens: None,
+        model: None,
     };
 
     let mut state = AikiState::new(event);
@@ -187,6 +191,8 @@ fn test_turn_completed_does_not_trigger_session_ended() {
         response: "Task completed".to_string(),
         modified_files: vec![],
         tasks: Default::default(),
+        tokens: None,
+        model: None,
     };
 
     // Dispatch the event - should succeed without triggering session.ended
@@ -258,6 +264,8 @@ fn test_documented_behavior() {
         response: "Done".to_string(),
         modified_files: vec![],
         tasks: Default::default(),
+        tokens: None,
+        model: None,
     };
 
     let state = AikiState::new(event);

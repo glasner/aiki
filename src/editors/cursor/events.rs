@@ -333,6 +333,8 @@ fn build_turn_completed_event(payload: StopPayload) -> AikiEvent {
         response: String::new(),              // Cursor doesn't provide response text in stop hook
         modified_files: Vec::new(),           // Cursor doesn't track modified files in stop hook
         tasks: Default::default(),            // Populated by handle_turn_completed
+        tokens: None,
+        model: None,
     })
 }
 
@@ -343,6 +345,7 @@ fn build_session_ended_event(payload: SessionEndPayload) -> AikiEvent {
         cwd: get_cwd(&payload.workspace_roots),
         timestamp: chrono::Utc::now(),
         reason: payload.reason,
+        tokens: None,
     })
 }
 

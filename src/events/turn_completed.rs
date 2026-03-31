@@ -6,6 +6,7 @@ use crate::history::TurnSource;
 use crate::repos;
 use crate::session::turn_state::generate_turn_id;
 
+
 /// turn.completed event payload
 ///
 /// Fires when a turn ends (agent finishes processing).
@@ -26,6 +27,12 @@ pub struct AikiTurnCompletedPayload {
     /// Task activity during this turn (started, stopped, closed)
     #[serde(default)]
     pub tasks: crate::tasks::TaskActivity,
+    /// Token usage for this turn (extracted from transcript)
+    #[serde(default)]
+    pub tokens: Option<super::TokenUsage>,
+    /// Model used for this turn (extracted from transcript)
+    #[serde(default)]
+    pub model: Option<String>,
 }
 
 /// Handle turn.completed event
@@ -99,6 +106,34 @@ pub fn handle_turn_completed(mut payload: AikiTurnCompletedPayload) -> Result<Ho
 
     let cwd_str = payload.cwd.to_string_lossy().to_string();
     let repo_id = repos::compute_repo_id(&payload.cwd).ok();
+
+    // Detect model drift: materialize previous model from event history
+    if let Some(ref new_model) = payload.model {
+        let global_dir = global::global_aiki_dir();
+        let session_id = payload.session.uuid().to_string();
+        let previous_model =
+            history::last_session_model(&global_dir, &session_id).unwrap_or(None);
+
+        let drifted = match &previous_model {
+            Some(prev) => prev != new_model,
+            None => false, // No previous model — first observation, no drift
+        };
+
+        if drifted {
+            let model_changed_payload = super::AikiModelChangedPayload {
+                session: payload.session.clone(),
+                cwd: payload.cwd.clone(),
+                timestamp: Utc::now(),
+                previous_model,
+                new_model: new_model.clone(),
+            };
+            let event = crate::events::AikiEvent::ModelChanged(model_changed_payload);
+            if let Err(e) = crate::event_bus::dispatch(event) {
+                debug_log(|| format!("model.changed dispatch error (non-fatal): {}", e));
+            }
+        }
+    }
+
     if let Err(e) = history::record_response(
         &global::global_aiki_dir(),
         &payload.session,
@@ -108,6 +143,8 @@ pub fn handle_turn_completed(mut payload: AikiTurnCompletedPayload) -> Result<Ho
         payload.timestamp,
         repo_id.as_deref(),
         Some(&cwd_str),
+        payload.tokens.clone(),
+        payload.model.clone(),
     ) {
         debug_log(|| format!("Failed to record response: {}", e));
     }
