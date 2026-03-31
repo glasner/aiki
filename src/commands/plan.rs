@@ -20,7 +20,9 @@ use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use crate::agents::AgentType;
 use crate::error::{AikiError, Result};
 use crate::output_utils;
+use crate::repos::RepoDetector;
 use crate::session::find_active_session;
+use crate::settings;
 use crate::tasks::md::MdBuilder;
 use crate::tasks::runner::{task_run, TaskRunOptions};
 use crate::tasks::templates::{
@@ -32,6 +34,7 @@ use crate::tasks::{
     materialize_graph, read_events, reassign_task, start_task_core, write_event, Task, TaskEvent,
     TaskPriority, TaskStatus,
 };
+use crate::workflow::steps::plan::resolve_plan_path;
 
 /// Plan mode determined from input arguments
 #[derive(Debug, Clone)]
@@ -63,16 +66,27 @@ pub fn run(
 ) -> Result<()> {
     let cwd = env::current_dir()
         .map_err(|_| AikiError::InvalidArgument("Failed to get current directory".to_string()))?;
+    // find_aiki_root() serves as the init gate — errors if .aiki is missing
+    let repo_root = RepoDetector::new(&cwd)
+        .find_aiki_root()
+        .map_err(|e| AikiError::InvalidArgument(e.to_string()))?;
 
     let output_id = matches!(output_format, Some(super::OutputFormat::Id));
+
+    // Load config for plan.dir and plan.agent
+    let cfg = settings::Config::load(&repo_root)?;
+    let plan_dir = &cfg.plan.dir;
+
+    // CLI --agent flag takes precedence over config plan.agent
+    let agent = agent.or_else(|| cfg.plan.agent.map(|a| a.to_string()));
 
     // Dispatch based on first argument
     match args.first().map(|s| s.as_str()) {
         Some("epic") => {
             // `aiki plan epic [args...]` → strip "epic" and run epic plan
             let epic_args = args[1..].to_vec();
-            let mode = determine_mode(&cwd, &epic_args)?;
-            run_epic(&cwd, mode, template, agent, output_id)
+            let mode = determine_mode(&cwd, &repo_root, &epic_args, plan_dir)?;
+            run_epic(&repo_root, mode, plan_dir, template, agent, output_id)
         }
         Some("fix") => {
             // `aiki plan fix <review-id>` → create fix plan from review
@@ -81,38 +95,50 @@ pub fn run(
                     "Missing review ID. Usage: aiki plan fix <review-id>".to_string(),
                 )
             })?;
-            run_fix(&cwd, review_id, template, agent, output_id)
+            run_fix(&repo_root, review_id, template, agent, output_id)
         }
         _ => {
             // No subcommand or unrecognized first arg → default to epic behavior
-            let mode = determine_mode(&cwd, &args)?;
-            run_epic(&cwd, mode, template, agent, output_id)
+            let mode = determine_mode(&cwd, &repo_root, &args, plan_dir)?;
+            run_epic(&repo_root, mode, plan_dir, template, agent, output_id)
         }
     }
 }
 
 /// Determine plan mode from command arguments
-fn determine_mode(cwd: &Path, args: &[String]) -> Result<PlanMode> {
+fn determine_mode(
+    cwd: &Path,
+    repo_root: &Path,
+    args: &[String],
+    plan_dir: &Path,
+) -> Result<PlanMode> {
     if args.is_empty() {
-        // Interactive mode - would prompt for input
-        // For now, return an error since we need input
-        return Err(AikiError::InvalidArgument(
-            "No plan path or description provided. Usage: aiki plan <path-or-text...>".to_string(),
-        ));
+        // Interactive mode - prompt for description
+        if !io::stdin().is_terminal() {
+            return Err(AikiError::InvalidArgument(
+                "No plan path or description provided. Usage: aiki plan <path-or-text...>"
+                    .to_string(),
+            ));
+        }
+        let description = prompt_multiline_input("What would you like to plan?")?
+            .ok_or_else(|| AikiError::InvalidArgument("No description provided".to_string()))?;
+        let slug = generate_slug(&description);
+        let base_path = repo_root.join(plan_dir);
+        let path = find_unique_path(&base_path, &slug)?;
+        return Ok(PlanMode::Autogen {
+            description,
+            slug: path.file_stem().unwrap().to_string_lossy().to_string(),
+        });
     }
 
     let first_arg = &args[0];
 
     // Check if first arg ends with .md
     if first_arg.ends_with(".md") {
-        let path = if first_arg.starts_with('/') {
-            PathBuf::from(first_arg)
-        } else {
-            cwd.join(first_arg)
-        };
+        let path = resolve_plan_path(cwd, first_arg);
 
         // Validate path is inside repo
-        validate_path_in_repo(cwd, &path)?;
+        validate_path_in_repo(repo_root, &path)?;
 
         // Remaining args after the .md path become free-form guidance text
         let text = if args.len() > 1 {
@@ -145,8 +171,8 @@ fn determine_mode(cwd: &Path, args: &[String]) -> Result<PlanMode> {
         let description = args.join(" ");
         let slug = generate_slug(&description);
 
-        // Find a unique filename
-        let base_path = cwd.join("ops/now");
+        // Find a unique filename using configured plan dir
+        let base_path = repo_root.join(plan_dir);
         let path = find_unique_path(&base_path, &slug)?;
 
         Ok(PlanMode::Autogen {
@@ -228,6 +254,7 @@ fn generate_slug(description: &str) -> String {
         // Collapse multiple hyphens
         .split('-')
         .filter(|s| !s.is_empty())
+        .take(5)
         .collect::<Vec<_>>()
         .join("-")
 }
@@ -370,6 +397,7 @@ fn find_unique_path(base_dir: &Path, slug: &str) -> Result<PathBuf> {
 fn run_epic(
     cwd: &Path,
     mode: PlanMode,
+    plan_dir: &Path,
     template_name: Option<String>,
     agent: Option<String>,
     output_id: bool,
@@ -385,7 +413,7 @@ fn run_epic(
             text,
         } => (path.clone(), true, initial_idea.clone(), text.clone()),
         PlanMode::Autogen { description, slug } => {
-            let path = cwd.join("ops/now").join(format!("{}.md", slug));
+            let path = cwd.join(plan_dir).join(format!("{}.md", slug));
             (path, true, description.clone(), String::new())
         }
     };
@@ -518,20 +546,10 @@ fn run_epic(
     // Output started message
     output_plan_started(&plan_task_id, &plan_path, is_new, &in_progress, &ready)?;
 
-    // Spawn Claude interactively (not using task_run which is for autonomous execution)
-    // The prompt includes the user's context so Claude sees it immediately,
-    // rather than requiring it to discover the instructions via `aiki task show`
-    let prompt = if initial_idea.is_empty() {
-        format!(
-            "Run `aiki task start {}` to begin working on this plan task.",
-            plan_task_id
-        )
-    } else {
-        format!(
-            "Run `aiki task start {}` to begin working on this plan task.\n\nUser's guidance: {}",
-            plan_task_id, initial_idea
-        )
-    };
+    // Spawn interactive plan agent (not using task_run, which is for autonomous execution).
+    // The prompt includes the user's context and directs the agent to read the task
+    // instructions before starting work.
+    let prompt = build_interactive_plan_prompt(&plan_task_id, &plan_path, is_new, &initial_idea);
 
     if !output_id {
         output_utils::emit(|| {
@@ -613,10 +631,6 @@ fn create_plan_task(
     assignee: Option<String>,
     timestamp: chrono::DateTime<chrono::Utc>,
 ) -> Result<String> {
-    use crate::jj::get_working_copy_change_id;
-
-    let working_copy = get_working_copy_change_id(cwd);
-
     // Load the template
     let templates_dir = find_templates_dir(cwd)?;
     let template = load_template(template_name, &templates_dir)?;
@@ -675,7 +689,6 @@ fn create_plan_task(
             .or_else(|| Some("claude-code".to_string())),
         sources,
         template: Some(template.template_id()),
-        working_copy: working_copy.clone(),
         instructions: Some(parent_def.instructions.clone()),
         data: crate::tasks::templates::convert_data(&parent_def.data),
         timestamp,
@@ -706,7 +719,6 @@ fn create_plan_task(
             assignee: subtask_def.assignee.clone(),
             sources: subtask_sources,
             template: None,
-            working_copy: working_copy.clone(),
             instructions: Some(subtask_def.instructions.clone()),
             data: crate::tasks::templates::convert_data(&subtask_def.data),
             timestamp,
@@ -874,6 +886,11 @@ mod tests {
             generate_slug("Special! @#$ Characters"),
             "special-characters"
         );
+        // Truncates to 5 words max
+        assert_eq!(
+            generate_slug("want to add a confidence field to tasks that agents have to submit"),
+            "want-to-add-a-confidence"
+        );
     }
 
     #[test]
@@ -884,7 +901,13 @@ mod tests {
         let plan_path = temp_dir.path().join("existing.md");
         fs::write(&plan_path, "# Existing Plan").unwrap();
 
-        let mode = determine_mode(temp_dir.path(), &["existing.md".to_string()]).unwrap();
+        let mode = determine_mode(
+            temp_dir.path(),
+            temp_dir.path(),
+            &["existing.md".to_string()],
+            Path::new("ops/now"),
+        )
+        .unwrap();
 
         match mode {
             PlanMode::Edit { path, text } => {
@@ -905,12 +928,14 @@ mod tests {
 
         let mode = determine_mode(
             temp_dir.path(),
+            temp_dir.path(),
             &[
                 "existing.md".to_string(),
                 "add".to_string(),
                 "rate".to_string(),
                 "limiting".to_string(),
             ],
+            Path::new("ops/now"),
         )
         .unwrap();
 
@@ -929,7 +954,13 @@ mod tests {
 
         let temp_dir = TempDir::new().unwrap();
 
-        let mode = determine_mode(temp_dir.path(), &["new-feature.md".to_string()]).unwrap();
+        let mode = determine_mode(
+            temp_dir.path(),
+            temp_dir.path(),
+            &["new-feature.md".to_string()],
+            Path::new("ops/now"),
+        )
+        .unwrap();
 
         match mode {
             PlanMode::CreateAtPath {
@@ -953,6 +984,7 @@ mod tests {
 
         let mode = determine_mode(
             temp_dir.path(),
+            temp_dir.path(),
             &[
                 "jwt-auth.md".to_string(),
                 "JWT".to_string(),
@@ -961,6 +993,7 @@ mod tests {
                 "refresh".to_string(),
                 "tokens".to_string(),
             ],
+            Path::new("ops/now"),
         )
         .unwrap();
 
@@ -988,11 +1021,13 @@ mod tests {
 
         let mode = determine_mode(
             temp_dir.path(),
+            temp_dir.path(),
             &[
                 "Add".to_string(),
                 "user".to_string(),
                 "authentication".to_string(),
             ],
+            Path::new("ops/now"),
         )
         .unwrap();
 
@@ -1011,7 +1046,7 @@ mod tests {
 
         let temp_dir = TempDir::new().unwrap();
 
-        let result = determine_mode(temp_dir.path(), &[]);
+        let result = determine_mode(temp_dir.path(), temp_dir.path(), &[], Path::new("ops/now"));
         assert!(result.is_err());
     }
 
@@ -1095,4 +1130,63 @@ mod tests {
         let err = resolve_plan_launch_agent(Some("cursor")).unwrap_err();
         assert!(format!("{}", err).contains("does not support interactive `aiki plan` sessions"));
     }
+
+    #[test]
+    fn test_build_interactive_plan_prompt_without_guidance() {
+        let prompt =
+            build_interactive_plan_prompt("task123", Path::new("ops/now/test-plan.md"), false, "");
+
+        assert!(prompt.contains("aiki task start task123"));
+        assert!(!prompt.contains("User's guidance:"));
+    }
+
+    #[test]
+    fn test_build_interactive_plan_prompt_with_guidance() {
+        let prompt = build_interactive_plan_prompt(
+            "task123",
+            Path::new("ops/now/test-plan.md"),
+            false,
+            "Add JWT auth",
+        );
+
+        assert!(prompt.contains("aiki task start task123"));
+        assert!(prompt.contains("User's guidance: Add JWT auth"));
+    }
+
+    #[test]
+    fn test_build_interactive_plan_prompt_for_new_file_mentions_created_draft() {
+        let prompt =
+            build_interactive_plan_prompt("task123", Path::new("ops/now/test-plan.md"), true, "");
+
+        assert!(prompt.contains(
+            "A blank draft plan file has already been created at `ops/now/test-plan.md`."
+        ));
+    }
+}
+
+fn build_interactive_plan_prompt(
+    plan_task_id: &str,
+    plan_path: &Path,
+    is_new: bool,
+    initial_idea: &str,
+) -> String {
+    let mut prompt = String::new();
+
+    if !initial_idea.is_empty() {
+        prompt.push_str(&format!("User's guidance: {}\n\n", initial_idea));
+    }
+
+    prompt.push_str(&format!(
+        "You are running an interactive task session with the user. Run `aiki task start {}` to see your instructions, then begin immediately.",
+        plan_task_id
+    ));
+
+    if is_new {
+        prompt.push_str(&format!(
+            "\nA blank draft plan file has already been created at `{}`.",
+            plan_path.display()
+        ));
+    }
+
+    prompt
 }

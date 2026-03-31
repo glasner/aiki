@@ -1,7 +1,6 @@
-//! Fix command — CLI entry point and workflow step handlers.
+//! Fix command — CLI entry point.
 //!
-//! This module provides the `aiki fix` command which reads a review task ID
-//! and delegates to `workflow::orchestrate::run_fix()` for the core pipeline.
+//! Thin command layer: parses args and delegates to `workflow::fix::run()`.
 //! Workflow step handlers live under `workflow::steps::fix`.
 
 use std::env;
@@ -9,48 +8,79 @@ use std::io::{self, BufRead};
 
 use super::OutputFormat;
 use crate::error::{AikiError, Result};
-use crate::workflow::orchestrate::run_fix;
+use crate::workflow::fix::{self, FixOpts};
 
-/// Run the fix command
-///
-/// Creates followup tasks from review comments and runs them through
-/// a plan → decompose → loop pipeline with an optional quality loop.
-pub fn run(
-    task_id: Option<String>,
-    run_async: bool,
-    continue_async: Option<String>,
-    plan_template: Option<String>,
-    decompose_template: Option<String>,
-    loop_template: Option<String>,
-    review_template: Option<String>,
-    agent: Option<String>,
-    autorun: bool,
-    once: bool,
-    output: Option<OutputFormat>,
-) -> Result<()> {
+/// Arguments for the fix command
+#[derive(clap::Args)]
+pub struct FixArgs {
+    /// Task ID to read comments from (reads from stdin if not provided)
+    pub task_id: Option<String>,
+
+    /// Run followup task asynchronously
+    #[arg(long = "async")]
+    pub run_async: bool,
+
+    /// Internal: continue an async fix from a previously created fix-parent
+    #[arg(long = "_continue-async", hide = true)]
+    pub continue_async: Option<String>,
+
+    /// Custom plan template (default: fix)
+    #[arg(long)]
+    pub template: Option<String>,
+
+    /// Custom decompose template (default: decompose)
+    #[arg(long = "decompose-template")]
+    pub decompose_template: Option<String>,
+
+    /// Custom loop template (default: loop)
+    #[arg(long = "loop-template")]
+    pub loop_template: Option<String>,
+
+    /// Quality loop review with custom template
+    #[arg(long = "review-template")]
+    pub review_template: Option<String>,
+
+    /// Agent for task assignment (default: claude-code)
+    #[arg(long)]
+    pub agent: Option<String>,
+
+    /// Interactive pair mode — walk through issues with the user
+    #[arg(long, conflicts_with = "run_async")]
+    pub pair: bool,
+
+    /// Enable autorun (auto-start this fix task when its target closes)
+    #[arg(long)]
+    pub autorun: bool,
+
+    /// Disable post-fix review loop (single pass only)
+    #[arg(long)]
+    pub once: bool,
+
+    /// Output format (e.g., `id` for bare task ID on stdout)
+    #[arg(long, short = 'o', value_name = "FORMAT")]
+    pub output: Option<OutputFormat>,
+}
+
+impl crate::workflow::HasRunKind for FixArgs {
+    fn continue_async(&self) -> Option<&str> {
+        self.continue_async.as_deref()
+    }
+    fn run_async(&self) -> bool {
+        self.run_async
+    }
+}
+
+/// Run the fix command — parse args and delegate to workflow.
+pub fn run(args: FixArgs) -> Result<()> {
     let cwd = env::current_dir()
         .map_err(|_| AikiError::InvalidArgument("Failed to get current directory".to_string()))?;
-
-    // Get task ID from argument or stdin
-    let task_id = match task_id {
-        Some(id) => extract_task_id(&id),
+    let review_id = match args.task_id {
+        Some(ref id) => extract_task_id(id),
         None => read_task_id_from_stdin()?,
     };
-
-    run_fix(
-        &cwd,
-        &task_id,
-        run_async,
-        continue_async,
-        plan_template,
-        decompose_template,
-        loop_template,
-        review_template,
-        agent,
-        autorun,
-        once,
-        output,
-    )
+    let opts = FixOpts::from_args(&args, review_id)?;
+    fix::run(&cwd, &opts)?;
+    Ok(())
 }
 
 /// Extract task ID from input, handling XML output format
@@ -91,14 +121,50 @@ fn read_task_id_from_stdin() -> Result<String> {
 
 // ── Tests ────────────────────────────────────────────────────────────
 
-// The fix_workflow test remains here since it tests workflow composition
-// using builders from workflow::builders.
+// The workflow test remains here since it tests workflow composition
+// using builders from workflow::fix.
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workflow::builders::{fix_workflow, FixOpts};
-    use crate::workflow::{ReviewScope, ReviewScopeKind};
+    use crate::reviews::{ReviewScope, ReviewScopeKind};
+    use crate::tasks::{write_event, TaskEvent, TaskPriority};
+    use crate::workflow::fix::workflow;
+    use crate::workflow::fix::FixOpts;
+    use chrono::Utc;
+    use tempfile::tempdir;
+
+    fn init_jj_repo(path: &std::path::Path) {
+        let git = std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(path)
+            .output()
+            .expect("initialize git repo");
+        assert!(
+            git.status.success(),
+            "git init failed: {}",
+            String::from_utf8_lossy(&git.stderr)
+        );
+
+        let jj = std::process::Command::new("jj")
+            .args(["git", "init", "--colocate"])
+            .current_dir(path)
+            .output()
+            .expect("initialize jj repo");
+        assert!(
+            jj.status.success(),
+            "jj git init failed: {}",
+            String::from_utf8_lossy(&jj.stderr)
+        );
+
+        let template_dir = path.join(".aiki/tasks/review");
+        std::fs::create_dir_all(&template_dir).expect("create review template dir");
+        std::fs::write(
+            template_dir.join("task.md"),
+            "---\nversion: 2.0.0\ntype: review\n---\n\n# Review: {{data.scope.name}}\n\nReview the work.\n",
+        )
+        .expect("write review template");
+    }
 
     #[test]
     fn test_extract_task_id_plain() {
@@ -147,32 +213,40 @@ mod tests {
     }
 
     #[test]
-    fn test_fix_workflow_has_expected_steps() {
+    fn test_workflow_has_expected_steps() {
         let temp_dir = tempfile::tempdir().unwrap();
         let opts = FixOpts {
-            cwd: temp_dir.path().to_path_buf(),
-            scope: ReviewScope {
-                kind: ReviewScopeKind::Task,
-                id: "original123".to_string(),
-                task_ids: vec![],
+            review_id: "review123".to_string(),
+            run_kind: crate::workflow::RunKind::Foreground,
+            output: None,
+            once: false,
+            pair: false,
+            continue_async_id: None,
+            workflow: crate::workflow::WorkflowOpts {
+                plan_template: Some("fix".to_string()),
+                decompose_template: Some("decompose".to_string()),
+                loop_template: Some("loop".to_string()),
+                autorun: true,
+                ..crate::workflow::WorkflowOpts::default()
             },
-            assignee: Some("codex".to_string()),
-            plan_template: "fix".to_string(),
-            decompose_template: Some("decompose".to_string()),
-            loop_template: Some("loop".to_string()),
-            autorun: true,
+        };
+        let scope = ReviewScope {
+            kind: ReviewScopeKind::Task,
+            id: "original123".to_string(),
+            task_ids: vec![],
         };
 
-        let wf = fix_workflow("review123", &opts);
-        let names: Vec<_> = wf.steps.iter().map(|s| s.name()).collect();
+        let workflow = workflow(temp_dir.path(), "review123", &opts, &scope, Some("codex"));
+        let names: Vec<_> = workflow.steps.iter().map(|s| s.name()).collect();
 
-        assert_eq!(wf.steps.len(), 5);
+        assert_eq!(workflow.steps.len(), 6);
         assert_eq!(
             names,
             vec![
                 "fix",
                 "decompose",
                 "loop",
+                "setup review",
                 "review",
                 "review for regressions"
             ]
@@ -261,6 +335,82 @@ mod tests {
         let data = scope.to_data();
         let restored = ReviewScope::from_data(&data).unwrap();
         assert_eq!(restored.task_ids, vec!["t1", "t2", "t3"]);
+    }
+
+    #[test]
+    fn test_setup_review_preserves_original_scope_for_regression_review() {
+        if std::process::Command::new("jj")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            eprintln!("Skipping test: jj binary not found in PATH");
+            return;
+        }
+
+        let temp_dir = tempdir().unwrap();
+        init_jj_repo(temp_dir.path());
+
+        let fix_parent_id = "fixparentscopepreservationtestabc".to_string();
+        write_event(
+            temp_dir.path(),
+            &TaskEvent::Created {
+                task_id: fix_parent_id.clone(),
+                name: "Fix parent".to_string(),
+                slug: None,
+                task_type: None,
+                priority: TaskPriority::P2,
+                assignee: Some("claude-code".to_string()),
+                sources: Vec::new(),
+                template: None,
+                instructions: None,
+                data: std::collections::HashMap::new(),
+                timestamp: Utc::now(),
+            },
+        )
+        .unwrap();
+
+        let opts = FixOpts {
+            review_id: "review123".to_string(),
+            run_kind: crate::workflow::RunKind::Foreground,
+            output: None,
+            once: false,
+            pair: false,
+            continue_async_id: None,
+            workflow: crate::workflow::WorkflowOpts {
+                review_template: Some("review/task".to_string()),
+                reviewer: Some("codex".to_string()),
+                ..crate::workflow::WorkflowOpts::default()
+            },
+        };
+        let original_scope = ReviewScope {
+            kind: ReviewScopeKind::Task,
+            id: "original123".to_string(),
+            task_ids: vec![],
+        };
+
+        let mut workflow = workflow(
+            temp_dir.path(),
+            "review123",
+            &opts,
+            &original_scope,
+            Some("codex"),
+        );
+        workflow.ctx.task_id = Some(fix_parent_id.clone());
+
+        workflow.steps[3].run(&mut workflow.ctx).unwrap();
+
+        assert_ne!(
+            workflow.ctx.task_id.as_deref(),
+            Some(fix_parent_id.as_str())
+        );
+
+        let resolved = crate::workflow::steps::regression_review::resolve_regression_review_scope(&workflow.ctx)
+            .unwrap()
+            .unwrap();
+        assert_eq!(resolved.kind, original_scope.kind);
+        assert_eq!(resolved.id, original_scope.id);
+        assert_eq!(resolved.task_ids, original_scope.task_ids);
     }
 
     #[test]

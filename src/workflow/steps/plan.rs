@@ -1,11 +1,18 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::error::{AikiError, Result};
-use crate::plans::parse_plan_metadata;
 use crate::tasks::{
     materialize_graph, read_events, write_event, TaskEvent, TaskOutcome, TaskStatus,
 };
-use crate::workflow::{StepResult, WorkflowContext};
+
+/// Resolve a plan path that may be relative or absolute.
+pub(crate) fn resolve_plan_path(cwd: &Path, plan_path: &str) -> PathBuf {
+    if plan_path.starts_with('/') {
+        PathBuf::from(plan_path)
+    } else {
+        cwd.join(plan_path)
+    }
+}
 
 /// Validate that the plan path is a .md file and exists
 pub(crate) fn validate_plan_path(cwd: &Path, plan_path: &str) -> Result<()> {
@@ -15,11 +22,7 @@ pub(crate) fn validate_plan_path(cwd: &Path, plan_path: &str) -> Result<()> {
         ));
     }
 
-    let full_path = if plan_path.starts_with('/') {
-        std::path::PathBuf::from(plan_path)
-    } else {
-        cwd.join(plan_path)
-    };
+    let full_path = resolve_plan_path(cwd, plan_path);
 
     if !full_path.exists() {
         return Err(AikiError::InvalidArgument(format!(
@@ -68,6 +71,7 @@ pub(crate) fn cleanup_stale_builds(cwd: &Path, plan_path: &str) -> Result<()> {
         let close_event = TaskEvent::Closed {
             task_ids: vec![build_id.clone()],
             outcome: TaskOutcome::WontDo,
+            confidence: None,
             summary: Some("Stale build cleaned up".to_string()),
             session_id: None,
             turn_id: None,
@@ -77,37 +81,6 @@ pub(crate) fn cleanup_stale_builds(cwd: &Path, plan_path: &str) -> Result<()> {
     }
 
     Ok(())
-}
-
-/// Plan step: validate plan path, check draft status, clean up stale builds.
-pub(crate) fn run_plan_step(ctx: &mut WorkflowContext) -> anyhow::Result<StepResult> {
-    let plan_path = ctx
-        .plan_path
-        .as_ref()
-        .ok_or_else(|| AikiError::InvalidArgument("No plan path in workflow context".to_string()))?
-        .clone();
-
-    validate_plan_path(&ctx.cwd, &plan_path)?;
-
-    let full_path = if plan_path.starts_with('/') {
-        std::path::PathBuf::from(&plan_path)
-    } else {
-        ctx.cwd.join(&plan_path)
-    };
-    let metadata = parse_plan_metadata(&full_path);
-    if metadata.draft {
-        return Err(AikiError::InvalidArgument(
-            "Cannot build draft plan. Remove `draft: true` from frontmatter first.".to_string(),
-        )
-        .into());
-    }
-
-    cleanup_stale_builds(&ctx.cwd, &plan_path)?;
-
-    Ok(StepResult {
-        message: "Plan validated".to_string(),
-        task_id: None,
-    })
 }
 
 #[cfg(test)]
