@@ -151,6 +151,24 @@ pub fn is_task_id(input: &str) -> bool {
     input.len() == 32 && input.chars().all(|c| matches!(c, 'k'..='z'))
 }
 
+/// Check if a string looks like a task ID or a task ID prefix.
+///
+/// Combines [`is_task_id`] (exact 32-char match) with [`is_task_id_prefix`]
+/// (3+ char prefix). Use this when accepting user input that could be either.
+///
+/// # Examples
+/// ```
+/// use aiki::tasks::looks_like_task_id;
+/// assert!(looks_like_task_id("mvslrspmoynoxyyywqyutmovxpvztkls")); // full ID
+/// assert!(looks_like_task_id("klm")); // prefix
+/// assert!(!looks_like_task_id("ops/now/feature.md")); // path
+/// assert!(!looks_like_task_id("abc")); // outside k-z range
+/// ```
+#[must_use]
+pub fn looks_like_task_id(input: &str) -> bool {
+    is_task_id(input) || is_task_id_prefix(input)
+}
+
 /// Check if a string is a valid slug format.
 ///
 /// Slugs are stable, human-readable handles for subtask references.

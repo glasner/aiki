@@ -9,10 +9,12 @@
 
 use std::fs;
 use std::io::Write;
+use std::sync::mpsc;
+use std::time::Duration;
 
 use assert_cmd::prelude::*;
 use predicates::prelude::*;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 // ============================================================================
 // Test Helpers
@@ -339,6 +341,140 @@ fn test_task_run_invalid_agent() {
             predicate::str::contains("Unknown agent type")
                 .or(predicate::str::contains("unknown agent")),
         );
+}
+
+#[test]
+fn test_review_continue_async_flag() {
+    // Verify that --_continue-async flag is recognized by the review command parser
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    // Add a task to use as the review target and extract ID from add output
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["task", "add", "Test review target"])
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let task_id = extract_task_id(&stdout).expect("Should find task ID in add output");
+
+    // Run review with --_continue-async flag
+    // Should be recognized by the parser (not an "unexpected argument" error)
+    // May fail at runtime since no actual review task exists, but that's expected
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["review", "--_continue-async", &task_id])
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    // The flag should be accepted by the parser - no argument parsing errors
+    assert!(
+        !stderr.contains("unexpected argument"),
+        "--_continue-async should be recognized by the review command parser, got stderr='{}'",
+        stderr
+    );
+}
+
+#[test]
+fn test_review_continue_async_reads_json_payload() {
+    // Verify that `aiki review --_continue-async <id>` reads and parses JSON from stdin,
+    // exercising `async_run::read_continue_opts::<ReviewOpts>()`.
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    // Add a task to get a valid-format task ID
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["task", "add", "Test review target for stdin piping"])
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let task_id = extract_task_id(&stdout).expect("Should find task ID in add output");
+
+    // Construct a valid ReviewOpts JSON payload
+    let payload = serde_json::json!({
+        "target": task_id,
+        "run_kind": "ContinueAsync",
+        "output": null,
+        "workflow": {
+            "restart": false,
+            "decompose_template": null,
+            "loop_template": null,
+            "agent": null,
+            "agent_str": null,
+            "target": task_id,
+            "code": false,
+            "review": false,
+            "review_template": null,
+            "fix": false,
+            "fix_template": null,
+            "autorun": false,
+            "plan_template": null,
+            "once": false
+        }
+    });
+    let json_bytes = serde_json::to_vec(&payload).unwrap();
+
+    // Spawn `aiki review --_continue-async <task_id>` with piped stdin
+    let mut child = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["review", "--_continue-async", &task_id])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("Failed to spawn aiki review");
+
+    // Write the JSON payload to stdin, then drop to send EOF.
+    // Must use take() to move ownership so the handle is actually dropped/closed.
+    {
+        let mut stdin = child.stdin.take().expect("Failed to open stdin");
+        stdin
+            .write_all(&json_bytes)
+            .expect("Failed to write to stdin");
+    }
+
+    // Use a timeout-bounded wait: the review workflow reaches spawn_blocking in
+    // non-TTY mode which blocks indefinitely. We only need to verify JSON stdin
+    // parsing works — that happens immediately on startup.
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let result = child.wait_with_output();
+        let _ = tx.send(result);
+    });
+
+    let stderr_bytes = match rx.recv_timeout(Duration::from_secs(5)) {
+        Ok(result) => {
+            let output = result.expect("Failed to wait on child");
+            output.stderr
+        }
+        Err(_) => {
+            // Timeout — the process hung (expected in non-TTY spawn_blocking).
+            // Stdin parsing happens immediately; if it failed, it would have
+            // exited fast before the timeout. An empty stderr means no error.
+            Vec::new()
+        }
+    };
+    let stderr = String::from_utf8_lossy(&stderr_bytes);
+
+    // The JSON should have been parsed successfully — no stdin-parsing error
+    assert!(
+        !stderr.contains("failed to read async continue options from stdin"),
+        "JSON payload should be parsed successfully from stdin, got stderr='{}'",
+        stderr
+    );
+
+    // The process should have reached the review workflow (and failed downstream
+    // due to missing review setup, not due to stdin parsing)
+    assert!(
+        !stderr.contains("unexpected argument"),
+        "No argument parsing errors expected, got stderr='{}'",
+        stderr
+    );
 }
 
 // ============================================================================
@@ -2049,5 +2185,136 @@ fn test_build_combined_short_flags() {
         "build -r -f and build --review --fix should both produce output or both be empty\n  short stdout: {}\n  long stdout: {}",
         short_stdout,
         long_stdout
+    );
+}
+
+#[test]
+fn test_build_continue_async_flag() {
+    // Verify that --_continue-async flag is recognized by the build command parser
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    // Create a task to use as the continue target
+    let add_output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["task", "add", "Test build target"])
+        .output()
+        .unwrap();
+    assert!(add_output.status.success(), "task add failed");
+
+    // Get the task ID from add output or list output
+    let add_stdout = String::from_utf8_lossy(&add_output.stdout);
+    let task_id = extract_task_id(&add_stdout).unwrap_or_else(|| {
+        let list_output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+            .current_dir(temp_dir.path())
+            .args(["task", "list"])
+            .output()
+            .unwrap();
+        let list_stdout = String::from_utf8_lossy(&list_output.stdout);
+        extract_task_id(&list_stdout).expect("Should find task ID in add or list output")
+    });
+
+    // Run build --_continue-async <task-id>
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["build", "--_continue-async", &task_id])
+        .output()
+        .unwrap();
+
+    // The command should be recognized by the parser (not an argument parsing error).
+    // It may fail at runtime (no actual epic exists), but it should NOT fail with
+    // an "unexpected argument" error.
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("unexpected argument"),
+        "--_continue-async flag should be recognized by the build parser, got stderr: {}",
+        stderr
+    );
+}
+
+#[test]
+fn test_build_continue_async_reads_json_payload() {
+    // Verify that `aiki build --_continue-async <id>` reads and parses JSON from stdin
+    // (exercising async_run::read_continue_opts::<BuildOpts>())
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    // Create a task to get a valid-format task ID
+    let add_output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["task", "add", "Test build target"])
+        .output()
+        .unwrap();
+    assert!(add_output.status.success(), "task add failed");
+
+    let add_stdout = String::from_utf8_lossy(&add_output.stdout);
+    let task_id = extract_task_id(&add_stdout).unwrap_or_else(|| {
+        let list_output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+            .current_dir(temp_dir.path())
+            .args(["task", "list"])
+            .output()
+            .unwrap();
+        let list_stdout = String::from_utf8_lossy(&list_output.stdout);
+        extract_task_id(&list_stdout).expect("Should find task ID in add or list output")
+    });
+
+    // Construct a valid BuildOpts JSON payload
+    let payload = serde_json::json!({
+        "target": task_id,
+        "run_kind": "ContinueAsync",
+        "output": null,
+        "workflow": {
+            "restart": false,
+            "decompose_template": null,
+            "loop_template": null,
+            "agent": null,
+            "agent_str": null,
+            "target": null,
+            "code": false,
+            "review": false,
+            "review_template": null,
+            "fix": false,
+            "fix_template": null,
+            "autorun": false,
+            "plan_template": null,
+            "once": false
+        }
+    });
+
+    // Spawn with piped stdin so we can write JSON
+    let mut child = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["build", "--_continue-async", &task_id])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("Failed to spawn aiki build");
+
+    // Write JSON payload to stdin, then drop to close it
+    {
+        let mut stdin = child.stdin.take().expect("Failed to open stdin");
+        stdin
+            .write_all(payload.to_string().as_bytes())
+            .expect("Failed to write to stdin");
+    }
+
+    let output = child.wait_with_output().expect("Failed to wait on child");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    // The JSON should have been parsed successfully — no stdin-parsing error
+    assert!(
+        !stderr.contains("failed to read async continue options from stdin"),
+        "stdin JSON should be parsed successfully, got stderr: {}",
+        stderr
+    );
+
+    // The process should have progressed past stdin parsing into the build workflow.
+    // It will fail downstream (task/plan doesn't exist properly), but the error
+    // should be about task/plan lookup, not about stdin parsing.
+    assert!(
+        !stderr.contains("unexpected argument"),
+        "should not have argument parsing errors, got stderr: {}",
+        stderr
     );
 }

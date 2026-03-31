@@ -9,23 +9,27 @@
 
 use std::path::Path;
 
+pub mod baseline;
 pub mod graph;
 pub mod id;
 pub mod lanes;
 pub mod manager;
 pub mod md;
+pub mod revset;
 pub mod runner;
 pub mod spawner;
 pub mod storage;
 pub mod templates;
 pub mod types;
 
+pub use baseline::select_task_snapshot_baseline;
 pub use graph::{materialize_graph, materialize_graph_with_ids, TaskGraph};
-pub use id::{generate_task_id, is_task_id, is_task_id_prefix, is_valid_slug};
+pub use id::{generate_task_id, is_task_id, is_task_id_prefix, is_valid_slug, looks_like_task_id};
 pub use manager::{
     find_task, get_current_scope_set, get_in_progress, get_ready_queue_for_scope_set, get_subtasks,
 };
 pub use md::MdBuilder;
+pub use revset::{build_task_revset_pattern, build_task_revset_pattern_with_graph};
 pub use storage::{
     read_events, read_events_with_ids, write_event, write_link_event, write_link_event_with_autorun,
 };
@@ -116,6 +120,7 @@ pub fn start_task_core(cwd: &Path, task_ids: &[String]) -> Result<StartTaskResul
         agent_type: agent_type_str,
         session_id,
         turn_id,
+        working_copy: crate::jj::get_working_copy_snapshot_rev(cwd),
         timestamp,
     };
     write_event(cwd, &start_event)?;
@@ -185,6 +190,7 @@ pub fn close_task_as_wont_do(cwd: &Path, task_id: &str, summary: &str) -> Result
     let close_event = TaskEvent::Closed {
         task_ids: vec![task_id.to_string()],
         outcome: TaskOutcome::WontDo,
+        confidence: None,
         summary: Some(summary.to_string()),
         session_id: None,
         turn_id: None,

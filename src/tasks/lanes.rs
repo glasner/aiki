@@ -571,7 +571,6 @@ mod tests {
             assignee: None,
             sources: Vec::new(),
             template: None,
-            working_copy: None,
             instructions: None,
             data: HashMap::new(),
             timestamp: Utc::now(),
@@ -593,6 +592,7 @@ mod tests {
             session_id: None,
             task_ids: vec![id.to_string()],
             outcome: TaskOutcome::Done,
+            confidence: None,
             summary: None,
             turn_id: None,
             timestamp: Utc::now(),
@@ -614,6 +614,7 @@ mod tests {
             session_id: None,
             task_ids: vec![id.to_string()],
             outcome: TaskOutcome::WontDo,
+            confidence: None,
             summary: None,
             turn_id: None,
             timestamp: Utc::now(),
@@ -626,6 +627,7 @@ mod tests {
             agent_type: "test".to_string(),
             session_id: None,
             turn_id: None,
+            working_copy: None,
             timestamp: Utc::now(),
         }
     }

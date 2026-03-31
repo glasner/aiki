@@ -2,8 +2,15 @@
 //!
 //! Tests the complete task workflow through the CLI interface.
 
+mod common;
+
 use assert_cmd::prelude::*;
+use common::jj_available;
 use predicates::prelude::*;
+use std::env;
+use std::fs;
+use std::os::unix::fs::PermissionsExt;
+use std::path::Path;
 use std::process::Command;
 
 /// Helper function to initialize a Git repository
@@ -117,6 +124,220 @@ fn extract_id_from_list_by_name(output: &str, name: &str) -> String {
 fn task_stdout(path: &std::path::Path, args: &[&str]) -> String {
     let output = aiki_task(path, args).success();
     String::from_utf8_lossy(&output.get_output().stdout).into_owned()
+}
+
+fn task_stdout_without_thread(path: &std::path::Path, args: &[&str]) -> String {
+    let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("aiki"));
+    cmd.current_dir(path).arg("task").env_remove("AIKI_THREAD");
+    for arg in args {
+        cmd.arg(arg);
+    }
+    let output = cmd.output().expect("Failed to run aiki task command");
+    assert!(
+        output.status.success(),
+        "aiki task {:?} failed: stdout={}\nstderr={}",
+        args,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+fn jj_cmd(path: &Path) -> Command {
+    let mut cmd = Command::new("jj");
+    cmd.current_dir(path)
+        .env("JJ_USER", "Test User")
+        .env("JJ_EMAIL", "test@example.com");
+    cmd
+}
+
+fn run_jj(path: &Path, args: &[&str]) -> String {
+    let output = jj_cmd(path)
+        .args(args)
+        .output()
+        .expect("Failed to run jj command");
+    assert!(
+        output.status.success(),
+        "jj {:?} failed: stdout={}\nstderr={}",
+        args,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+fn aiki_task_with_env(path: &Path, args: &[&str], envs: &[(&str, &str)]) -> String {
+    let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("aiki"));
+    cmd.current_dir(path).arg("task");
+    for (key, value) in envs {
+        cmd.env(key, value);
+    }
+    for arg in args {
+        cmd.arg(arg);
+    }
+    let output = cmd.output().expect("Failed to run aiki task command");
+    assert!(
+        output.status.success(),
+        "aiki task {:?} failed: stdout={}\nstderr={}",
+        args,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+fn aiki_stdout_with_env(path: &Path, args: &[&str], envs: &[(&str, &str)]) -> String {
+    let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("aiki"));
+    cmd.current_dir(path);
+    for (key, value) in envs {
+        cmd.env(key, value);
+    }
+    for arg in args {
+        cmd.arg(arg);
+    }
+    let output = cmd.output().expect("Failed to run aiki command");
+    assert!(
+        output.status.success(),
+        "aiki {:?} failed: stdout={}\nstderr={}",
+        args,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+fn install_fake_agent_cli(path: &Path, binary_name: &str) -> String {
+    let bin_dir = path.join("fake-bin");
+    fs::create_dir_all(&bin_dir).unwrap();
+    let script_path = bin_dir.join(binary_name);
+    fs::write(&script_path, "#!/bin/sh\nexit 0\n").unwrap();
+    let mut perms = fs::metadata(&script_path).unwrap().permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(&script_path, perms).unwrap();
+
+    let current_path = env::var("PATH").unwrap_or_default();
+    format!("{}:{}", bin_dir.display(), current_path)
+}
+
+#[test]
+fn test_close_rejects_confidence_with_wont_do() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    let task_id = extract_short_id(&task_stdout(temp_dir.path(), &["add", "Skip this task"]));
+    aiki_task(
+        temp_dir.path(),
+        &[
+            "close",
+            &task_id,
+            "--wont-do",
+            "--confidence",
+            "2",
+            "--summary",
+            "Skipping",
+        ],
+    )
+    .failure()
+    .stderr(predicate::str::contains(
+        "--confidence cannot be used with --wont-do.",
+    ));
+}
+
+#[test]
+fn test_close_allows_confidence_for_multi_close() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    let id1 = extract_short_id(&task_stdout(temp_dir.path(), &["add", "Task one"]));
+    let id2 = extract_short_id(&task_stdout(temp_dir.path(), &["add", "Task two"]));
+
+    aiki_task(
+        temp_dir.path(),
+        &[
+            "close",
+            &id1,
+            &id2,
+            "--confidence",
+            "3",
+            "--summary",
+            "Done",
+        ],
+    )
+    .success();
+}
+
+#[test]
+fn test_closed_list_and_show_handle_optional_confidence() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    let confident_id = extract_short_id(&task_stdout(temp_dir.path(), &["add", "Confident task"]));
+    let legacy_id = extract_short_id(&task_stdout(temp_dir.path(), &["add", "Legacy task"]));
+
+    aiki_task(
+        temp_dir.path(),
+        &[
+            "close",
+            &confident_id,
+            "--confidence",
+            "3",
+            "--summary",
+            "Confident close",
+        ],
+    )
+    .success();
+    aiki_task(
+        temp_dir.path(),
+        &["close", &legacy_id, "--summary", "Legacy close"],
+    )
+    .success();
+
+    let closed_output = task_stdout_without_thread(temp_dir.path(), &["list", "--all", "--closed"]);
+    assert!(closed_output.contains("Confident task"));
+    assert!(closed_output.contains("Legacy task"));
+    let closed_tasks = tasks_section(&closed_output);
+    assert!(closed_tasks.contains("[p2]"));
+    assert!(closed_tasks.contains("Confident task [c3]"));
+    assert!(closed_tasks.contains("  ↳ Confident close"));
+    assert!(closed_tasks.contains("Legacy task"));
+    assert!(closed_tasks.contains("  ↳ Legacy close"));
+
+    let legacy_line = closed_tasks
+        .lines()
+        .find(|line| line.contains("Legacy task"))
+        .expect("legacy task line missing from closed list");
+    assert!(!legacy_line.contains("[c"));
+
+    let filtered_output = task_stdout_without_thread(
+        temp_dir.path(),
+        &["list", "--all", "--closed", "--max-confidence", "3"],
+    );
+    let filtered_tasks = tasks_section(&filtered_output);
+    assert!(filtered_tasks.contains("Confident task [c3]"));
+    assert!(filtered_tasks.contains("  ↳ Confident close"));
+    assert!(!filtered_tasks.contains("Legacy task"));
+
+    let confident_show = task_stdout(temp_dir.path(), &["show", &confident_id]);
+    assert!(confident_show.contains("Confidence: 3 (high)"));
+
+    let legacy_show = task_stdout(temp_dir.path(), &["show", &legacy_id]);
+    assert!(!legacy_show.contains("Confidence:"));
+}
+
+fn extract_tldr_task_id(output: &str) -> String {
+    for line in output.lines() {
+        if let Some(prefix) = line.split("tldr task ").nth(1) {
+            let id = prefix
+                .split_whitespace()
+                .next()
+                .unwrap_or("")
+                .trim_end_matches("...");
+            if !id.is_empty() {
+                return id.to_string();
+            }
+        }
+    }
+    panic!("Could not find tldr task id in output: {}", output);
 }
 
 /// Extract the filtered "Tasks" section from list output, excluding the
@@ -1341,13 +1562,6 @@ fn test_parent_auto_starts_when_all_subtasks_closed() {
     let stdout2 = String::from_utf8_lossy(&output2.stdout);
     let subtask2_id = extract_short_id(&stdout2);
 
-    // Start parent (note: .0 planning subtask auto-creation is currently disabled)
-    Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
-        .current_dir(temp_dir.path())
-        .args(["task", "start", &parent_id])
-        .output()
-        .expect("Failed to start parent");
-
     // Start and close subtask 1
     Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
         .current_dir(temp_dir.path())
@@ -1369,23 +1583,16 @@ fn test_parent_auto_starts_when_all_subtasks_closed() {
         .expect("Failed to start subtask 2");
 
     // Close subtask 2 - this should trigger parent auto-start
-    aiki_task(
+    let close_stdout = task_stdout(
         temp_dir.path(),
         &["close", &subtask2_id, "--summary", "All done"],
-    )
-    .success();
+    );
 
-    // Verify the parent task is now in progress (auto-started after all subtasks closed)
-    let list_output = aiki_task(temp_dir.path(), &["list"])
-        .success()
-        .get_output()
-        .stdout
-        .clone();
-    let list_stdout = String::from_utf8_lossy(&list_output);
+    // Verify the close output reports the parent auto-start directly.
     assert!(
-        list_stdout.contains("In Progress:") && list_stdout.contains("Parent task"),
+        close_stdout.contains("Started") && close_stdout.contains("Parent task"),
         "Parent should auto-start when all subtasks closed. Output: {}",
-        list_stdout
+        close_stdout
     );
 }
 
@@ -2938,23 +3145,16 @@ fn test_parent_autostart_triggers_with_wontdo_subtasks() {
         .args(["task", "start", &sub2_id])
         .output()
         .unwrap();
-    aiki_task(
+    let close_stdout = task_stdout(
         temp_dir.path(),
         &["close", &sub2_id, "--wont-do", "--summary", "Not needed"],
-    )
-    .success();
+    );
 
-    // Parent should be auto-started (both subtasks closed, regardless of outcome)
-    let list_output = aiki_task(temp_dir.path(), &["list"])
-        .success()
-        .get_output()
-        .stdout
-        .clone();
-    let list_stdout = String::from_utf8_lossy(&list_output);
+    // Parent should be auto-started (both subtasks closed, regardless of outcome).
     assert!(
-        list_stdout.contains("In Progress:") && list_stdout.contains("Wontdo parent"),
+        close_stdout.contains("Started") && close_stdout.contains("Wontdo parent"),
         "Parent should auto-start even with wont-do subtasks. Output: {}",
-        list_stdout
+        close_stdout
     );
 }
 
@@ -3382,5 +3582,769 @@ fn test_task_list_done_and_wont_do_combined() {
         stdout.contains("Tasks (2):"),
         "--done --wont-do filtered section should show exactly 2 tasks, got: {}",
         stdout
+    );
+}
+
+#[test]
+fn test_task_diff_uses_started_working_copy_baseline_and_scopes_files() {
+    if !jj_available() {
+        eprintln!("Skipping test: jj binary not found in PATH");
+        return;
+    }
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    fs::write(temp_dir.path().join("tracked.txt"), "base\n").unwrap();
+    fs::write(temp_dir.path().join("unrelated.txt"), "clean\n").unwrap();
+    run_jj(
+        temp_dir.path(),
+        &["file", "track", "tracked.txt", "unrelated.txt"],
+    );
+    run_jj(temp_dir.path(), &["describe", "-m", "base"]);
+    run_jj(temp_dir.path(), &["new"]);
+
+    let add_output = task_stdout(temp_dir.path(), &["add", "Scoped diff"]);
+    let short_id = extract_short_id(&add_output);
+    aiki_task(temp_dir.path(), &["start", &short_id]).success();
+    let full_id = extract_full_id_from_show(&task_stdout(temp_dir.path(), &["show", &short_id]));
+
+    // Freeze the start snapshot so subsequent task work happens on descendants.
+    run_jj(temp_dir.path(), &["new"]);
+
+    fs::write(temp_dir.path().join("tracked.txt"), "intermediate\n").unwrap();
+    fs::write(temp_dir.path().join("unrelated.txt"), "noise\n").unwrap();
+    run_jj(temp_dir.path(), &["describe", "-m", "intermediate"]);
+    run_jj(temp_dir.path(), &["new"]);
+
+    fs::write(temp_dir.path().join("tracked.txt"), "final\n").unwrap();
+    run_jj(
+        temp_dir.path(),
+        &["describe", "-m", &format!("task={}", full_id)],
+    );
+    run_jj(temp_dir.path(), &["new"]);
+
+    let diff_output = aiki_task_with_env(temp_dir.path(), &["diff", &full_id], &[]);
+    assert!(
+        diff_output.contains("tracked.txt"),
+        "task diff should include the task-touched file: {}",
+        diff_output
+    );
+    assert!(
+        diff_output.contains("-base"),
+        "task diff should use the Started.working_copy baseline: {}",
+        diff_output
+    );
+    assert!(
+        diff_output.contains("+final"),
+        "task diff should include the final task change: {}",
+        diff_output
+    );
+    assert!(
+        !diff_output.contains("unrelated.txt"),
+        "task diff should be scoped away from unrelated files: {}",
+        diff_output
+    );
+    assert!(
+        !diff_output.contains("noise"),
+        "task diff should exclude unrelated-file content: {}",
+        diff_output
+    );
+
+    let name_only_output =
+        aiki_task_with_env(temp_dir.path(), &["diff", "--name-only", &full_id], &[]);
+    assert_eq!(name_only_output.trim(), "tracked.txt");
+}
+
+#[test]
+fn test_task_diff_direct_on_working_copy_keeps_start_snapshot_and_filters_metadata() {
+    if !jj_available() {
+        eprintln!("Skipping test: jj binary not found in PATH");
+        return;
+    }
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    let repo_id_path = temp_dir.path().join(".aiki/repo-id");
+    assert!(
+        repo_id_path.exists(),
+        "aiki init should create .aiki/repo-id for this regression test"
+    );
+
+    fs::write(temp_dir.path().join("tracked.txt"), "base\n").unwrap();
+    run_jj(
+        temp_dir.path(),
+        &["file", "track", "tracked.txt", ".aiki/repo-id"],
+    );
+    run_jj(temp_dir.path(), &["describe", "-m", "base"]);
+    run_jj(temp_dir.path(), &["new"]);
+
+    let add_output = task_stdout(temp_dir.path(), &["add", "Direct @ diff"]);
+    let short_id = extract_short_id(&add_output);
+    aiki_task(temp_dir.path(), &["start", &short_id]).success();
+    let full_id = extract_full_id_from_show(&task_stdout(temp_dir.path(), &["show", &short_id]));
+
+    fs::write(temp_dir.path().join("tracked.txt"), "final\n").unwrap();
+    fs::write(&repo_id_path, "temporary-repo-id\n").unwrap();
+    run_jj(
+        temp_dir.path(),
+        &["describe", "-m", &format!("task={}", full_id)],
+    );
+
+    let diff_output = aiki_task_with_env(temp_dir.path(), &["diff", &full_id], &[]);
+    assert!(
+        diff_output.contains("tracked.txt"),
+        "task diff should include the tracked file changed after start: {}",
+        diff_output
+    );
+    assert!(
+        diff_output.contains("-base"),
+        "task diff should stay anchored to the start snapshot even after rewriting @: {}",
+        diff_output
+    );
+    assert!(
+        diff_output.contains("+final"),
+        "task diff should include the final working-copy rewrite content: {}",
+        diff_output
+    );
+    assert!(
+        !diff_output.contains(".aiki/repo-id"),
+        "task diff should filter internal metadata paths: {}",
+        diff_output
+    );
+    assert!(
+        !diff_output.contains("temporary-repo-id"),
+        "filtered internal metadata content should not leak into task diff output: {}",
+        diff_output
+    );
+
+    let name_only_output =
+        aiki_task_with_env(temp_dir.path(), &["diff", "--name-only", &full_id], &[]);
+    assert_eq!(name_only_output.trim(), "tracked.txt");
+}
+
+#[test]
+fn test_task_diff_empty_intersection_stays_scoped() {
+    if !jj_available() {
+        eprintln!("Skipping test: jj binary not found in PATH");
+        return;
+    }
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    fs::write(temp_dir.path().join("tracked.txt"), "base\n").unwrap();
+    fs::write(temp_dir.path().join("unrelated.txt"), "clean\n").unwrap();
+    run_jj(
+        temp_dir.path(),
+        &["file", "track", "tracked.txt", "unrelated.txt"],
+    );
+    run_jj(temp_dir.path(), &["describe", "-m", "base"]);
+    run_jj(temp_dir.path(), &["new"]);
+
+    let add_output = task_stdout(temp_dir.path(), &["add", "Empty intersection diff"]);
+    let short_id = extract_short_id(&add_output);
+    aiki_task(temp_dir.path(), &["start", &short_id]).success();
+    let full_id = extract_full_id_from_show(&task_stdout(temp_dir.path(), &["show", &short_id]));
+
+    run_jj(temp_dir.path(), &["new"]);
+
+    fs::write(temp_dir.path().join("tracked.txt"), "task change\n").unwrap();
+    run_jj(
+        temp_dir.path(),
+        &["describe", "-m", &format!("task={}", full_id)],
+    );
+    run_jj(temp_dir.path(), &["new"]);
+
+    fs::write(temp_dir.path().join("unrelated.txt"), "noise\n").unwrap();
+    run_jj(temp_dir.path(), &["describe", "-m", "non-task change"]);
+    run_jj(temp_dir.path(), &["new"]);
+
+    fs::write(temp_dir.path().join("tracked.txt"), "base\n").unwrap();
+    run_jj(
+        temp_dir.path(),
+        &["describe", "-m", &format!("task={}", full_id)],
+    );
+    run_jj(temp_dir.path(), &["new"]);
+
+    let diff_output = aiki_task_with_env(temp_dir.path(), &["diff", &full_id], &[]);
+    assert!(
+        diff_output.trim() == "No scoped changes.",
+        "task diff should explain the empty scoped intersection in default mode: {}",
+        diff_output
+    );
+    assert!(
+        !diff_output.contains("unrelated.txt"),
+        "task diff should not leak unrelated files when the scoped intersection is empty: {}",
+        diff_output
+    );
+    assert!(
+        !diff_output.contains("noise"),
+        "task diff should not leak unrelated file content when the scoped intersection is empty: {}",
+        diff_output
+    );
+
+    let name_only_output =
+        aiki_task_with_env(temp_dir.path(), &["diff", "--name-only", &full_id], &[]);
+    assert!(
+        name_only_output.trim().is_empty(),
+        "--name-only should stay empty when the scoped intersection is empty: {}",
+        name_only_output
+    );
+}
+
+#[test]
+fn test_parent_task_diff_uses_pre_subtask_baseline_after_parent_autostart() {
+    if !jj_available() {
+        eprintln!("Skipping test: jj binary not found in PATH");
+        return;
+    }
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    fs::write(temp_dir.path().join("tracked.txt"), "base\n").unwrap();
+    run_jj(temp_dir.path(), &["file", "track", "tracked.txt"]);
+    run_jj(temp_dir.path(), &["describe", "-m", "base"]);
+    run_jj(temp_dir.path(), &["new"]);
+
+    let parent_short = extract_short_id(&task_stdout(temp_dir.path(), &["add", "Parent task"]));
+    let parent_full =
+        extract_full_id_from_show(&task_stdout(temp_dir.path(), &["show", &parent_short]));
+
+    let subtask1_short = extract_short_id(&task_stdout(
+        temp_dir.path(),
+        &["add", "Subtask 1", "--parent", &parent_short],
+    ));
+    let subtask1_full =
+        extract_full_id_from_show(&task_stdout(temp_dir.path(), &["show", &subtask1_short]));
+
+    let subtask2_short = extract_short_id(&task_stdout(
+        temp_dir.path(),
+        &["add", "Subtask 2", "--parent", &parent_short],
+    ));
+    let subtask2_full =
+        extract_full_id_from_show(&task_stdout(temp_dir.path(), &["show", &subtask2_short]));
+
+    aiki_task(temp_dir.path(), &["start", &subtask1_short]).success();
+    run_jj(temp_dir.path(), &["new"]);
+    fs::write(temp_dir.path().join("tracked.txt"), "subtask one\n").unwrap();
+    run_jj(
+        temp_dir.path(),
+        &["describe", "-m", &format!("task={}", subtask1_full)],
+    );
+    run_jj(temp_dir.path(), &["new"]);
+    aiki_task(
+        temp_dir.path(),
+        &["close", &subtask1_short, "--summary", "Done"],
+    )
+    .success();
+
+    aiki_task(temp_dir.path(), &["start", &subtask2_short]).success();
+    run_jj(temp_dir.path(), &["new"]);
+    fs::write(temp_dir.path().join("tracked.txt"), "subtask two\n").unwrap();
+    run_jj(
+        temp_dir.path(),
+        &["describe", "-m", &format!("task={}", subtask2_full)],
+    );
+    run_jj(temp_dir.path(), &["new"]);
+
+    let close_output = task_stdout(
+        temp_dir.path(),
+        &["close", &subtask2_short, "--summary", "All done"],
+    );
+    assert!(
+        close_output.contains("Parent task"),
+        "closing the final subtask should auto-start the parent: {}",
+        close_output
+    );
+
+    let parent_diff = aiki_task_with_env(temp_dir.path(), &["diff", &parent_full], &[]);
+    assert!(
+        parent_diff.contains("tracked.txt"),
+        "parent diff should include descendant-touched files: {}",
+        parent_diff
+    );
+    assert!(
+        parent_diff.contains("-base"),
+        "parent diff should anchor before subtask work, not at the auto-start snapshot: {}",
+        parent_diff
+    );
+    assert!(
+        parent_diff.contains("+subtask two"),
+        "parent diff should include the final descendant content after auto-start: {}",
+        parent_diff
+    );
+    assert!(
+        !parent_diff.contains("No changes found"),
+        "parent diff should not collapse to an empty result after auto-start: {}",
+        parent_diff
+    );
+}
+
+#[test]
+fn test_task_diff_fallback_summary_scoping_handles_short_paths() {
+    if !jj_available() {
+        eprintln!("Skipping test: jj binary not found in PATH");
+        return;
+    }
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    fs::write(temp_dir.path().join("a"), "base\n").unwrap();
+    fs::write(temp_dir.path().join("unrelated.txt"), "clean\n").unwrap();
+    run_jj(temp_dir.path(), &["file", "track", "a", "unrelated.txt"]);
+    run_jj(temp_dir.path(), &["describe", "-m", "base"]);
+    run_jj(temp_dir.path(), &["new"]);
+
+    let add_output = task_stdout(temp_dir.path(), &["add", "Fallback diff"]);
+    let short_id = extract_short_id(&add_output);
+    aiki_task(temp_dir.path(), &["start", &short_id]).success();
+    let full_id = extract_full_id_from_show(&task_stdout(temp_dir.path(), &["show", &short_id]));
+
+    run_jj(temp_dir.path(), &["new"]);
+
+    fs::write(temp_dir.path().join("unrelated.txt"), "noise\n").unwrap();
+    run_jj(temp_dir.path(), &["describe", "-m", "intermediate"]);
+    run_jj(temp_dir.path(), &["new"]);
+
+    fs::write(temp_dir.path().join("a"), "final\n").unwrap();
+    run_jj(
+        temp_dir.path(),
+        &["describe", "-m", &format!("task={}", full_id)],
+    );
+    run_jj(temp_dir.path(), &["new"]);
+
+    let real_jj = String::from_utf8_lossy(
+        &Command::new("which")
+            .arg("jj")
+            .output()
+            .expect("Failed to resolve jj path")
+            .stdout,
+    )
+    .trim()
+    .to_string();
+    assert!(!real_jj.is_empty(), "which jj returned an empty path");
+
+    let bin_dir = temp_dir.path().join("bin");
+    fs::create_dir_all(&bin_dir).unwrap();
+    let wrapper_path = bin_dir.join("jj");
+    fs::write(
+        &wrapper_path,
+        format!(
+            "#!/bin/sh\nif [ \"$1\" = \"log\" ]; then\n  for arg in \"$@\"; do\n    if [ \"$arg\" = \"--name-only\" ]; then\n      exit 1\n    fi\n  done\nfi\nexec \"{}\" \"$@\"\n",
+            real_jj
+        ),
+    )
+    .unwrap();
+    let mut perms = fs::metadata(&wrapper_path).unwrap().permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(&wrapper_path, perms).unwrap();
+
+    let wrapped_path = format!(
+        "{}:{}",
+        bin_dir.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let envs = [("PATH", wrapped_path.as_str())];
+
+    let summary_output =
+        aiki_task_with_env(temp_dir.path(), &["diff", "--summary", &full_id], &envs);
+    assert!(
+        summary_output.contains("M a"),
+        "fallback summary parsing should keep short paths: {}",
+        summary_output
+    );
+    assert!(
+        !summary_output.contains("unrelated.txt"),
+        "fallback scoping should exclude unrelated files: {}",
+        summary_output
+    );
+
+    let name_only_output =
+        aiki_task_with_env(temp_dir.path(), &["diff", "--name-only", &full_id], &envs);
+    assert_eq!(name_only_output.trim(), "a");
+}
+
+#[test]
+fn test_task_diff_fallback_summary_scoping_handles_renames() {
+    if !jj_available() {
+        eprintln!("Skipping test: jj binary not found in PATH");
+        return;
+    }
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    fs::write(temp_dir.path().join("old.txt"), "tracked\n").unwrap();
+    fs::write(temp_dir.path().join("unrelated.txt"), "clean\n").unwrap();
+    run_jj(
+        temp_dir.path(),
+        &["file", "track", "old.txt", "unrelated.txt"],
+    );
+    run_jj(temp_dir.path(), &["describe", "-m", "base"]);
+    run_jj(temp_dir.path(), &["new"]);
+
+    let add_output = task_stdout(temp_dir.path(), &["add", "Fallback rename diff"]);
+    let short_id = extract_short_id(&add_output);
+    aiki_task(temp_dir.path(), &["start", &short_id]).success();
+    let full_id = extract_full_id_from_show(&task_stdout(temp_dir.path(), &["show", &short_id]));
+
+    run_jj(temp_dir.path(), &["new"]);
+
+    fs::write(temp_dir.path().join("unrelated.txt"), "noise\n").unwrap();
+    run_jj(temp_dir.path(), &["describe", "-m", "intermediate"]);
+    run_jj(temp_dir.path(), &["new"]);
+
+    fs::rename(
+        temp_dir.path().join("old.txt"),
+        temp_dir.path().join("new.txt"),
+    )
+    .unwrap();
+    run_jj(temp_dir.path(), &["file", "track", "new.txt"]);
+    run_jj(
+        temp_dir.path(),
+        &["describe", "-m", &format!("task={}", full_id)],
+    );
+    run_jj(temp_dir.path(), &["new"]);
+
+    let real_jj = String::from_utf8_lossy(
+        &Command::new("which")
+            .arg("jj")
+            .output()
+            .expect("Failed to resolve jj path")
+            .stdout,
+    )
+    .trim()
+    .to_string();
+    assert!(!real_jj.is_empty(), "which jj returned an empty path");
+
+    let bin_dir = temp_dir.path().join("bin");
+    fs::create_dir_all(&bin_dir).unwrap();
+    let wrapper_path = bin_dir.join("jj");
+    fs::write(
+        &wrapper_path,
+        format!(
+            "#!/bin/sh\nif [ \"$1\" = \"log\" ]; then\n  for arg in \"$@\"; do\n    if [ \"$arg\" = \"--name-only\" ]; then\n      exit 1\n    fi\n  done\nfi\nexec \"{}\" \"$@\"\n",
+            real_jj
+        ),
+    )
+    .unwrap();
+    let mut perms = fs::metadata(&wrapper_path).unwrap().permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(&wrapper_path, perms).unwrap();
+
+    let wrapped_path = format!(
+        "{}:{}",
+        bin_dir.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let envs = [("PATH", wrapped_path.as_str())];
+
+    let summary_output =
+        aiki_task_with_env(temp_dir.path(), &["diff", "--summary", &full_id], &envs);
+    assert!(
+        summary_output.contains("old.txt") && summary_output.contains("new.txt"),
+        "fallback summary scoping should include both renamed paths: {}",
+        summary_output
+    );
+    assert!(
+        !summary_output.contains("unrelated.txt"),
+        "fallback rename scoping should exclude unrelated files: {}",
+        summary_output
+    );
+
+    let name_only_output =
+        aiki_task_with_env(temp_dir.path(), &["diff", "--name-only", &full_id], &envs);
+    let name_only_lines: Vec<&str> = name_only_output.lines().collect();
+    assert_eq!(name_only_lines, vec!["old.txt", "new.txt"]);
+}
+
+#[test]
+fn test_tldr_renders_snapshot_scoped_epic_diff_and_fix_metadata() {
+    if !jj_available() {
+        eprintln!("Skipping test: jj binary not found in PATH");
+        return;
+    }
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+    let fake_path = install_fake_agent_cli(temp_dir.path(), "codex");
+    let envs = [("PATH", fake_path.as_str())];
+
+    fs::write(temp_dir.path().join("tracked.txt"), "base\n").unwrap();
+    fs::write(temp_dir.path().join("unrelated.txt"), "clean\n").unwrap();
+    run_jj(
+        temp_dir.path(),
+        &["file", "track", "tracked.txt", "unrelated.txt"],
+    );
+    run_jj(temp_dir.path(), &["describe", "-m", "base"]);
+    run_jj(temp_dir.path(), &["new"]);
+
+    let epic_short = extract_short_id(&task_stdout(temp_dir.path(), &["add", "Epic: TLDR scope"]));
+    let epic_full =
+        extract_full_id_from_show(&task_stdout(temp_dir.path(), &["show", &epic_short]));
+    let subtask_short = extract_short_id(&task_stdout(
+        temp_dir.path(),
+        &["add", "Implement change", "--parent", &epic_short],
+    ));
+    let subtask_full =
+        extract_full_id_from_show(&task_stdout(temp_dir.path(), &["show", &subtask_short]));
+
+    aiki_task(temp_dir.path(), &["start", &subtask_short]).success();
+    run_jj(temp_dir.path(), &["new"]);
+    fs::write(temp_dir.path().join("tracked.txt"), "feature\n").unwrap();
+    run_jj(
+        temp_dir.path(),
+        &["describe", "-m", &format!("task={}", subtask_full)],
+    );
+    run_jj(temp_dir.path(), &["new"]);
+    aiki_task(
+        temp_dir.path(),
+        &[
+            "close",
+            &subtask_short,
+            "--confidence",
+            "4",
+            "--summary",
+            "Implemented",
+        ],
+    )
+    .success();
+    aiki_task(
+        temp_dir.path(),
+        &[
+            "close",
+            &epic_short,
+            "--confidence",
+            "4",
+            "--summary",
+            "Epic done",
+        ],
+    )
+    .success();
+
+    let review_short = extract_short_id(&task_stdout(temp_dir.path(), &["add", "Review epic"]));
+    let review_full =
+        extract_full_id_from_show(&task_stdout(temp_dir.path(), &["show", &review_short]));
+    aiki_task(
+        temp_dir.path(),
+        &["link", &review_full, "--validates", &epic_full],
+    )
+    .success();
+    aiki_task(
+        temp_dir.path(),
+        &[
+            "close",
+            &review_short,
+            "--confidence",
+            "4",
+            "--summary",
+            "Needs a fix",
+        ],
+    )
+    .success();
+
+    let fix_short = extract_short_id(&task_stdout(temp_dir.path(), &["add", "Fix follow-up"]));
+    let fix_full = extract_full_id_from_show(&task_stdout(temp_dir.path(), &["show", &fix_short]));
+    aiki_task(
+        temp_dir.path(),
+        &["link", &fix_full, "--remediates", &review_full],
+    )
+    .success();
+    aiki_task(temp_dir.path(), &["start", &fix_short]).success();
+    run_jj(temp_dir.path(), &["new"]);
+    fs::write(temp_dir.path().join("unrelated.txt"), "noise\n").unwrap();
+    run_jj(temp_dir.path(), &["describe", "-m", "intermediate"]);
+    run_jj(temp_dir.path(), &["new"]);
+    fs::write(temp_dir.path().join("tracked.txt"), "feature+fix\n").unwrap();
+    run_jj(
+        temp_dir.path(),
+        &["describe", "-m", &format!("task={}", fix_full)],
+    );
+    run_jj(temp_dir.path(), &["new"]);
+    aiki_task(
+        temp_dir.path(),
+        &[
+            "close",
+            &fix_short,
+            "--confidence",
+            "4",
+            "--summary",
+            "Fixed review feedback",
+        ],
+    )
+    .success();
+
+    let tldr_output = aiki_stdout_with_env(
+        temp_dir.path(),
+        &["tldr", &epic_full, "--agent", "codex"],
+        &envs,
+    );
+    let tldr_task_id = extract_tldr_task_id(&tldr_output);
+    let instructions = aiki_stdout_with_env(
+        temp_dir.path(),
+        &["task", "show", &tldr_task_id, "--with-instructions"],
+        &envs,
+    );
+
+    assert!(
+        instructions.contains("<files-changed>\nM tracked.txt"),
+        "TLDR payload should include the snapshot-scoped file list: {}",
+        instructions
+    );
+    assert!(
+        instructions.contains("<file-stats>") && instructions.contains("tracked.txt"),
+        "TLDR payload should include scoped diff stats: {}",
+        instructions
+    );
+    assert!(
+        instructions.contains("\"files_changed\": [\n            \"tracked.txt\""),
+        "review-history fix metadata should report the scoped tracked file: {}",
+        instructions
+    );
+    assert!(
+        !instructions.contains("unrelated.txt"),
+        "snapshot-scoped TLDR data should exclude unrelated churn: {}",
+        instructions
+    );
+}
+
+#[test]
+fn test_tldr_fallback_renders_legacy_tasks_without_started_snapshots() {
+    if !jj_available() {
+        eprintln!("Skipping test: jj binary not found in PATH");
+        return;
+    }
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+    let fake_path = install_fake_agent_cli(temp_dir.path(), "codex");
+    let envs = [("PATH", fake_path.as_str())];
+
+    fs::write(temp_dir.path().join("tracked.txt"), "base\n").unwrap();
+    run_jj(temp_dir.path(), &["file", "track", "tracked.txt"]);
+    run_jj(temp_dir.path(), &["describe", "-m", "base"]);
+    run_jj(temp_dir.path(), &["new"]);
+
+    let epic_short = extract_short_id(&task_stdout(
+        temp_dir.path(),
+        &["add", "Epic: Legacy fallback"],
+    ));
+    let epic_full =
+        extract_full_id_from_show(&task_stdout(temp_dir.path(), &["show", &epic_short]));
+    let subtask_short = extract_short_id(&task_stdout(
+        temp_dir.path(),
+        &["add", "Legacy subtask", "--parent", &epic_short],
+    ));
+    let subtask_full =
+        extract_full_id_from_show(&task_stdout(temp_dir.path(), &["show", &subtask_short]));
+
+    fs::write(temp_dir.path().join("tracked.txt"), "legacy-epic\n").unwrap();
+    run_jj(
+        temp_dir.path(),
+        &["describe", "-m", &format!("task={}", subtask_full)],
+    );
+    run_jj(temp_dir.path(), &["new"]);
+    aiki_task(
+        temp_dir.path(),
+        &[
+            "close",
+            &subtask_short,
+            "--confidence",
+            "4",
+            "--summary",
+            "Legacy done",
+        ],
+    )
+    .success();
+    aiki_task(
+        temp_dir.path(),
+        &[
+            "close",
+            &epic_short,
+            "--confidence",
+            "4",
+            "--summary",
+            "Legacy epic done",
+        ],
+    )
+    .success();
+
+    let review_short = extract_short_id(&task_stdout(temp_dir.path(), &["add", "Legacy review"]));
+    let review_full =
+        extract_full_id_from_show(&task_stdout(temp_dir.path(), &["show", &review_short]));
+    aiki_task(
+        temp_dir.path(),
+        &["link", &review_full, "--validates", &epic_full],
+    )
+    .success();
+    aiki_task(
+        temp_dir.path(),
+        &[
+            "close",
+            &review_short,
+            "--confidence",
+            "4",
+            "--summary",
+            "Legacy review done",
+        ],
+    )
+    .success();
+
+    let fix_short = extract_short_id(&task_stdout(temp_dir.path(), &["add", "Legacy fix"]));
+    let fix_full = extract_full_id_from_show(&task_stdout(temp_dir.path(), &["show", &fix_short]));
+    aiki_task(
+        temp_dir.path(),
+        &["link", &fix_full, "--remediates", &review_full],
+    )
+    .success();
+    fs::write(temp_dir.path().join("tracked.txt"), "legacy-fix\n").unwrap();
+    run_jj(
+        temp_dir.path(),
+        &["describe", "-m", &format!("task={}", fix_full)],
+    );
+    run_jj(temp_dir.path(), &["new"]);
+    aiki_task(
+        temp_dir.path(),
+        &[
+            "close",
+            &fix_short,
+            "--confidence",
+            "4",
+            "--summary",
+            "Legacy fix done",
+        ],
+    )
+    .success();
+
+    let tldr_output = aiki_stdout_with_env(
+        temp_dir.path(),
+        &["tldr", &epic_full, "--agent", "codex"],
+        &envs,
+    );
+    let tldr_task_id = extract_tldr_task_id(&tldr_output);
+    let instructions = aiki_stdout_with_env(
+        temp_dir.path(),
+        &["task", "show", &tldr_task_id, "--with-instructions"],
+        &envs,
+    );
+
+    assert!(
+        instructions.contains("<diff>") && instructions.contains("tracked.txt"),
+        "legacy TLDR fallback should still render a diff: {}",
+        instructions
+    );
+    assert!(
+        instructions.contains("<file-stats>") && !instructions.contains("File stats unavailable."),
+        "legacy TLDR fallback should still render file stats: {}",
+        instructions
+    );
+    assert!(
+        instructions.contains("\"diff_stat\":") && !instructions.contains("\"diff_stat\": null"),
+        "legacy review-history fallback should still render fix diff stats: {}",
+        instructions
     );
 }

@@ -481,6 +481,7 @@ mod tests {
             last_session_id: None,
             stopped_reason: None,
             closed_outcome: Some(TaskOutcome::Done),
+            confidence: None,
             summary: None,
             turn_started: None,
             closed_at: None,
@@ -876,7 +877,6 @@ mod tests {
                 assignee: None,
                 sources: Vec::new(),
                 template: None,
-                working_copy: None,
                 instructions: None,
                 data: HashMap::new(),
                 timestamp: Utc::now(),
@@ -890,7 +890,6 @@ mod tests {
                 assignee: None,
                 sources: Vec::new(),
                 template: None,
-                working_copy: None,
                 instructions: None,
                 data: {
                     let mut d = HashMap::new();
@@ -904,6 +903,7 @@ mod tests {
                 session_id: None,
                 task_ids: vec!["review-subtask".to_string()],
                 outcome: TaskOutcome::Done,
+                confidence: None,
                 summary: None,
                 turn_id: None,
                 timestamp: Utc::now(),

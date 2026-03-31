@@ -327,10 +327,14 @@ pub fn get_repo_root(cwd: &Path) -> Result<PathBuf> {
     Ok(ws_root.to_path_buf())
 }
 
-/// Get the change ID of the working copy (`@`) in the given directory.
-pub fn get_working_copy_change_id(cwd: &Path) -> Option<String> {
+/// Capture the current `@` revision as an immutable snapshot anchor.
+///
+/// This intentionally omits `--ignore-working-copy` so JJ snapshots any pending
+/// filesystem changes before resolving `@`. The returned `commit_id` is stable
+/// across later rewrites, unlike the mutable `change_id`.
+pub fn get_working_copy_snapshot_rev(cwd: &Path) -> Option<String> {
     let output = jj_cmd()
-        .args(["log", "-r", "@", "-T", "change_id", "--no-graph"])
+        .args(["log", "-r", "@", "-T", "commit_id", "--no-graph"])
         .current_dir(cwd)
         .output()
         .ok()?;
@@ -339,11 +343,11 @@ pub fn get_working_copy_change_id(cwd: &Path) -> Option<String> {
         return None;
     }
 
-    let change_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if change_id.is_empty() {
+    let commit_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if commit_id.is_empty() {
         None
     } else {
-        Some(change_id)
+        Some(commit_id)
     }
 }
 

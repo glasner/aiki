@@ -1,8 +1,10 @@
 //! PlanGraph — first-class plan management with O(1) reverse index
 //!
 //! The PlanGraph builds a reverse index from plan file paths to the tasks
-//! that implement them. It unifies the duplicate `find_epic_for_plan()`
+//! that implement them. It unifies the duplicate plan-resolution logic
 //! functions that existed in `decompose.rs` and `build.rs`.
+
+use anyhow::{anyhow, Result};
 
 use crate::tasks::graph::TaskGraph;
 use crate::tasks::types::{FastHashMap, Task};
@@ -14,6 +16,12 @@ use crate::tasks::types::{FastHashMap, Task};
 pub struct PlanGraph {
     /// Reverse index: plan_path (normalized "file:..." URI) → implementing task IDs
     plan_to_tasks: FastHashMap<String, Vec<String>>,
+}
+
+pub enum PlanEpicMatch<'a> {
+    None,
+    One(&'a Task),
+    Many(Vec<&'a Task>),
 }
 
 impl PlanGraph {
@@ -44,25 +52,58 @@ impl PlanGraph {
         PlanGraph { plan_to_tasks }
     }
 
-    /// Find the most recent epic for a plan.
-    ///
-    /// Returns the most recently created task that has an `implements-plan`
-    /// edge to the given plan file. Only epic tasks should have this edge;
-    /// decompose and build tasks use `decomposes-plan` and `orchestrates`
-    /// respectively.
-    pub fn find_epic_for_plan<'a>(
+    /// Find all epics for a plan and classify the match cardinality.
+    pub fn match_epics_for_plan<'a>(
         &self,
         plan_path: &str,
         task_graph: &'a TaskGraph,
-    ) -> Option<&'a Task> {
+    ) -> PlanEpicMatch<'a> {
         let normalized = normalize_plan_path(plan_path);
-        self.plan_to_tasks
+        let mut matches: Vec<&Task> = self
+            .plan_to_tasks
             .get(&normalized)
             .into_iter()
             .flat_map(|ids| ids.iter())
             .filter_map(|id| task_graph.tasks.get(id))
-            .max_by_key(|t| t.created_at)
+            .collect();
+        matches.sort_by(|a, b| {
+            b.created_at
+                .cmp(&a.created_at)
+                .then_with(|| a.id.cmp(&b.id))
+        });
+
+        match matches.len() {
+            0 => PlanEpicMatch::None,
+            1 => PlanEpicMatch::One(matches[0]),
+            _ => PlanEpicMatch::Many(matches),
+        }
     }
+
+    /// Resolve a single epic for a plan or return an explicit ambiguity error.
+    pub fn resolve_epic_for_plan<'a>(
+        &self,
+        plan_path: &str,
+        task_graph: &'a TaskGraph,
+    ) -> Result<Option<&'a Task>> {
+        match self.match_epics_for_plan(plan_path, task_graph) {
+            PlanEpicMatch::None => Ok(None),
+            PlanEpicMatch::One(task) => Ok(Some(task)),
+            PlanEpicMatch::Many(matches) => Err(ambiguous_plan_error(plan_path, &matches)),
+        }
+    }
+}
+
+fn ambiguous_plan_error(plan_path: &str, matches: &[&Task]) -> anyhow::Error {
+    let details = matches
+        .iter()
+        .map(|task| format!("{} ({})", task.id, task.name))
+        .collect::<Vec<_>>()
+        .join(", ");
+    anyhow!(
+        "Multiple epics implement {}: {}. Use an epic ID to disambiguate.",
+        normalize_plan_path(plan_path),
+        details
+    )
 }
 
 /// Normalize a plan path to the canonical "file:..." URI format.
@@ -113,6 +154,7 @@ mod tests {
             last_session_id: None,
             stopped_reason: None,
             closed_outcome: None,
+            confidence: None,
             summary: None,
             turn_started: None,
             closed_at: None,
@@ -132,7 +174,6 @@ mod tests {
             assignee: None,
             sources: Vec::new(),
             template: None,
-            working_copy: None,
             instructions: None,
             data: HashMap::new(),
             timestamp: Utc::now(),
@@ -183,13 +224,16 @@ mod tests {
         );
     }
 
-    // --- find_epic_for_plan tests ---
+    // --- PlanGraph tests ---
 
     #[test]
     fn test_find_epic_none() {
         let tg = make_task_graph(FastHashMap::default(), EdgeStore::new());
         let pg = PlanGraph::build(&tg);
-        assert!(pg.find_epic_for_plan("ops/now/feature.md", &tg).is_none());
+        assert!(matches!(
+            pg.match_epics_for_plan("ops/now/feature.md", &tg),
+            PlanEpicMatch::None
+        ));
     }
 
     #[test]
@@ -206,13 +250,13 @@ mod tests {
         let tg = make_task_graph(tasks, edges);
         let pg = PlanGraph::build(&tg);
 
-        let result = pg.find_epic_for_plan("ops/now/feature.md", &tg);
+        let result = pg.resolve_epic_for_plan("ops/now/feature.md", &tg).unwrap();
         assert!(result.is_some());
         assert_eq!(result.unwrap().id, "epic1");
     }
 
     #[test]
-    fn test_find_epic_returns_most_recent() {
+    fn test_find_epic_returns_ambiguity_error_for_multiple_matches() {
         let mut tasks = FastHashMap::default();
 
         let mut old = make_task("old_epic", "Old Epic", TaskStatus::Closed);
@@ -229,8 +273,13 @@ mod tests {
         let tg = make_task_graph(tasks, edges);
         let pg = PlanGraph::build(&tg);
 
-        let result = pg.find_epic_for_plan("ops/now/feature.md", &tg);
-        assert_eq!(result.unwrap().id, "new_epic");
+        let err = pg
+            .resolve_epic_for_plan("ops/now/feature.md", &tg)
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("Multiple epics implement file:ops/now/feature.md"));
+        assert!(msg.contains("old_epic (Old Epic)"));
+        assert!(msg.contains("new_epic (New Epic)"));
     }
 
     // --- build from events (integration) ---
@@ -250,7 +299,6 @@ mod tests {
             assignee: None,
             sources: Vec::new(),
             template: None,
-            working_copy: None,
             instructions: None,
             data,
             timestamp: Utc::now(),
@@ -259,7 +307,7 @@ mod tests {
         let tg = materialize_graph(&events);
         let pg = PlanGraph::build(&tg);
 
-        let result = pg.find_epic_for_plan("ops/now/feature.md", &tg);
+        let result = pg.resolve_epic_for_plan("ops/now/feature.md", &tg).unwrap();
         assert!(result.is_some());
         assert_eq!(result.unwrap().id, "epic1");
     }
@@ -274,7 +322,7 @@ mod tests {
         let tg = materialize_graph(&events);
         let pg = PlanGraph::build(&tg);
 
-        let result = pg.find_epic_for_plan("ops/now/feature.md", &tg);
+        let result = pg.resolve_epic_for_plan("ops/now/feature.md", &tg).unwrap();
         assert!(result.is_some());
         assert_eq!(result.unwrap().id, "epic1");
     }
