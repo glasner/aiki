@@ -19,7 +19,7 @@ Please leave updates as you go using `aiki task comment`.
 When done with all subtasks close this task with a summary:
 
 ```bash
-aiki task close {{id}} --summary "Resolved conflicts in <file1, file2>: <brief explanation of how you merged>"
+aiki task close {{id}} --confidence 3 --summary "Resolved conflicts in <file1, file2>: <brief explanation of how you merged>"
 ```
 
 # Subtasks

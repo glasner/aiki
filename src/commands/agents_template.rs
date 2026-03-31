@@ -35,14 +35,14 @@ This creates and starts a task in one atomic command (quick-start).
 # Reading the codebase, writing the plan file...
 # Oh, I should track this
 aiki task start "Already done task"
-aiki task close <id> --summary "..."  # Immediately closing - defeats the purpose!
+aiki task close <id> --confidence <1-4> --summary "..."  # Immediately closing - defeats the purpose!
 ```
 
 ### ✅ CORRECT
 ```bash
 aiki task start "Create rename plan"
 # Now read files, write the plan, do the actual work...
-aiki task close <id> --summary "Created plan at ops/now/rename.md"
+aiki task close <id> --confidence <1-4> --summary "Created plan at ops/now/rename.md"
 ```
 
 **Leave progress comments during long tasks:**
@@ -50,10 +50,13 @@ aiki task close <id> --summary "Created plan at ops/now/rename.md"
 aiki task comment add <task-id> "Completed phase 1, now working on phase 2"
 ```
 
-**When closing tasks, summarize your work:**
+**When closing done work from an agent session, include confidence and summarize your work:**
 ```bash
-aiki task close <task-id> --summary "What you did"
+aiki task close <task-id> --confidence <1-4> --summary "What you did"
 ```
+
+Use `aiki task close <task-id> --wont-do --summary "Why you are declining"` for won't-do closes.
+Do not use `--confidence` with `--wont-do`.
 
 ---
 
@@ -83,7 +86,7 @@ aiki task close <task-id> --summary "What you did"
 aiki task start "Task description"
 
 # 2) Close it when done (with summary describing your work)
-aiki task close <task-id> --summary "What I did to fix this"
+aiki task close <task-id> --confidence <1-4> --summary "What I did to fix this"
 ```
 
 Alternative (two-step):
@@ -105,7 +108,7 @@ aiki task start <task-id>
 # ALWAYS do this first, before reading/analyzing/implementing:
 aiki task start "Review assign-tasks.md design"
 # ... now do the work ...
-aiki task close <task-id> --summary "Reviewed, found 3 issues: ..."
+aiki task close <task-id> --confidence <1-4> --summary "Reviewed, found 3 issues: ..."
 ```
 
 ### When to Use Tasks
@@ -133,7 +136,7 @@ aiki task comment add <task-id> "Implemented password hashing"
 aiki task comment add <task-id> "Added login endpoint, now testing"
 
 # Close with final summary
-aiki task close <task-id> --summary "Completed: authentication with JWT tokens, password hashing, and session management"
+aiki task close <task-id> --confidence <1-4> --summary "Completed: authentication with JWT tokens, password hashing, and session management"
 ```
 
 **Benefits:**
@@ -266,17 +269,17 @@ aiki task stop --reason "Blocked on X"
 # Add a comment (without closing)
 aiki task comment add <task-id> "Progress update: ..."
 
-# Show task details including comments
-aiki task show <task-id>
+# Start a task and read its instructions/context from the output
+aiki task start <task-id>
 
 # Close with comment (preferred - atomic operation)
-aiki task close <task-id> --summary "Fixed by updating X to do Y"
+aiki task close <task-id> --confidence <1-4> --summary "Fixed by updating X to do Y"
 
 # Close as won't-do (skipped, not needed, or deliberately declined)
 aiki task close <task-id> --wont-do --summary "Already handled by existing code"
 
-# Close multiple tasks
-aiki task close <id1> <id2> <id3> --summary "All done"
+# Close multiple tasks with shared confidence
+aiki task close <id1> <id2> <id3> --confidence <1-4> --summary "All done"
 
 # Delegate task to a subagent
 aiki run <task-id>
@@ -322,11 +325,11 @@ aiki task start <parent-id>
 # 4. Work through subtasks one by one
 aiki task start <subtask-id-1>
 # ... do the work ...
-aiki task close <subtask-id-1> --summary "Added null check before token access"
+aiki task close <subtask-id-1> --confidence <1-4> --summary "Added null check before token access"
 
 aiki task start <parent-id>.2
 # ... do the work ...
-aiki task close <parent-id>.2 --summary "Wrapped API calls in try/catch"
+aiki task close <parent-id>.2 --confidence <1-4> --summary "Wrapped API calls in try/catch"
 ```
 
 ### ❌ WRONG: One big task for multiple items
@@ -334,7 +337,7 @@ aiki task close <parent-id>.2 --summary "Wrapped API calls in try/catch"
 # Don't lump everything into one task
 aiki task start "Fix all review issues"
 # ... do 5 different things ...
-aiki task close <id> --summary "Fixed everything"  # No granularity!
+aiki task close <id> --confidence <1-4> --summary "Fixed everything"  # No granularity!
 ```
 
 ### ✅ CORRECT: Parent + subtasks
@@ -355,7 +358,7 @@ When you start a parent task with subtasks:
 3. Each subtask has its own full unique task ID; parent-child relationships are tracked via links
 4. **After all subtasks are done**, review the work to make sure nothing was missed, then close the parent with a summary comment:
    ```bash
-   aiki task close <parent-id> --summary "All 3 subtasks done: fixed null check, added error handling, removed unused import"
+   aiki task close <parent-id> --confidence <1-4> --summary "All 3 subtasks done: fixed null check, added error handling, removed unused import"
    ```
 
 ### When Planning Work
@@ -411,22 +414,19 @@ Ready (3):
 
 ### Task IDs
 
-**Format:** Task IDs are exactly 32 lowercase letters (a-z only), e.g., `xtuttnyvykpulsxzqnznsxylrzkkqssy`
+Task IDs are 32 lowercase letters (a-z only). All `aiki task` commands accept **unique prefixes** — you do not need the full ID. When a command prints `Started uvvloqn`, pass `uvvloqn` directly to `close`, `show`, etc. Users may also refer to tasks by prefix. Do NOT guess the remaining characters; just use the prefix as-is.
 
-**Recognizing task IDs:** When a user provides a 32-character lowercase alphabetic string, it's almost certainly a task ID. Examples:
-- `fix luppzupttoslmupvtsromtrytsqsqmxp` → User wants you to work on task `luppzupttoslmupvtsromtrytsqsqmxp`
-- `show oorznprsukkomwtnolrrqspllrywxznv` → User wants to see task details
-- `close tnslzmpqpzypnymnzlroorzvxkqtulml` → User wants to close that task
+Examples of user intent:
+- `fix luppzup` → Work on the task matching prefix `luppzup`
+- `show oorznpr` → Show task details
+- `close tnslzmp` → Close that task
 
-**Short prefixes:** Commands may print short task IDs such as `uvvloqn` or users may refer to tasks by prefix. Do NOT invent or guess the full 32-character ID from the prefix. Always resolve it by running `aiki task show <prefix>` or another `aiki task` command that prints the canonical full ID.
+**When you see a task ID (full or prefix):**
+1. Run `aiki task start <id>` to begin the task and read its instructions
+2. Do the work described in the task
+3. Close with `aiki task close <id> --confidence <1-4> --summary "What you did"`
 
-**When you see a task ID:**
-1. Run `aiki task show <id>` to see what the task is about
-2. If the user wants work done, run `aiki task start <id>` (if not already started)
-3. Do the work described in the task
-4. Close with `aiki task close <id> --summary "What you did"`
-
-**Subtask IDs:** Subtasks use the same full unique IDs as any other task. Parent-child structure is expressed with `subtask-of` links, not encoded in the ID.
+Subtasks use the same ID format. Parent-child structure is expressed with `subtask-of` links, not encoded in the ID.
 
 ### Workflow
 
@@ -434,7 +434,7 @@ Ready (3):
 2. **Comment on progress** - Use `aiki task comment add` during long/multi-step tasks
 3. **Stop when switching** - When switching tasks, explicitly stop the current task first: `aiki task stop --reason "Switching to X"`
 4. **Stop when blocked** - Use `aiki task stop --reason` to document blockers
-5. **Close with summary** - Use `aiki task close --summary` to document your work
+5. **Close done work with confidence and summary** - Use `aiki task close --confidence <1-4> --summary` to document your work
 6. **Close as won't-do when appropriate** - Use `aiki task close --wont-do --summary` for tasks you skip or decline (not needed, already done, disagree with approach)
 7. **Close immediately** - Don't leave tasks open after finishing
 8. **Report what you did** - Include completed tasks when replying to user
@@ -520,3 +520,15 @@ Tasks can be linked to express relationships. Use `aiki task link` to create lin
 **Cycle detection:** `blocked-by` and `subtask-of` links are checked for cycles at write time.
 </aiki>
 "#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_aiki_block_done_close_examples_include_confidence() {
+        let block = aiki_block_template();
+        assert!(block.contains("--confidence <1-4> --summary"));
+        assert!(!block.contains("--wont-do --confidence"));
+    }
+}

@@ -66,5 +66,5 @@ If unrecoverable:
 
 When all lanes are complete:
 
-    aiki task close {{data.target}} --summary "All subtasks completed"
-    aiki task close {{id}} --summary "All lanes completed"
+    aiki task close {{data.target}} --confidence 3 --summary "All subtasks completed"
+    aiki task close {{id}} --confidence 3 --summary "All lanes completed"

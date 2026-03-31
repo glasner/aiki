@@ -88,7 +88,7 @@ PLAN_ID=$(aiki task add "Create implementation plan" --subtask-of {{data.target}
 When all subtasks are added, close this decompose task and report the parent task:
 
 ```bash
-aiki task close {{id}} --summary "Created N subtasks. Parent task ID: {{data.target}}"
+aiki task close {{id}} --confidence 3 --summary "Created N subtasks. Parent task ID: {{data.target}}"
 ```
 
 Output the parent task ID and subtask summary for the user.

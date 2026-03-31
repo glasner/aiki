@@ -11,7 +11,7 @@ use clap::Subcommand;
 use std::path::Path;
 
 use crate::error::{AikiError, Result};
-use crate::jj::get_working_copy_change_id;
+use crate::jj::get_working_copy_snapshot_rev;
 
 /// Output format for task commands that support summary output.
 #[derive(Clone, Debug, PartialEq, clap::ValueEnum)]
@@ -44,14 +44,17 @@ use crate::tasks::{
     md::{
         aiki_print, build_context, build_list_output, format_action_added, format_action_closed,
         format_action_commented, format_action_parent_autostarted, format_action_started,
-        format_action_stopped, format_instructions, format_task_list, short_id,
+        format_action_stopped, format_close_summary, format_instructions, format_task_list,
+        short_id,
     },
     reopen_if_closed,
+    revset::{build_task_revset_pattern, build_task_revset_pattern_with_graph},
+    select_task_snapshot_baseline,
     storage::{
         read_events, read_events_with_ids, write_event, write_events_batch, write_link_event,
         write_link_event_with_autorun,
     },
-    types::{Task, TaskEvent, TaskOutcome, TaskPriority, TaskStatus},
+    types::{ConfidenceLevel, Task, TaskEvent, TaskOutcome, TaskPriority, TaskStatus},
     MdBuilder, TaskGraph,
 };
 
@@ -231,7 +234,11 @@ fn infer_task_type(task: &Task) -> String {
 #[command(disable_help_subcommand = true)]
 pub enum TemplateCommands {
     /// List all available templates
-    List,
+    List {
+        /// Limit the number of results shown
+        #[arg(long, short = 'n')]
+        number: Option<usize>,
+    },
 
     /// Show details of a specific template
     Show {
@@ -257,6 +264,10 @@ pub enum TaskCommentSubcommands {
     List {
         /// Task ID to list comments for
         id: String,
+
+        /// Limit the number of results shown
+        #[arg(long, short = 'n')]
+        number: Option<usize>,
     },
 }
 
@@ -300,6 +311,10 @@ pub enum TaskCommands {
         #[arg(long)]
         wont_do: bool,
 
+        /// Filter to closed done tasks with confidence at or below this value
+        #[arg(long, value_name = "1-4")]
+        max_confidence: Option<ConfidenceLevel>,
+
         /// Filter to tasks assigned to specific agent or human
         #[arg(long = "assignee", value_name = "AGENT")]
         assignee: Option<String>,
@@ -316,6 +331,14 @@ pub enum TaskCommands {
         #[arg(long)]
         template: Option<String>,
 
+        /// Filter by task kind/type (e.g., "review", "fix", "code")
+        #[arg(long)]
+        kind: Option<String>,
+
+        /// Deprecated: use --kind instead
+        #[arg(long = "type", hide = true)]
+        type_filter: Option<String>,
+
         /// Scope results to descendants of a given task (subtree filter)
         #[arg(long)]
         descendant_of: Option<String>,
@@ -324,6 +347,10 @@ pub enum TaskCommands {
         /// Overridden by AIKI_THREAD env var if set.
         #[arg(long)]
         thread: Option<String>,
+
+        /// Limit the number of results shown
+        #[arg(long, short = 'n')]
+        number: Option<usize>,
 
         /// Output format (e.g., `id` for bare task IDs on stdout)
         #[arg(long, short = 'o', value_name = "FORMAT")]
@@ -623,6 +650,10 @@ pub enum TaskCommands {
         #[arg(long)]
         wont_do: bool,
 
+        /// Confidence score for done work (1=low, 4=verified)
+        #[arg(long, short = 'c')]
+        confidence: Option<ConfidenceLevel>,
+
         /// Summary of what was accomplished (use "-" for stdin)
         #[arg(long)]
         summary: Option<String>,
@@ -749,6 +780,10 @@ pub enum TaskCommands {
         /// Show all lanes (not just ready ones)
         #[arg(long)]
         all: bool,
+
+        /// Output format (id = bare lane IDs, one per line)
+        #[arg(long, short = 'o', value_name = "FORMAT")]
+        output: Option<super::OutputFormat>,
     },
 
     /// Undo file changes made by a task
@@ -936,8 +971,8 @@ pub enum TaskCommands {
     ///   aiki task diff abc123 -s     # Summary (file paths with +/- counts)
     ///   aiki task diff abc123 --stat # Histogram of changes
     Diff {
-        /// Task ID to show diff for (required)
-        id: String,
+        /// Task ID to show diff for (defaults to current in-progress task)
+        id: Option<String>,
 
         /// Show summary (file paths with +/- counts)
         #[arg(short = 's', long)]
@@ -982,12 +1017,16 @@ pub fn run(command: Option<TaskCommands>) -> Result<()> {
         closed: false,
         done: false,
         wont_do: false,
+        max_confidence: None,
         assignee: None,
         unassigned: false,
         source: None,
         template: None,
+        kind: None,
+        type_filter: None,
         descendant_of: None,
         thread: None,
+        number: None,
         output: None,
     });
 
@@ -1001,32 +1040,46 @@ pub fn run(command: Option<TaskCommands>) -> Result<()> {
             closed,
             done,
             wont_do,
+            max_confidence,
             assignee,
             unassigned,
             source,
             template,
+            kind,
+            type_filter,
             descendant_of,
             thread,
+            number,
             output,
-        } => run_list(
-            &cwd,
-            None,
-            all,
-            status,
-            open,
-            in_progress,
-            stopped,
-            closed,
-            done,
-            wont_do,
-            assignee,
-            unassigned,
-            source,
-            template,
-            descendant_of,
-            thread,
-            output,
-        ),
+        } => {
+            // Hidden --type flag: tell user to use --kind instead
+            if type_filter.is_some() {
+                eprintln!("Unknown flag --type. Did you mean --kind?");
+            }
+            let effective_kind = kind.or(type_filter);
+            run_list(
+                &cwd,
+                None,
+                all,
+                status,
+                open,
+                in_progress,
+                stopped,
+                closed,
+                done,
+                wont_do,
+                max_confidence,
+                assignee,
+                unassigned,
+                source,
+                template,
+                effective_kind,
+                descendant_of,
+                thread,
+                number,
+                output,
+            )
+        }
         TaskCommands::Template { command } => run_template(&cwd, command),
         TaskCommands::Add {
             name,
@@ -1153,8 +1206,9 @@ pub fn run(command: Option<TaskCommands>) -> Result<()> {
             ids,
             outcome,
             wont_do,
+            confidence,
             summary,
-        } => run_close(&cwd, ids, &outcome, wont_do, summary),
+        } => run_close(&cwd, ids, &outcome, wont_do, confidence, summary),
         TaskCommands::Show {
             id,
             diff,
@@ -1202,10 +1256,10 @@ pub fn run(command: Option<TaskCommands>) -> Result<()> {
             TaskCommentSubcommands::Add { id, text, data } => {
                 run_comment_add(&cwd, &id, text, data)
             }
-            TaskCommentSubcommands::List { id } => run_comment_list(&cwd, &id),
+            TaskCommentSubcommands::List { id, number } => run_comment_list(&cwd, &id, number),
         },
         TaskCommands::Wait { ids, any, output } => run_wait(&cwd, ids, any, output),
-        TaskCommands::Lane { id, all } => run_lane(&cwd, id, all),
+        TaskCommands::Lane { id, all, output } => run_lane(&cwd, id, all, output),
         TaskCommands::Undo {
             ids,
             completed,
@@ -1303,12 +1357,15 @@ fn run_list(
     filter_closed: bool,
     filter_done: bool,
     filter_wont_do: bool,
+    max_confidence: Option<ConfidenceLevel>,
     filter_assignee: Option<String>,
     filter_unassigned: bool,
     filter_source: Option<String>,
     filter_template: Option<String>,
+    filter_kind: Option<String>,
     filter_descendant_of: Option<String>,
     filter_thread: Option<String>,
+    number: Option<usize>,
     output_format: Option<super::OutputFormat>,
 ) -> Result<()> {
     use crate::agents::{AgentType, Assignee};
@@ -1406,7 +1463,8 @@ fn run_list(
         || filter_closed
         || filter_ready
         || filter_done
-        || filter_wont_do;
+        || filter_wont_do
+        || max_confidence.is_some();
     let has_explicit_assignee_filters = filter_assignee.is_some() || filter_unassigned;
 
     // Validate and normalize assignee filter if provided
@@ -1532,9 +1590,18 @@ fn run_list(
         }
     };
 
+    // Helper closure to check kind filter (matches task_type field)
+    let matches_kind = |task: &Task| -> bool {
+        match (&filter_kind, &task.task_type) {
+            (None, _) => true,        // No filter applied
+            (Some(_), None) => false, // Filter applied but task has no type
+            (Some(query), Some(task_type)) => task_type == query,
+        }
+    };
+
     // Always compute the actual ready queue for context (maintains contract)
     // Blocking is filtered internally by ready queue functions, then apply agent/human AND session filtering
-    let ready_queue: Vec<&Task> = if let Some(ref agent) = auto_agent_filter {
+    let mut ready_queue: Vec<&Task> = if let Some(ref agent) = auto_agent_filter {
         get_ready_queue_for_agent_scoped(&graph, &scope_set, agent)
             .into_iter()
             .filter(|t| matches_thread(t) && matches_session(t))
@@ -1552,14 +1619,36 @@ fn run_list(
             .collect()
     };
 
+    // Include Reserved tasks that are in our thread. When `aiki run` spawns an
+    // agent it reserves the task (Open → Reserved) before the agent starts. The
+    // agent needs to see its own reserved task in the ready queue so it can
+    // `aiki task start` it.
+    if let Some(ref tset) = thread_set {
+        let ready_ids: HashSet<&str> = ready_queue.iter().map(|t| t.id.as_str()).collect();
+        let mut reserved_in_thread: Vec<&Task> = tasks
+            .values()
+            .filter(|t| t.status == TaskStatus::Reserved)
+            .filter(|t| tset.contains(&t.id))
+            .filter(|t| !ready_ids.contains(t.id.as_str()))
+            .filter(|t| !graph.is_blocked(&t.id))
+            .collect();
+        reserved_in_thread.sort_by(|a, b| {
+            a.priority
+                .cmp(&b.priority)
+                .then_with(|| a.created_at.cmp(&b.created_at))
+        });
+        ready_queue.extend(reserved_in_thread);
+    }
+
     // Get list of tasks based on filters (for display in content)
     let has_active_filters = all
         || has_status_filters
         || has_explicit_assignee_filters
+        || max_confidence.is_some()
         || filter_source.is_some()
         || filter_template.is_some()
-        || filter_descendant_of.is_some()
-        || thread_set.is_some();
+        || filter_kind.is_some()
+        || filter_descendant_of.is_some();
 
     let list_tasks: Vec<&Task> = if has_active_filters {
         // Show tasks with filters applied
@@ -1616,14 +1705,23 @@ fn run_list(
             filtered_by_status
         };
 
+        let filtered_by_confidence: Vec<_> = if let Some(max_confidence) = max_confidence {
+            filtered_by_assignee
+                .into_iter()
+                .filter(|t| matches_max_confidence_filter(t, max_confidence))
+                .collect()
+        } else {
+            filtered_by_assignee
+        };
+
         // Apply source filter if active
         let filtered_by_source: Vec<_> = if filter_source.is_some() {
-            filtered_by_assignee
+            filtered_by_confidence
                 .into_iter()
                 .filter(|t| matches_source(t))
                 .collect()
         } else {
-            filtered_by_assignee
+            filtered_by_confidence
         };
 
         // Apply template filter if active
@@ -1636,14 +1734,24 @@ fn run_list(
             filtered_by_source
         };
 
+        // Apply kind filter if active
+        let filtered_by_kind: Vec<_> = if filter_kind.is_some() {
+            filtered_by_template
+                .into_iter()
+                .filter(|t| matches_kind(t))
+                .collect()
+        } else {
+            filtered_by_template
+        };
+
         // Apply descendant-of filter if active
         let filtered_by_descendant: Vec<_> = if filter_descendant_of.is_some() {
-            filtered_by_template
+            filtered_by_kind
                 .into_iter()
                 .filter(|t| matches_descendant_of(t))
                 .collect()
         } else {
-            filtered_by_template
+            filtered_by_kind
         };
 
         // Apply thread filter if active
@@ -1677,6 +1785,13 @@ fn run_list(
         // Default: show ready queue (same as context)
         ready_queue.clone()
     };
+
+    // Apply --number truncation after all filtering
+    let mut list_tasks = list_tasks;
+    if let Some(n) = number {
+        list_tasks.truncate(n);
+        ready_queue.truncate(n);
+    }
 
     // Get in-progress tasks, filtered by:
     // 1. Explicit assignee filter (--assignee/--unassigned) if specified
@@ -2006,8 +2121,6 @@ fn run_add(
 
     let timestamp = chrono::Utc::now();
 
-    let working_copy = get_working_copy_change_id(cwd);
-
     let event = TaskEvent::Created {
         task_id: task_id.clone(),
         name: name.clone(),
@@ -2017,7 +2130,6 @@ fn run_add(
         assignee: effective_assignee.clone(),
         sources: sources.clone(),
         template: None,
-        working_copy: working_copy.clone(),
         instructions: None,
         data: std::collections::HashMap::new(),
         timestamp,
@@ -2074,6 +2186,7 @@ fn run_add(
         last_session_id: None,
         stopped_reason: None,
         closed_outcome: None,
+        confidence: None,
         summary: None,
         turn_started: None,
         closed_at: None,
@@ -2277,7 +2390,6 @@ fn run_start(
 
             let task_id = generate_task_id(&description);
             let timestamp = chrono::Utc::now();
-            let working_copy = get_working_copy_change_id(cwd);
 
             // Validate slug format if provided for quick-start
             if let Some(ref s) = slug {
@@ -2295,7 +2407,6 @@ fn run_start(
                 assignee: None,
                 sources: sources.clone(),
                 template: None,
-                working_copy: working_copy.clone(),
                 instructions: None,
                 data: std::collections::HashMap::new(),
                 timestamp,
@@ -2350,6 +2461,7 @@ fn run_start(
                 last_session_id: None,
                 stopped_reason: None,
                 closed_outcome: None,
+                confidence: None,
                 summary: None,
                 turn_started: None,
                 closed_at: None,
@@ -2503,11 +2615,13 @@ fn run_start(
     let session_id = our_session_id.clone();
 
     let timestamp = chrono::Utc::now();
+    let working_copy = get_working_copy_snapshot_rev(cwd);
     let start_event = TaskEvent::Started {
         task_ids: actual_ids_to_start.clone(),
         agent_type: agent_type_str,
         session_id: session_id.clone(),
         turn_id: turn_id.clone(),
+        working_copy,
         timestamp,
     };
     write_event(cwd, &start_event)?;
@@ -2614,6 +2728,7 @@ pub(crate) fn cascade_close_tasks(
     let close_event = TaskEvent::Closed {
         task_ids: task_ids.to_vec(),
         outcome,
+        confidence: None,
         summary: Some(summary.to_string()),
         session_id: session_match.as_ref().map(|m| m.session_id.clone()),
         turn_id,
@@ -2625,8 +2740,8 @@ pub(crate) fn cascade_close_tasks(
     //    close events, so consumers of task.closed see the correct values)
     for id in task_ids {
         if let Some(task) = tasks.get(id) {
-            if crate::workflow::orchestrate::is_review_task(task) {
-                let issue_count = crate::workflow::steps::review::get_issue_comments(task).len();
+            if crate::reviews::is_review_task(task) {
+                let issue_count = crate::reviews::get_issue_comments(task).len();
                 let data_event = TaskEvent::Updated {
                     task_id: id.clone(),
                     name: None,
@@ -2704,8 +2819,8 @@ fn run_stop(
             aiki_print(&xml);
             return Ok(());
         }
-        // Stop first in-progress task when no IDs specified
-        vec![in_progress_ids.first().unwrap().clone()]
+        // Stop all in-progress tasks when no IDs specified
+        in_progress_ids
     } else {
         // Resolve all IDs (prefix → full) and validate
         let mut resolved = Vec::new();
@@ -2763,7 +2878,6 @@ fn run_stop(
 
     // Create blocker tasks for each --blocked flag and emit links to ALL stopped tasks
     let timestamp = chrono::Utc::now();
-    let working_copy = get_working_copy_change_id(cwd);
     for blocked_reason in &blocked {
         let blocker_id = generate_task_id(blocked_reason);
         let blocker_event = TaskEvent::Created {
@@ -2775,7 +2889,6 @@ fn run_stop(
             assignee: Some("human".to_string()),
             sources: Vec::new(),
             template: None,
-            working_copy: working_copy.clone(),
             instructions: None,
             data: std::collections::HashMap::new(),
             timestamp,
@@ -2804,6 +2917,7 @@ fn run_stop(
                 last_session_id: None,
                 stopped_reason: None,
                 closed_outcome: None,
+                confidence: None,
                 summary: None,
                 turn_started: None,
                 closed_at: None,
@@ -2908,12 +3022,29 @@ fn run_release(cwd: &Path, ids: Vec<String>, reason: Option<String>) -> Result<(
     Ok(())
 }
 
+fn close_requires_owned_session_gate(task: &Task, our_session_id: Option<&str>) -> bool {
+    matches!(
+        (&task.last_session_id, our_session_id),
+        (Some(task_session), Some(our_session)) if task_session == our_session
+    )
+}
+
+fn matches_max_confidence_filter(task: &Task, max_confidence: ConfidenceLevel) -> bool {
+    task.status == TaskStatus::Closed
+        && task.closed_outcome == Some(TaskOutcome::Done)
+        && task
+            .confidence
+            .map(|confidence| confidence.as_u8() <= max_confidence.as_u8())
+            .unwrap_or(false)
+}
+
 /// Close task(s) as done
 fn run_close(
     cwd: &Path,
     ids: Vec<String>,
     outcome_str: &str,
     wont_do: bool,
+    confidence: Option<ConfidenceLevel>,
     summary: Option<String>,
 ) -> Result<()> {
     use crate::session::find_active_session;
@@ -2996,6 +3127,29 @@ fn run_close(
     // Determine if summary is required
     let session_match = find_active_session(cwd);
     let our_session_id = session_match.as_ref().map(|m| m.session_id.clone());
+    let confidence_required_for_ids: Vec<String> = explicit_ids
+        .iter()
+        .filter(|id| {
+            tasks
+                .get(*id)
+                .map(|task| close_requires_owned_session_gate(task, our_session_id.as_deref()))
+                .unwrap_or(false)
+        })
+        .cloned()
+        .collect();
+
+    if confidence.is_some() && (wont_do || outcome_str == "wont_do") {
+        return Err(AikiError::InvalidArgument(
+            "--confidence cannot be used with --wont-do.".to_string(),
+        ));
+    }
+
+    if outcome_str == "done" && !confidence_required_for_ids.is_empty() && confidence.is_none() {
+        return Err(AikiError::InvalidArgument(
+            "--confidence is required. Use 1 (low), 2 (medium), 3 (high), or 4 (verified)."
+                .to_string(),
+        ));
+    }
 
     if summary_text.is_none() {
         // --wont-do always requires a summary (rationale for declining)
@@ -3011,11 +3165,7 @@ fn run_close(
             .iter()
             .filter(|id| {
                 if let Some(task) = tasks.get(*id) {
-                    // Check if current session started this task
-                    match (&task.last_session_id, &our_session_id) {
-                        (Some(task_session), Some(our)) => task_session == our,
-                        _ => false,
-                    }
+                    close_requires_owned_session_gate(task, our_session_id.as_deref())
                 } else {
                     false
                 }
@@ -3084,6 +3234,7 @@ fn run_close(
     let close_event = TaskEvent::Closed {
         task_ids: explicit_ids.clone(),
         outcome,
+        confidence,
         summary: summary_text.clone(),
         session_id: our_session_id.clone(),
         turn_id: turn_id.clone(),
@@ -3124,8 +3275,8 @@ fn run_close(
     let mut review_data_events: Vec<TaskEvent> = Vec::new();
     for id in &explicit_ids {
         if let Some(task) = graph.tasks.get(id) {
-            if crate::workflow::orchestrate::is_review_task(task) {
-                let issue_count = crate::workflow::steps::review::get_issue_comments(task).len();
+            if crate::reviews::is_review_task(task) {
+                let issue_count = crate::reviews::get_issue_comments(task).len();
 
                 // Guard: reject review close if summary claims issues but none were recorded
                 if issue_count == 0 && outcome != TaskOutcome::WontDo {
@@ -3305,6 +3456,7 @@ fn run_close(
                                                 agent_type: agent_type_str,
                                                 session_id: our_session_id.clone(),
                                                 turn_id: turn_id.clone(),
+                                                working_copy: get_working_copy_snapshot_rev(cwd),
                                                 timestamp: auto_start_ts,
                                             };
                                             if let Err(e) = write_event(cwd, &start_event) {
@@ -3446,6 +3598,7 @@ fn run_close(
                 agent_type: agent_type_str,
                 session_id: our_session_id.clone(),
                 turn_id: turn_id.clone(),
+                working_copy: get_working_copy_snapshot_rev(cwd),
                 timestamp: auto_start_timestamp,
             };
             write_event(cwd, &start_event)?;
@@ -3517,6 +3670,9 @@ fn run_close(
                 continue;
             }
 
+            let auto_start_baseline = select_task_snapshot_baseline(&events, &graph, parent_id)
+                .or_else(|| get_working_copy_snapshot_rev(cwd));
+
             if let Some(parent) = graph.tasks.get_mut(parent_id) {
                 // Auto-start the parent for review/finalization
                 let auto_start_timestamp = chrono::Utc::now();
@@ -3529,6 +3685,7 @@ fn run_close(
                     agent_type: agent_type_str,
                     session_id: our_session_id.clone(),
                     turn_id: turn_id.clone(),
+                    working_copy: auto_start_baseline,
                     timestamp: auto_start_timestamp,
                 };
                 write_event(cwd, &start_event)?;
@@ -3616,6 +3773,7 @@ fn run_close(
                 agent_type: agent_type_str,
                 session_id: our_session_id.clone(),
                 turn_id: turn_id.clone(),
+                working_copy: get_working_copy_snapshot_rev(cwd),
                 timestamp: auto_start_timestamp,
             };
             write_event(cwd, &start_event)?;
@@ -3659,7 +3817,7 @@ fn run_close(
     if closed_tasks.len() == 1 {
         output.push_str(&format_action_closed(&closed_tasks[0]));
     } else {
-        output.push_str(&format!("Closed {} tasks\n", closed_tasks.len()));
+        output.push_str(&format_close_summary(closed_tasks.len(), explicit_ids.len()));
     }
 
     // Notices and auto-starts
@@ -4200,6 +4358,13 @@ fn run_show(
 
     // Add summary for closed tasks
     if task.status == TaskStatus::Closed {
+        if let Some(confidence) = task.confidence {
+            content.push_str(&format!(
+                "Confidence: {} ({})\n",
+                confidence.as_u8(),
+                confidence.label()
+            ));
+        }
         if let Some(summary) = task.effective_summary() {
             content.push_str(&format!("Summary: {}\n", summary));
         }
@@ -4822,29 +4987,56 @@ fn run_undo(
 ///
 /// Handles JJ rename lines (`R old_path => new_path`) by splitting them
 /// into a delete of the old path and an add of the new path.
-fn parse_diff_summary_with_types(output: &str) -> Vec<(String, String)> {
-    let mut result = Vec::new();
-    for line in output.lines() {
-        let line = line.trim();
-        if line.len() > 2 && line.chars().nth(1) == Some(' ') {
-            let change_type = &line[..1];
-            let path_part = &line[2..];
-            if change_type == "R" {
-                // Rename: "R old_path => new_path"
-                // Split into delete of old + add of new for undo purposes
-                if let Some((old_path, new_path)) = path_part.split_once(" => ") {
-                    result.push(("D".to_string(), old_path.to_string()));
-                    result.push(("A".to_string(), new_path.to_string()));
-                } else {
-                    // Fallback: treat as modification if separator not found
-                    result.push(("M".to_string(), path_part.to_string()));
-                }
-            } else {
-                result.push((change_type.to_string(), path_part.to_string()));
-            }
-        }
+fn parse_diff_summary_status_line(line: &str) -> Option<(&str, &str)> {
+    let line = line.trim();
+    let (change_type, path) = line.split_once(' ')?;
+    if change_type.len() == 1 && !path.is_empty() {
+        Some((change_type, path))
+    } else {
+        None
     }
-    result
+}
+
+fn expand_rename_summary_paths(path_part: &str) -> Option<(String, String)> {
+    if let Some(open_idx) = path_part.find('{') {
+        let close_idx = path_part[open_idx + 1..].find('}')? + open_idx + 1;
+        let prefix = &path_part[..open_idx];
+        let suffix = &path_part[close_idx + 1..];
+        let inner = &path_part[open_idx + 1..close_idx];
+        let (old_mid, new_mid) = inner.split_once(" => ")?;
+        return Some((
+            format!("{}{}{}", prefix, old_mid, suffix),
+            format!("{}{}{}", prefix, new_mid, suffix),
+        ));
+    }
+
+    path_part
+        .split_once(" => ")
+        .map(|(old_path, new_path)| (old_path.to_string(), new_path.to_string()))
+}
+
+/// Expand a single `jj diff --summary` line into concrete per-path changes.
+///
+/// Rename lines (`R old => new`) become a delete for the old path and an add for
+/// the new path. Other change kinds preserve their original change type and path.
+fn expand_diff_summary_line(line: &str) -> Vec<(String, String)> {
+    let Some((change_type, path_part)) = parse_diff_summary_status_line(line) else {
+        return Vec::new();
+    };
+
+    if change_type == "R" {
+        if let Some((old_path, new_path)) = expand_rename_summary_paths(path_part) {
+            return vec![("D".to_string(), old_path), ("A".to_string(), new_path)];
+        }
+
+        return vec![("M".to_string(), path_part.to_string())];
+    }
+
+    vec![(change_type.to_string(), path_part.to_string())]
+}
+
+fn parse_diff_summary_with_types(output: &str) -> Vec<(String, String)> {
+    output.lines().flat_map(expand_diff_summary_line).collect()
 }
 
 /// Check if a file's working copy content differs from its state in a given revision.
@@ -4882,14 +5074,170 @@ fn file_content_differs(cwd: &Path, file_path: &str, revset: &str) -> Result<boo
     Ok(!stdout.trim().is_empty())
 }
 
-fn run_diff(cwd: &Path, id: String, summary: bool, stat: bool, name_only: bool) -> Result<()> {
+fn task_diff_revsets(events: &[TaskEvent], graph: &TaskGraph, task_id: &str) -> (String, String) {
+    let pattern = build_task_revset_pattern_with_graph(task_id, graph);
+    let from_revset = select_task_snapshot_baseline(events, graph, task_id)
+        .unwrap_or_else(|| format!("parents(roots({}))", pattern));
+    let to_revset = format!("heads({})", pattern);
+    (from_revset, to_revset)
+}
+
+fn diff_summary_paths_between(
+    cwd: &Path,
+    from_revset: &str,
+    to_revset: &str,
+    ignore_working_copy: bool,
+) -> Result<Option<Vec<String>>> {
     use crate::jj::jj_cmd;
 
-    // Verify task exists
+    let mut diff_cmd = jj_cmd();
+    diff_cmd.current_dir(cwd).args([
+        "diff",
+        "--from",
+        from_revset,
+        "--to",
+        to_revset,
+        "--summary",
+    ]);
+    if ignore_working_copy {
+        diff_cmd.arg("--ignore-working-copy");
+    }
+    let output = diff_cmd
+        .output()
+        .map_err(|e| AikiError::JjCommandFailed(format!("Failed to get diff summary: {}", e)))?;
+
+    if !output.status.success() {
+        return Ok(None);
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let files = parse_diff_summary_files(&stdout);
+    Ok(Some(files))
+}
+
+fn task_change_paths_from_log(cwd: &Path, pattern: &str) -> Option<Vec<String>> {
+    use crate::jj::jj_cmd;
+
+    let files_output = jj_cmd()
+        .current_dir(cwd)
+        .args([
+            "log",
+            "-r",
+            pattern,
+            "--no-graph",
+            "-T",
+            "",
+            "--name-only",
+            "--ignore-working-copy",
+        ])
+        .output();
+
+    match files_output {
+        Ok(output) if output.status.success() => Some(
+            String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .map(|l| l.trim().to_string())
+                .filter(|l| !l.is_empty())
+                .filter(|path| !is_internal_task_diff_path(path))
+                .collect(),
+        ),
+        _ => {
+            let fallback_output = jj_cmd()
+                .current_dir(cwd)
+                .args([
+                    "log",
+                    "-r",
+                    pattern,
+                    "--no-graph",
+                    "-T",
+                    "",
+                    "--summary",
+                    "--ignore-working-copy",
+                ])
+                .output();
+            match fallback_output {
+                Ok(output) if output.status.success() => Some(parse_diff_summary_files(
+                    String::from_utf8_lossy(&output.stdout).as_ref(),
+                )),
+                _ => None,
+            }
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum TaskDiffScope {
+    Unavailable,
+    Scoped(Vec<String>),
+}
+
+fn resolve_task_diff_scope(
+    task_paths: Option<Vec<String>>,
+    snapshot_paths: Option<Vec<String>>,
+) -> TaskDiffScope {
+    match (task_paths, snapshot_paths) {
+        (None, None) => TaskDiffScope::Unavailable,
+        (Some(task_paths), None) => TaskDiffScope::Scoped(task_paths),
+        (None, Some(snapshot_paths)) => TaskDiffScope::Scoped(snapshot_paths),
+        (Some(task_paths), Some(snapshot_paths)) => {
+            let snapshot_set: std::collections::HashSet<&str> =
+                snapshot_paths.iter().map(String::as_str).collect();
+            let intersected = task_paths
+                .into_iter()
+                .filter(|path| snapshot_set.contains(path.as_str()))
+                .collect();
+            TaskDiffScope::Scoped(intersected)
+        }
+    }
+}
+
+fn run_diff(cwd: &Path, id: Option<String>, summary: bool, stat: bool, name_only: bool) -> Result<()> {
+    use crate::jj::jj_cmd;
+
     let events = read_events(cwd)?;
     let graph = materialize_graph(&events);
-    let task = find_task_in_graph(&graph, &id)?;
-    let id = task.id.clone(); // use canonical ID
+
+    // Resolve task ID: explicit or fall back to current in-progress task
+    let id = if let Some(id) = id {
+        let task = find_task_in_graph(&graph, &id)?;
+        task.id.clone()
+    } else {
+        let in_progress = get_in_progress(&graph.tasks);
+        match in_progress.len() {
+            0 => {
+                let xml = MdBuilder::new()
+                    .build_error("No task ID provided and no task in progress. Usage: aiki task diff <task-id>");
+                aiki_print(&xml);
+                return Ok(());
+            }
+            1 => {
+                let task = in_progress[0];
+                // If the in-progress task is a review, diff the reviewed task instead
+                if task.task_type.as_deref() == Some("review") {
+                    if let Some(target_id) = graph.edges.targets(&task.id, "validates").first() {
+                        target_id.clone()
+                    } else {
+                        task.id.clone()
+                    }
+                } else {
+                    task.id.clone()
+                }
+            }
+            _ => {
+                let ids: Vec<String> = in_progress.iter().map(|t| {
+                    format!("  {} — {}", short_id(&t.id), t.name)
+                }).collect();
+                let xml = MdBuilder::new()
+                    .build_error(&format!(
+                        "Multiple tasks in progress. Specify one:\n{}",
+                        ids.join("\n")
+                    ));
+                aiki_print(&xml);
+                return Ok(());
+            }
+        }
+    };
+    let (from_revset, to_revset) = task_diff_revsets(&events, &graph, &id);
 
     // Build revset pattern for task, including linked subtasks.
     let pattern = build_task_revset_pattern_with_graph(&id, &graph);
@@ -4936,12 +5284,20 @@ fn run_diff(cwd: &Path, id: String, summary: bool, stat: bool, name_only: bool) 
         return Ok(());
     }
 
-    // Build revset expressions for baseline and final
-    // - roots(pattern) = earliest changes for task
-    // - parents(roots(...)) = state before task started (baseline)
-    // - heads(pattern) = latest changes for task (final)
-    let from_revset = format!("parents(roots({}))", pattern);
-    let to_revset = format!("heads({})", pattern);
+    // Scope the diff to the task-attributed files that also differ between the
+    // saved start snapshot and the final task head.
+    let task_paths = task_change_paths_from_log(cwd, &pattern);
+    let snapshot_paths = diff_summary_paths_between(cwd, &from_revset, &to_revset, true)?;
+    let touched_files = match resolve_task_diff_scope(task_paths, snapshot_paths) {
+        TaskDiffScope::Unavailable => None,
+        TaskDiffScope::Scoped(files) if files.is_empty() => {
+            if !name_only && !summary && !stat {
+                println!("No scoped changes.");
+            }
+            return Ok(());
+        }
+        TaskDiffScope::Scoped(files) => Some(files),
+    };
 
     // Build jj diff command
     let mut cmd = jj_cmd();
@@ -4970,6 +5326,14 @@ fn run_diff(cwd: &Path, id: String, summary: bool, stat: bool, name_only: bool) 
         cmd.arg("--git").arg("--context").arg("5");
     }
 
+    // Scope diff to only files touched by the task's changes
+    if let Some(touched_files) = touched_files {
+        cmd.arg("--");
+        for file in &touched_files {
+            cmd.arg(file);
+        }
+    }
+
     let output = cmd
         .output()
         .map_err(|e| AikiError::JjCommandFailed(format!("Failed to get diff: {}", e)))?;
@@ -4993,14 +5357,8 @@ fn run_diff(cwd: &Path, id: String, summary: bool, stat: bool, name_only: bool) 
     if name_only && !summary && !stat {
         // Parse --summary output to extract just file names
         for line in stdout.lines() {
-            // Summary format: "M path/to/file" or "A path/to/file"
-            let line = line.trim();
-            if line.len() > 2 {
-                // Skip status char and space
-                let parts: Vec<&str> = line.splitn(2, ' ').collect();
-                if parts.len() == 2 {
-                    println!("{}", parts[1]);
-                }
+            for path in parse_diff_summary_paths(line) {
+                println!("{}", path);
             }
         }
     } else {
@@ -5012,51 +5370,6 @@ fn run_diff(cwd: &Path, id: String, summary: bool, stat: bool, name_only: bool) 
 
 /// Build revset pattern for a single task ID.
 ///
-/// Matches changes whose description contains `task=<id>` (provenance metadata).
-/// Excludes `::aiki/tasks` to filter out task lifecycle events (which contain
-/// `stopped_task=<id>`, `task_id=<id>`, etc.) that live on a separate branch.
-///
-/// NOTE: For link-based subtasks (connected via `subtask-of` edges),
-/// use `build_task_revset_pattern_with_graph`.
-fn build_task_revset_pattern(task_id: &str) -> String {
-    format!("description(substring:\"task={}\") ~ ::aiki/tasks", task_id)
-}
-
-/// Build revset pattern for a task including all descendants via `subtask-of` links.
-///
-/// Like `build_task_revset_pattern` but also includes link-based subtasks
-/// (tasks connected via `subtask-of` edges in the graph). This is needed for
-/// epics where fix-parent tasks are linked as subtasks with independent IDs.
-fn build_task_revset_pattern_with_graph(task_id: &str, graph: &crate::tasks::TaskGraph) -> String {
-    let mut patterns = vec![build_task_revset_pattern(task_id)];
-
-    // Collect all descendant task IDs via subtask-of links (BFS)
-    let mut queue: Vec<String> = graph
-        .edges
-        .referrers(task_id, "subtask-of")
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
-    let mut visited = std::collections::HashSet::new();
-    visited.insert(task_id.to_string());
-
-    while let Some(child_id) = queue.pop() {
-        if !visited.insert(child_id.clone()) {
-            continue;
-        }
-        patterns.push(build_task_revset_pattern(&child_id));
-        for grandchild in graph.edges.referrers(&child_id, "subtask-of") {
-            queue.push(grandchild.to_string());
-        }
-    }
-
-    if patterns.len() == 1 {
-        patterns.into_iter().next().unwrap()
-    } else {
-        format!("({})", patterns.join(" | "))
-    }
-}
-
 /// Get list of files changed during a task
 ///
 /// Uses jj diff --summary with revset-based baseline/final approach.
@@ -5068,7 +5381,11 @@ fn get_task_changed_files(
 ) -> Result<Option<Vec<String>>> {
     use crate::jj::jj_cmd;
 
-    let pattern = build_task_revset_pattern(task_id);
+    let events = read_events(cwd)?;
+    let graph = materialize_graph(&events);
+    let task = find_task_in_graph(&graph, task_id)?;
+    let id = task.id.clone();
+    let pattern = build_task_revset_pattern_with_graph(&id, &graph);
 
     // Check if any changes exist for this task
     let check_output = jj_cmd()
@@ -5104,40 +5421,14 @@ fn get_task_changed_files(
         return Ok(None);
     }
 
-    // Build revset expressions for baseline and final
-    let from_revset = format!("parents(roots({}))", pattern);
-    let to_revset = format!("heads({})", pattern);
+    let (from_revset, to_revset) = task_diff_revsets(&events, &graph, &id);
+    let task_paths = task_change_paths_from_log(cwd, &pattern);
+    let snapshot_paths =
+        diff_summary_paths_between(cwd, &from_revset, &to_revset, ignore_working_copy)?;
 
-    // Run jj diff --summary to get file paths
-    // When checking in-progress task conflicts, skip --ignore-working-copy
-    // to capture the latest working copy state (auto-snapshot)
-    let mut diff_cmd = jj_cmd();
-    diff_cmd.current_dir(cwd).args([
-        "diff",
-        "--from",
-        &from_revset,
-        "--to",
-        &to_revset,
-        "--summary",
-    ]);
-    if ignore_working_copy {
-        diff_cmd.arg("--ignore-working-copy");
-    }
-    let output = diff_cmd
-        .output()
-        .map_err(|e| AikiError::JjCommandFailed(format!("Failed to get diff: {}", e)))?;
-
-    if !output.status.success() {
-        return Ok(None);
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let files = parse_diff_summary_files(&stdout);
-
-    if files.is_empty() {
-        Ok(None)
-    } else {
-        Ok(Some(files))
+    match resolve_task_diff_scope(task_paths, snapshot_paths) {
+        TaskDiffScope::Unavailable => Ok(None),
+        TaskDiffScope::Scoped(files) => Ok(Some(files)),
     }
 }
 
@@ -5153,26 +5444,19 @@ fn get_task_changed_files(
 ///
 /// Rename lines produce both the old and new path.
 fn parse_diff_summary_files(output: &str) -> Vec<String> {
-    let mut result = Vec::new();
-    for line in output.lines() {
-        let line = line.trim();
-        if line.len() > 2 && line.chars().nth(1) == Some(' ') {
-            let change_type = &line[..1];
-            let path_part = &line[2..];
-            if change_type == "R" {
-                // Rename: "R old_path => new_path" - include both paths
-                if let Some((old_path, new_path)) = path_part.split_once(" => ") {
-                    result.push(old_path.to_string());
-                    result.push(new_path.to_string());
-                } else {
-                    result.push(path_part.to_string());
-                }
-            } else {
-                result.push(path_part.to_string());
-            }
-        }
-    }
-    result
+    output.lines().flat_map(parse_diff_summary_paths).collect()
+}
+
+fn is_internal_task_diff_path(path: &str) -> bool {
+    matches!(path, ".aiki/repo-id" | ".jj/aiki/repo-id")
+}
+
+fn parse_diff_summary_paths(line: &str) -> Vec<String> {
+    expand_diff_summary_line(line)
+        .into_iter()
+        .map(|(_, path)| path)
+        .filter(|path| !is_internal_task_diff_path(path))
+        .collect()
 }
 
 /// Update task details
@@ -5464,7 +5748,7 @@ fn run_comment_add(cwd: &Path, id: &str, text: String, data_args: Vec<String>) -
     Ok(())
 }
 
-fn run_comment_list(cwd: &Path, id: &str) -> Result<()> {
+fn run_comment_list(cwd: &Path, id: &str, number: Option<usize>) -> Result<()> {
     let events = read_events(cwd)?;
     let graph = materialize_graph(&events);
 
@@ -5477,8 +5761,13 @@ fn run_comment_list(cwd: &Path, id: &str) -> Result<()> {
             task.name
         ));
     } else {
+        let comments: &[_] = if let Some(n) = number {
+            &task.comments[..n.min(task.comments.len())]
+        } else {
+            &task.comments
+        };
         let mut output = format!("Comments on {} ({}):\n", short_id(&task.id), task.name);
-        for comment in &task.comments {
+        for comment in comments {
             let ts = comment.timestamp.format("%Y-%m-%d %H:%M UTC");
             output.push_str(&format!("- [{}] {}\n", ts, comment.text));
             for (key, value) in &comment.data {
@@ -5533,7 +5822,12 @@ pub(crate) fn get_blocker_short_ids(graph: &TaskGraph, task_id: &str) -> Vec<Str
 }
 
 /// Show lane decomposition for a parent task
-fn run_lane(cwd: &Path, id: String, all: bool) -> Result<()> {
+fn run_lane(
+    cwd: &Path,
+    id: String,
+    all: bool,
+    output_format: Option<super::OutputFormat>,
+) -> Result<()> {
     use crate::tasks::lanes::{
         derive_lanes, is_lane_ready_with_decomposition, lane_status, LaneStatus, ThreadId,
     };
@@ -5552,6 +5846,19 @@ fn run_lane(cwd: &Path, id: String, all: bool) -> Result<()> {
         };
         let xml = MdBuilder::new().build(&content);
         aiki_print(&xml);
+        return Ok(());
+    }
+
+    // Handle --output id: print bare ready-lane IDs, one per line
+    if matches!(output_format, Some(super::OutputFormat::Id)) {
+        let ready_lanes: Vec<&crate::tasks::lanes::Lane> = decomp
+            .lanes
+            .iter()
+            .filter(|lane| is_lane_ready_with_decomposition(lane, &graph, &decomp.lanes))
+            .collect();
+        for lane in &ready_lanes {
+            println!("{}", lane.head_task_id);
+        }
         return Ok(());
     }
 
@@ -5983,8 +6290,11 @@ fn run_template(cwd: &Path, command: TemplateCommands) -> Result<()> {
     };
 
     match command {
-        TemplateCommands::List => {
-            let templates = list_templates(&templates_dir)?;
+        TemplateCommands::List { number } => {
+            let mut templates = list_templates(&templates_dir)?;
+            if let Some(n) = number {
+                templates.truncate(n);
+            }
 
             if templates.is_empty() {
                 let md = MdBuilder::new().build_error(&format!(
@@ -6218,7 +6528,6 @@ pub fn create_from_template(cwd: &Path, params: TemplateTaskParams) -> Result<St
         .task_type
         .clone()
         .or_else(|| template.defaults.task_type.clone());
-    let working_copy = get_working_copy_change_id(cwd);
     let create_event = TaskEvent::Created {
         task_id: task_id.clone(),
         name: parent_name.clone(),
@@ -6228,7 +6537,6 @@ pub fn create_from_template(cwd: &Path, params: TemplateTaskParams) -> Result<St
         assignee: assignee.clone(),
         sources: params.sources.clone(),
         template: Some(template.template_id()),
-        working_copy: working_copy.clone(),
         instructions: parent_instructions.clone(),
         data: data.clone(),
         timestamp,
@@ -6256,6 +6564,7 @@ pub fn create_from_template(cwd: &Path, params: TemplateTaskParams) -> Result<St
             last_session_id: None,
             stopped_reason: None,
             closed_outcome: None,
+            confidence: None,
             summary: None,
             turn_started: None,
             closed_at: None,
@@ -6624,7 +6933,6 @@ fn create_subtasks_from_entries(
                     assignee: subtask_assignee.clone(),
                     sources: subtask_sources.clone(),
                     template: Some(template_id.to_string()),
-                    working_copy: None,
                     instructions: subtask_instructions.clone(),
                     data: subtask_data.clone(),
                     timestamp,
@@ -6654,6 +6962,7 @@ fn create_subtasks_from_entries(
                         last_session_id: None,
                         stopped_reason: None,
                         closed_outcome: None,
+                        confidence: None,
                         summary: None,
                         turn_started: None,
                         closed_at: None,
@@ -6776,7 +7085,6 @@ fn create_subtasks_from_entries(
                     assignee: child_assignee.clone(),
                     sources: composed_sources.clone(),
                     template: Some(child_template.template_id()),
-                    working_copy: None,
                     instructions: child_instructions.clone(),
                     data: child_data.clone(),
                     timestamp,
@@ -6805,6 +7113,7 @@ fn create_subtasks_from_entries(
                         last_session_id: None,
                         stopped_reason: None,
                         closed_outcome: None,
+                        confidence: None,
                         summary: None,
                         turn_started: None,
                         closed_at: None,
@@ -7247,7 +7556,6 @@ fn run_reset(cwd: &Path, confirm: Option<String>) -> Result<()> {
         }
         None => {
             let xml = MdBuilder::new()
-                
                 .build_error(
                     "This will close all tasks as won't-do. To confirm, run:\n  aiki task reset --confirm reset",
                 );
@@ -7283,6 +7591,7 @@ fn run_reset(cwd: &Path, confirm: Option<String>) -> Result<()> {
     let close_event = TaskEvent::Closed {
         task_ids: ids_to_close,
         outcome: TaskOutcome::WontDo,
+        confidence: None,
         summary: Some("Reset".to_string()),
         session_id: session_match.as_ref().map(|m| m.session_id.clone()),
         turn_id,
@@ -7297,13 +7606,6 @@ fn run_reset(cwd: &Path, confirm: Option<String>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_build_task_revset_pattern() {
-        let pattern = build_task_revset_pattern("abc123");
-        assert!(pattern.contains("task=abc123"));
-        assert!(!pattern.contains("task=abc123."));
-    }
 
     #[test]
     fn test_parse_diff_summary_files_basic() {
@@ -7363,6 +7665,20 @@ D src/old_file.ts
     }
 
     #[test]
+    fn test_parse_diff_summary_status_line_short_paths() {
+        assert_eq!(parse_diff_summary_status_line("M a"), Some(("M", "a")));
+        assert_eq!(parse_diff_summary_status_line("A ab"), Some(("A", "ab")));
+    }
+
+    #[test]
+    fn test_parse_diff_summary_status_line_malformed() {
+        assert_eq!(parse_diff_summary_status_line(""), None);
+        assert_eq!(parse_diff_summary_status_line("M"), None);
+        assert_eq!(parse_diff_summary_status_line("M "), None);
+        assert_eq!(parse_diff_summary_status_line("Modified path"), None);
+    }
+
+    #[test]
     fn test_parse_diff_summary_with_types_rename() {
         let output = "M src/auth.rs\nR src/old_name.rs => src/new_name.rs\nA src/added.rs\n";
         let changes = parse_diff_summary_with_types(output);
@@ -7406,6 +7722,66 @@ D src/old_file.ts
         assert_eq!(files[1], "new.rs");
     }
 
+    #[test]
+    fn test_parse_diff_summary_files_short_paths() {
+        let output = "M a\nA ab\n";
+        let files = parse_diff_summary_files(output);
+
+        assert_eq!(files, vec!["a".to_string(), "ab".to_string()]);
+    }
+
+    #[test]
+    fn test_parse_diff_summary_files_filters_internal_metadata() {
+        let output = "M .aiki/repo-id\nM src/lib.rs\n";
+        let files = parse_diff_summary_files(output);
+
+        assert_eq!(files, vec!["src/lib.rs".to_string()]);
+    }
+
+    #[test]
+    fn test_parse_diff_summary_files_keeps_user_facing_aiki_paths() {
+        let output = "M .aiki/tasks/plan.md\n";
+        let files = parse_diff_summary_files(output);
+
+        assert_eq!(files, vec![".aiki/tasks/plan.md".to_string()]);
+    }
+
+    #[test]
+    fn test_parse_diff_summary_paths_rename() {
+        let files = parse_diff_summary_paths("R old.rs => new.rs");
+        assert_eq!(files, vec!["old.rs".to_string(), "new.rs".to_string()]);
+    }
+
+    #[test]
+    fn test_parse_diff_summary_with_types_malformed_rename_falls_back_to_modify() {
+        let changes = parse_diff_summary_with_types("R only-one-path.rs\n");
+        assert_eq!(
+            changes,
+            vec![("M".to_string(), "only-one-path.rs".to_string())]
+        );
+    }
+
+    #[test]
+    fn test_parse_diff_summary_paths_braced_rename() {
+        let files = parse_diff_summary_paths("R {old.txt => new.txt}");
+        assert_eq!(files, vec!["old.txt".to_string(), "new.txt".to_string()]);
+    }
+
+    #[test]
+    fn test_parse_diff_summary_paths_braced_rename_with_shared_context() {
+        let files = parse_diff_summary_paths("R src/{old_name => new_name}.rs");
+        assert_eq!(
+            files,
+            vec!["src/old_name.rs".to_string(), "src/new_name.rs".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_parse_diff_summary_paths_filters_internal_metadata_rename() {
+        let files = parse_diff_summary_paths("R .aiki/repo-id => src/repo-id.txt");
+        assert_eq!(files, vec!["src/repo-id.txt".to_string()]);
+    }
+
     // --- normalize_link_target tests ---
 
     fn make_task_graph() -> TaskGraph {
@@ -7431,6 +7807,7 @@ D src/old_file.ts
             last_session_id: None,
             stopped_reason: None,
             closed_outcome: None,
+            confidence: None,
             summary: None,
             turn_started: None,
             closed_at: None,
@@ -7539,6 +7916,7 @@ D src/old_file.ts
             last_session_id: None,
             stopped_reason: None,
             closed_outcome: None,
+            confidence: None,
             summary: None,
             turn_started: None,
             closed_at: None,
@@ -7579,6 +7957,7 @@ D src/old_file.ts
             last_session_id: None,
             stopped_reason: None,
             closed_outcome: None,
+            confidence: None,
             summary: None,
             turn_started: None,
             closed_at: None,
@@ -7837,103 +8216,6 @@ D src/old_file.ts
     }
 
     #[test]
-    fn test_build_task_revset_pattern_with_graph_no_subtasks() {
-        use crate::tasks::graph::EdgeStore;
-        use crate::tasks::types::{TaskPriority, TaskStatus};
-
-        let mut tasks = FastHashMap::default();
-        let task = Task {
-            id: "epic".to_string(),
-            name: "Epic".to_string(),
-            slug: None,
-            task_type: None,
-            status: TaskStatus::Open,
-            priority: TaskPriority::P2,
-            assignee: None,
-            sources: Vec::new(),
-            template: None,
-            instructions: None,
-            data: HashMap::new(),
-            created_at: chrono::Utc::now(),
-            started_at: None,
-            claimed_by_session: None,
-            last_session_id: None,
-            stopped_reason: None,
-            closed_outcome: None,
-            summary: None,
-            turn_started: None,
-            closed_at: None,
-            turn_closed: None,
-            turn_stopped: None,
-            comments: Vec::new(),
-        };
-        tasks.insert("epic".to_string(), task);
-        let graph = TaskGraph {
-            tasks,
-            edges: EdgeStore::new(),
-            slug_index: FastHashMap::default(),
-        };
-
-        // Without subtasks, should be same as build_task_revset_pattern
-        let pattern = build_task_revset_pattern_with_graph("epic", &graph);
-        assert_eq!(pattern, build_task_revset_pattern("epic"));
-    }
-
-    #[test]
-    fn test_build_task_revset_pattern_with_graph_includes_link_subtasks() {
-        use crate::tasks::graph::EdgeStore;
-        use crate::tasks::types::{TaskPriority, TaskStatus};
-
-        let make = |id: &str| Task {
-            id: id.to_string(),
-            name: id.to_string(),
-            slug: None,
-            task_type: None,
-            status: TaskStatus::Open,
-            priority: TaskPriority::P2,
-            assignee: None,
-            sources: Vec::new(),
-            template: None,
-            instructions: None,
-            data: HashMap::new(),
-            created_at: chrono::Utc::now(),
-            started_at: None,
-            claimed_by_session: None,
-            last_session_id: None,
-            stopped_reason: None,
-            closed_outcome: None,
-            summary: None,
-            turn_started: None,
-            closed_at: None,
-            turn_closed: None,
-            turn_stopped: None,
-            comments: Vec::new(),
-        };
-
-        let mut tasks = FastHashMap::default();
-        tasks.insert("epic".to_string(), make("epic"));
-        tasks.insert("fixparent".to_string(), make("fixparent"));
-        tasks.insert("fixchild1".to_string(), make("fixchild1"));
-
-        let mut edges = EdgeStore::new();
-        edges.add("fixparent", "epic", "subtask-of");
-        edges.add("fixchild1", "fixparent", "subtask-of");
-
-        let graph = TaskGraph {
-            tasks,
-            edges,
-            slug_index: FastHashMap::default(),
-        };
-
-        let pattern = build_task_revset_pattern_with_graph("epic", &graph);
-
-        // Should include patterns for epic, fixparent, and fixchild1
-        assert!(pattern.contains("task=epic"));
-        assert!(pattern.contains("task=fixparent"));
-        assert!(pattern.contains("task=fixchild1"));
-    }
-
-    #[test]
     fn test_review_summary_claims_issues_positive() {
         assert!(review_summary_claims_issues("Found 3 issues"));
         assert!(review_summary_claims_issues("1 issue found"));
@@ -7961,6 +8243,87 @@ D src/old_file.ts
             "reviewed 5 high-priority items"
         ));
         assert!(!review_summary_claims_issues("3 high, 1 medium, 0 low"));
+    }
+
+    #[test]
+    fn test_close_requires_owned_session_gate() {
+        let task = Task {
+            id: "abcdefghijklmnopqrstuvwxyzabcdef".to_string(),
+            name: "Test".to_string(),
+            slug: None,
+            task_type: None,
+            status: TaskStatus::InProgress,
+            priority: TaskPriority::P2,
+            assignee: None,
+            sources: Vec::new(),
+            template: None,
+            instructions: None,
+            data: HashMap::new(),
+            created_at: chrono::Utc::now(),
+            started_at: None,
+            claimed_by_session: Some("session-a".to_string()),
+            last_session_id: Some("session-a".to_string()),
+            stopped_reason: None,
+            closed_outcome: None,
+            confidence: None,
+            summary: None,
+            turn_started: None,
+            closed_at: None,
+            turn_closed: None,
+            turn_stopped: None,
+            comments: Vec::new(),
+        };
+
+        assert!(close_requires_owned_session_gate(&task, Some("session-a")));
+        assert!(!close_requires_owned_session_gate(&task, Some("session-b")));
+        assert!(!close_requires_owned_session_gate(&task, None));
+    }
+
+    #[test]
+    fn test_matches_max_confidence_filter_excludes_missing_and_wont_do() {
+        let mut done_with_confidence = Task {
+            id: "abcdefghijklmnopqrstuvwxyzabcdef".to_string(),
+            name: "Done".to_string(),
+            slug: None,
+            task_type: None,
+            status: TaskStatus::Closed,
+            priority: TaskPriority::P2,
+            assignee: None,
+            sources: Vec::new(),
+            template: None,
+            instructions: None,
+            data: HashMap::new(),
+            created_at: chrono::Utc::now(),
+            started_at: None,
+            claimed_by_session: None,
+            last_session_id: None,
+            stopped_reason: None,
+            closed_outcome: Some(TaskOutcome::Done),
+            confidence: Some(ConfidenceLevel::Medium),
+            summary: None,
+            turn_started: None,
+            closed_at: None,
+            turn_closed: None,
+            turn_stopped: None,
+            comments: Vec::new(),
+        };
+        assert!(matches_max_confidence_filter(
+            &done_with_confidence,
+            ConfidenceLevel::High
+        ));
+
+        done_with_confidence.confidence = None;
+        assert!(!matches_max_confidence_filter(
+            &done_with_confidence,
+            ConfidenceLevel::High
+        ));
+
+        done_with_confidence.confidence = Some(ConfidenceLevel::Low);
+        done_with_confidence.closed_outcome = Some(TaskOutcome::WontDo);
+        assert!(!matches_max_confidence_filter(
+            &done_with_confidence,
+            ConfidenceLevel::High
+        ));
     }
 
     #[test]
@@ -8067,7 +8430,6 @@ D src/old_file.ts
                 assignee: None,
                 sources: Vec::new(),
                 template: None,
-                working_copy: None,
                 instructions: None,
                 data: HashMap::new(),
                 timestamp: Utc::now(),

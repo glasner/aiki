@@ -9,7 +9,7 @@ use crate::session::isolation::acquire_named_lock;
 use chrono::{DateTime, Utc};
 use std::path::Path;
 
-use super::types::{TaskEvent, TaskOutcome, TaskPriority};
+use super::types::{ConfidenceLevel, TaskEvent, TaskOutcome, TaskPriority};
 
 const TASKS_BRANCH: &str = "aiki/tasks";
 const METADATA_START: &str = "[aiki-task]";
@@ -591,7 +591,6 @@ fn event_to_metadata_block(event: &TaskEvent) -> String {
             assignee,
             sources,
             template,
-            working_copy,
             instructions,
             data,
             timestamp,
@@ -617,10 +616,6 @@ fn event_to_metadata_block(event: &TaskEvent) -> String {
             if let Some(template) = template {
                 add_metadata("template", template, &mut lines);
             }
-            // Add working_copy if present
-            if let Some(wc) = working_copy {
-                add_metadata("working_copy", wc, &mut lines);
-            }
             // Add instructions if present (escaped to handle newlines and special chars)
             if let Some(instr) = instructions {
                 add_metadata_escaped("instructions", instr, &mut lines);
@@ -636,6 +631,7 @@ fn event_to_metadata_block(event: &TaskEvent) -> String {
             agent_type,
             session_id,
             turn_id,
+            working_copy,
             timestamp,
         } => {
             add_metadata("event", "started", &mut lines);
@@ -648,6 +644,9 @@ fn event_to_metadata_block(event: &TaskEvent) -> String {
             }
             if let Some(tid) = turn_id {
                 add_metadata("turn_id", tid, &mut lines);
+            }
+            if let Some(wc) = working_copy {
+                add_metadata("working_copy", wc, &mut lines);
             }
             add_metadata_timestamp(timestamp, &mut lines);
         }
@@ -676,6 +675,7 @@ fn event_to_metadata_block(event: &TaskEvent) -> String {
         TaskEvent::Closed {
             task_ids,
             outcome,
+            confidence,
             summary,
             session_id,
             turn_id,
@@ -686,6 +686,9 @@ fn event_to_metadata_block(event: &TaskEvent) -> String {
                 add_metadata("task_id", task_id, &mut lines);
             }
             add_metadata("outcome", outcome, &mut lines);
+            if let Some(confidence) = confidence {
+                add_metadata("confidence", &confidence.as_u8().to_string(), &mut lines);
+            }
             if let Some(summary) = summary {
                 add_metadata_escaped("summary", summary, &mut lines);
             }
@@ -892,6 +895,14 @@ fn parse_all_metadata_blocks(desc: &str, events: &mut Vec<TaskEvent>) {
     }
 }
 
+fn parse_persisted_confidence(fields: &std::collections::HashMap<&str, Vec<&str>>) -> Option<ConfidenceLevel> {
+    fields
+        .get("confidence")
+        .and_then(|v| v.first())
+        .and_then(|s| s.parse::<u8>().ok())
+        .and_then(ConfidenceLevel::from_u8)
+}
+
 /// Parse a metadata block into a TaskEvent
 fn parse_metadata_block(block: &str) -> Option<TaskEvent> {
     let mut fields: std::collections::HashMap<&str, Vec<&str>> = std::collections::HashMap::new();
@@ -948,11 +959,6 @@ fn parse_metadata_block(block: &str) -> Option<TaskEvent> {
                 .get("template")
                 .and_then(|v| v.first())
                 .map(|s| s.to_string());
-            // Parse working_copy
-            let working_copy = fields
-                .get("working_copy")
-                .and_then(|v| v.first())
-                .map(|s| s.to_string());
             // Parse instructions (escaped value)
             let instructions = fields
                 .get("instructions")
@@ -981,7 +987,6 @@ fn parse_metadata_block(block: &str) -> Option<TaskEvent> {
                 assignee,
                 sources,
                 template,
-                working_copy,
                 instructions,
                 data,
                 timestamp,
@@ -1006,12 +1011,18 @@ fn parse_metadata_block(block: &str) -> Option<TaskEvent> {
                 .get("turn_id")
                 .and_then(|v| v.first())
                 .map(|s| s.to_string());
+            let working_copy = fields
+                .get("working_copy")
+                .or_else(|| fields.get("snapshot"))
+                .and_then(|v| v.first())
+                .map(|s| s.to_string());
 
             Some(TaskEvent::Started {
                 task_ids,
                 agent_type,
                 session_id,
                 turn_id,
+                working_copy,
                 timestamp,
             })
         }
@@ -1055,6 +1066,9 @@ fn parse_metadata_block(block: &str) -> Option<TaskEvent> {
                 .and_then(|v| v.first())
                 .and_then(|s| TaskOutcome::from_str(s))
                 .unwrap_or(TaskOutcome::Done);
+            // Keep malformed historical values readable by treating them as
+            // missing confidence rather than failing the entire event parse.
+            let confidence = parse_persisted_confidence(&fields);
             let summary = fields
                 .get("summary")
                 .and_then(|v| v.first())
@@ -1071,6 +1085,7 @@ fn parse_metadata_block(block: &str) -> Option<TaskEvent> {
             Some(TaskEvent::Closed {
                 task_ids,
                 outcome,
+                confidence,
                 summary,
                 session_id,
                 turn_id,
@@ -1328,7 +1343,6 @@ mod tests {
             assignee: Some("claude-code".to_string()),
             sources: Vec::new(),
             template: None,
-            working_copy: None,
             instructions: None,
             data: std::collections::HashMap::new(),
             timestamp: DateTime::parse_from_rfc3339("2026-01-09T10:30:00Z")
@@ -1444,6 +1458,34 @@ timestamp=2026-01-09T10:30:00Z
     }
 
     #[test]
+    fn test_parse_metadata_block_closed_with_malformed_confidence_treats_it_as_missing() {
+        let block = r#"
+event=closed
+task_id=a1b2
+outcome=done
+confidence=9
+summary=Malformed confidence should be ignored
+timestamp=2026-01-09T10:30:00Z
+"#;
+
+        let event = parse_metadata_block(block).expect("Should parse");
+        match event {
+            TaskEvent::Closed {
+                confidence,
+                summary,
+                ..
+            } => {
+                assert_eq!(confidence, None);
+                assert_eq!(
+                    summary,
+                    Some("Malformed confidence should be ignored".to_string())
+                );
+            }
+            _ => panic!("Expected Closed event"),
+        }
+    }
+
+    #[test]
     fn test_roundtrip_created() {
         let original = TaskEvent::Created {
             task_id: "test".to_string(),
@@ -1454,7 +1496,6 @@ timestamp=2026-01-09T10:30:00Z
             assignee: None,
             sources: Vec::new(),
             template: None,
-            working_copy: None,
             instructions: None,
             data: std::collections::HashMap::new(),
             timestamp: Utc::now(),
@@ -1498,6 +1539,7 @@ timestamp=2026-01-09T10:30:00Z
             agent_type: "claude-code".to_string(),
             session_id: Some("test-session-uuid".to_string()),
             turn_id: None,
+            working_copy: None,
             timestamp: Utc::now(),
         };
 
@@ -1571,6 +1613,7 @@ timestamp=2026-01-09T10:30:00Z
             session_id: None,
             task_ids: vec!["task1".to_string(), "task2".to_string()],
             outcome: TaskOutcome::WontDo,
+            confidence: None,
             summary: None,
             turn_id: None,
             timestamp: Utc::now(),
@@ -1609,6 +1652,7 @@ timestamp=2026-01-09T10:30:00Z
             session_id: None,
             task_ids: vec!["task1".to_string()],
             outcome: TaskOutcome::Done,
+            confidence: None,
             summary: Some("Fixed the auth bug".to_string()),
             turn_id: None,
             timestamp: Utc::now(),
@@ -1637,11 +1681,41 @@ timestamp=2026-01-09T10:30:00Z
     }
 
     #[test]
+    fn test_roundtrip_closed_with_confidence() {
+        let original = TaskEvent::Closed {
+            session_id: Some("session-123".to_string()),
+            task_ids: vec!["task1".to_string()],
+            outcome: TaskOutcome::Done,
+            confidence: Some(ConfidenceLevel::High),
+            summary: Some("Implemented the fix".to_string()),
+            turn_id: None,
+            timestamp: Utc::now(),
+        };
+
+        let block = event_to_metadata_block(&original);
+        assert!(block.contains("confidence=3"));
+
+        let start = block.find("[aiki-task]").unwrap() + "[aiki-task]".len();
+        let end = block.find("[/aiki-task]").unwrap();
+        let content = &block[start..end];
+
+        let parsed = parse_metadata_block(content).expect("Should parse");
+
+        match parsed {
+            TaskEvent::Closed { confidence, .. } => {
+                assert_eq!(confidence, Some(ConfidenceLevel::High));
+            }
+            _ => panic!("Expected Closed event"),
+        }
+    }
+
+    #[test]
     fn test_roundtrip_closed_summary_with_special_chars() {
         let original = TaskEvent::Closed {
             session_id: None,
             task_ids: vec!["task1".to_string()],
             outcome: TaskOutcome::Done,
+            confidence: None,
             summary: Some("Fixed bug: added null check\nnew line here".to_string()),
             turn_id: None,
             timestamp: Utc::now(),
@@ -1866,7 +1940,6 @@ timestamp=2026-01-09T10:30:00Z
             assignee: None,
             sources: Vec::new(),
             template: None,
-            working_copy: None,
             instructions: None,
             data: std::collections::HashMap::new(),
             timestamp: Utc::now(),
@@ -2857,6 +2930,7 @@ timestamp=2026-02-10T14:30:00Z
             agent_type: "claude-code".to_string(),
             session_id: Some("sess-123".to_string()),
             turn_id: Some("turn-abc-1".to_string()),
+            working_copy: None,
             timestamp: Utc::now(),
         };
 
@@ -2913,6 +2987,7 @@ timestamp=2026-02-10T14:30:00Z
         let original = TaskEvent::Closed {
             task_ids: vec!["task1".to_string()],
             outcome: TaskOutcome::Done,
+            confidence: None,
             summary: Some("All done".to_string()),
             session_id: None,
             turn_id: Some("turn-def-3".to_string()),
@@ -2946,6 +3021,7 @@ timestamp=2026-02-10T14:30:00Z
             agent_type: "claude-code".to_string(),
             session_id: None,
             turn_id: None,
+            working_copy: None,
             timestamp: Utc::now(),
         };
 
@@ -2969,6 +3045,26 @@ timestamp=2026-02-10T14:30:00Z
     }
 
     #[test]
+    fn test_parse_started_snapshot_alias() {
+        let content = concat!(
+            "event=started\n",
+            "task_id=task1\n",
+            "agent_type=claude-code\n",
+            "snapshot=abc123snapshot\n",
+            "timestamp=2026-03-30T19:00:00Z\n"
+        );
+
+        let parsed = parse_metadata_block(content).expect("Should parse");
+
+        match parsed {
+            TaskEvent::Started { working_copy, .. } => {
+                assert_eq!(working_copy, Some("abc123snapshot".to_string()));
+            }
+            _ => panic!("Expected Started event"),
+        }
+    }
+
+    #[test]
     fn test_roundtrip_created_with_slug() {
         let original = TaskEvent::Created {
             task_id: "test".to_string(),
@@ -2979,7 +3075,6 @@ timestamp=2026-02-10T14:30:00Z
             assignee: None,
             sources: Vec::new(),
             template: None,
-            working_copy: None,
             instructions: None,
             data: std::collections::HashMap::new(),
             timestamp: Utc::now(),

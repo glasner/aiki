@@ -10,7 +10,7 @@ type: review
 When all subtasks are closed, close this task with a summary:
 
 ```bash
-aiki task close {{id}} --summary "Review complete (N issues: X high, Y medium, Z low)"
+aiki task close {{id}} --confidence 3 --summary "Review complete (N issues: X high, Y medium, Z low)"
 ```
 
 # Subtasks
@@ -35,6 +35,8 @@ aiki task list --wont-do --descendant-of {{data.scope.id}}
 ```
 
 If any won't-do tasks are listed, note them — these are explicitly out of scope.
+
+When the explore is complete, close this subtask with a summary of what you found and your confidence in your understanding of the task.
 
 ## Review & Record Issues
 ---

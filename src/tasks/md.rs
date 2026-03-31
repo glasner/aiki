@@ -99,10 +99,18 @@ pub fn build_context(in_progress: &[&Task], ready_queue: &[&Task]) -> String {
 
 /// Build the footer shown below context when tasks exist.
 ///
-/// Returns: `---\nTasks (N ready)\n{NAV_HINT}\n`
+/// Returns: `---\nTasks (N ready)\nRun `aiki task start <id>` to begin work.\n`
 #[must_use]
-fn build_footer(ready_count: usize) -> String {
-    format!("---\nTasks ({} ready)\n{}\n", ready_count, NAV_HINT)
+fn build_footer(ready_queue: &[&Task]) -> String {
+    let hint = if let Some(first) = ready_queue.first() {
+        format!(
+            "Run `aiki task start {}` to begin work.",
+            short_id(&first.id)
+        )
+    } else {
+        NAV_HINT.to_string()
+    };
+    format!("---\nTasks ({} ready)\n{}\n", ready_queue.len(), hint)
 }
 
 /// Build the task list output for read commands (`task` / `task list`).
@@ -112,7 +120,7 @@ fn build_footer(ready_count: usize) -> String {
 pub fn build_list_output(in_progress: &[&Task], ready_queue: &[&Task]) -> String {
     let mut out = build_context(in_progress, ready_queue);
     if !in_progress.is_empty() || !ready_queue.is_empty() {
-        out.push_str(&build_footer(ready_queue.len()));
+        out.push_str(&build_footer(ready_queue));
     }
     out
 }
@@ -131,6 +139,11 @@ pub fn format_task_list(tasks: &[&Task]) -> String {
         }
         if let Some(ref assignee) = task.assignee {
             line.push_str(&format!(" (assignee: {})", assignee));
+        }
+        if task.status == TaskStatus::Closed {
+            if let Some(confidence) = task.confidence {
+                line.push_str(&format!(" [c{}]", confidence.as_u8()));
+            }
         }
         md.push_str(&line);
         md.push('\n');
@@ -217,6 +230,24 @@ pub fn format_action_closed(task: &Task) -> String {
     format!("Closed {} — {}\n", short_id(&task.id), task.name)
 }
 
+/// Format the close summary line when multiple tasks were closed.
+///
+/// `total` is the number of tasks closed (explicit + cascade), `explicit` is
+/// how many the user explicitly requested.
+#[must_use]
+pub fn format_close_summary(total: usize, explicit: usize) -> String {
+    let subtask_count = total.saturating_sub(explicit);
+    if subtask_count > 0 {
+        format!(
+            "Closed (including {} subtask{})\n",
+            subtask_count,
+            if subtask_count == 1 { "" } else { "s" }
+        )
+    } else {
+        format!("Closed {} tasks\n", total)
+    }
+}
+
 /// Format action confirmation for `task comment`
 #[must_use]
 pub fn format_action_commented() -> String {
@@ -259,6 +290,7 @@ mod tests {
             last_session_id: None,
             stopped_reason: None,
             closed_outcome: None,
+            confidence: None,
             summary: None,
             turn_started: None,
             closed_at: None,
@@ -345,6 +377,33 @@ mod tests {
     }
 
     #[test]
+    fn test_format_close_summary_one_parent_two_subtasks() {
+        let result = format_close_summary(3, 1);
+        assert!(result.contains("2 subtasks"), "got: {result}");
+        assert!(!result.contains("3"), "should not show total count, got: {result}");
+    }
+
+    #[test]
+    fn test_format_close_summary_one_parent_one_subtask() {
+        let result = format_close_summary(2, 1);
+        assert!(result.contains("1 subtask"), "got: {result}");
+        assert!(!result.contains("subtasks"), "should be singular, got: {result}");
+    }
+
+    #[test]
+    fn test_format_close_summary_multiple_explicit_no_subtasks() {
+        let result = format_close_summary(3, 3);
+        assert!(result.contains("3 tasks"), "got: {result}");
+        assert!(!result.contains("subtask"), "no subtasks, got: {result}");
+    }
+
+    #[test]
+    fn test_format_close_summary_multiple_explicit_with_subtasks() {
+        let result = format_close_summary(5, 2);
+        assert!(result.contains("3 subtasks"), "got: {result}");
+    }
+
+    #[test]
     fn test_format_action_commented() {
         assert_eq!(format_action_commented(), "Comment added.\n");
     }
@@ -401,7 +460,7 @@ mod tests {
         let md = build_list_output(&[], &[&task]);
         assert!(md.contains("Ready (1):"));
         assert!(md.contains("---\nTasks (1 ready)"));
-        assert!(md.contains(NAV_HINT));
+        assert!(md.contains("aiki task start abcdefg"));
     }
 
     #[test]
@@ -454,8 +513,10 @@ mod tests {
         );
         task.summary = Some("Added null check before token access".to_string());
         let md = format_task_list(&[&task]);
-        assert!(md.contains("[p2] abcdefg  Fixed auth bug"));
-        assert!(md.contains("↳ Added null check before token access"));
+        assert_eq!(
+            md,
+            "Tasks (1):\n[p2] abcdefg  Fixed auth bug\n  ↳ Added null check before token access\n"
+        );
     }
 
     #[test]
@@ -476,5 +537,29 @@ mod tests {
         });
         let md = format_task_list(&[&task]);
         assert!(md.contains("↳ Fallback comment summary"));
+    }
+
+    #[test]
+    fn test_format_task_list_closed_confidence_badge_only_when_present() {
+        let mut task = make_task(
+            "abcdefghijklmnopqrstuvwxyzabcdef",
+            "Done task",
+            TaskPriority::P2,
+            TaskStatus::Closed,
+        );
+        task.confidence = Some(crate::tasks::types::ConfidenceLevel::High);
+        task.summary = Some("Verified formatting contract".to_string());
+        let with_badge = format_task_list(&[&task]);
+        assert_eq!(
+            with_badge,
+            "Tasks (1):\n[p2] abcdefg  Done task [c3]\n  ↳ Verified formatting contract\n"
+        );
+
+        task.confidence = None;
+        let without_badge = format_task_list(&[&task]);
+        assert_eq!(
+            without_badge,
+            "Tasks (1):\n[p2] abcdefg  Done task\n  ↳ Verified formatting contract\n"
+        );
     }
 }

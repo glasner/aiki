@@ -10,7 +10,7 @@ type: review
 When all subtasks are closed, close this task with a summary:
 
 ```bash
-aiki task close {{id}} --summary "Review complete (N issues: X high, Y medium, Z low)"
+aiki task close {{id}} --confidence 3 --summary "Review complete (N issues: X high, Y medium, Z low)"
 ```
 
 # Subtasks

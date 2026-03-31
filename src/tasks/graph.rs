@@ -581,7 +581,6 @@ fn process_event(
             assignee,
             sources,
             template,
-            working_copy: _,
             instructions,
             data,
             timestamp,
@@ -664,6 +663,7 @@ fn process_event(
                     last_session_id: None,
                     stopped_reason: None,
                     closed_outcome: None,
+                    confidence: None,
                     summary: None,
                     turn_started: None,
                     closed_at: None,
@@ -678,6 +678,7 @@ fn process_event(
             agent_type,
             session_id,
             turn_id,
+            working_copy: _,
             timestamp,
         } => {
             for task_id in task_ids {
@@ -714,6 +715,7 @@ fn process_event(
         TaskEvent::Closed {
             task_ids,
             outcome,
+            confidence,
             summary,
             turn_id,
             timestamp,
@@ -723,6 +725,7 @@ fn process_event(
                 if let Some(task) = tasks.get_mut(task_id) {
                     task.status = TaskStatus::Closed;
                     task.closed_outcome = Some(*outcome);
+                    task.confidence = *confidence;
                     task.summary = summary.clone();
                     task.claimed_by_session = None;
                     task.closed_at = Some(*timestamp);
@@ -734,6 +737,7 @@ fn process_event(
             if let Some(task) = tasks.get_mut(task_id) {
                 task.status = TaskStatus::Open;
                 task.closed_outcome = None;
+                task.confidence = None;
                 task.claimed_by_session = None;
             }
         }
@@ -934,7 +938,6 @@ mod tests {
             assignee: None,
             sources: Vec::new(),
             template: None,
-            working_copy: None,
             instructions: None,
             data: HashMap::new(),
             timestamp: Utc::now(),
@@ -945,6 +948,7 @@ mod tests {
         TaskEvent::Closed {
             task_ids: vec![id.to_string()],
             outcome: crate::tasks::types::TaskOutcome::Done,
+            confidence: None,
             summary: None,
             session_id: None,
             turn_id: None,
@@ -956,6 +960,7 @@ mod tests {
         TaskEvent::Closed {
             task_ids: vec![id.to_string()],
             outcome: crate::tasks::types::TaskOutcome::WontDo,
+            confidence: None,
             summary: None,
             session_id: None,
             turn_id: None,
@@ -1491,7 +1496,6 @@ mod tests {
             assignee: None,
             sources: vec!["file:design.md".to_string(), "task:task0".to_string()],
             template: None,
-            working_copy: None,
             instructions: None,
             data: HashMap::new(),
             timestamp: Utc::now(),
@@ -1522,7 +1526,6 @@ mod tests {
                 assignee: None,
                 sources: vec!["file:design.md".to_string()],
                 template: None,
-                working_copy: None,
                 instructions: None,
                 data: HashMap::new(),
                 timestamp: Utc::now(),
@@ -1559,7 +1562,6 @@ mod tests {
             assignee: None,
             sources: Vec::new(),
             template: None,
-            working_copy: None,
             instructions: None,
             data,
             timestamp: Utc::now(),
@@ -1590,7 +1592,6 @@ mod tests {
             assignee: None,
             sources: Vec::new(),
             template: None,
-            working_copy: None,
             instructions: None,
             data,
             timestamp: Utc::now(),
@@ -1619,7 +1620,6 @@ mod tests {
             assignee: None,
             sources: Vec::new(),
             template: None,
-            working_copy: None,
             instructions: None,
             data,
             timestamp: Utc::now(),
@@ -1647,7 +1647,6 @@ mod tests {
             assignee: None,
             sources: Vec::new(),
             template: None,
-            working_copy: None,
             instructions: None,
             data,
             timestamp: Utc::now(),
@@ -1675,7 +1674,6 @@ mod tests {
             assignee: None,
             sources: Vec::new(),
             template: None,
-            working_copy: None,
             instructions: None,
             data,
             timestamp: Utc::now(),
@@ -1705,7 +1703,6 @@ mod tests {
             assignee: None,
             sources: Vec::new(),
             template: None,
-            working_copy: None,
             instructions: None,
             data,
             timestamp: Utc::now(),
@@ -1737,7 +1734,6 @@ mod tests {
             assignee: None,
             sources: Vec::new(),
             template: None,
-            working_copy: None,
             instructions: None,
             data,
             timestamp: Utc::now(),
@@ -1765,7 +1761,6 @@ mod tests {
                 assignee: None,
                 sources: Vec::new(),
                 template: None,
-                working_copy: None,
                 instructions: None,
                 data: HashMap::new(),
                 timestamp: Utc::now(),
@@ -1779,7 +1774,6 @@ mod tests {
                 assignee: None,
                 sources: Vec::new(),
                 template: None,
-                working_copy: None,
                 instructions: None,
                 data: HashMap::new(),
                 timestamp: Utc::now(),
@@ -1846,7 +1840,6 @@ mod tests {
                 assignee: None,
                 sources: vec!["file:plan.md".to_string()],
                 template: None,
-                working_copy: None,
                 instructions: None,
                 data: HashMap::new(),
                 timestamp: Utc::now(),
@@ -1947,6 +1940,7 @@ mod tests {
                 agent_type: "claude-code".to_string(),
                 session_id: None,
                 turn_id: Some("turn-aaa-1".to_string()),
+                working_copy: None,
                 timestamp: Utc::now(),
             },
         ];
@@ -1967,6 +1961,7 @@ mod tests {
                 agent_type: "claude-code".to_string(),
                 session_id: None,
                 turn_id: Some("turn-aaa-1".to_string()),
+                working_copy: None,
                 timestamp: Utc::now(),
             },
             TaskEvent::Stopped {
@@ -1993,11 +1988,13 @@ mod tests {
                 agent_type: "claude-code".to_string(),
                 session_id: None,
                 turn_id: Some("turn-aaa-1".to_string()),
+                working_copy: None,
                 timestamp: Utc::now(),
             },
             TaskEvent::Closed {
                 task_ids: vec!["t1".to_string()],
                 outcome: crate::tasks::types::TaskOutcome::Done,
+                confidence: None,
                 summary: None,
                 session_id: None,
                 turn_id: Some("turn-aaa-3".to_string()),
@@ -2020,6 +2017,7 @@ mod tests {
                 agent_type: "claude-code".to_string(),
                 session_id: None,
                 turn_id: Some("turn-aaa-1".to_string()),
+                working_copy: None,
                 timestamp: Utc::now(),
             },
             TaskEvent::Stopped {
@@ -2034,6 +2032,7 @@ mod tests {
                 agent_type: "claude-code".to_string(),
                 session_id: None,
                 turn_id: Some("turn-bbb-1".to_string()),
+                working_copy: None,
                 timestamp: Utc::now(),
             },
         ];
@@ -2054,6 +2053,7 @@ mod tests {
                 agent_type: "claude-code".to_string(),
                 session_id: None,
                 turn_id: None,
+                working_copy: None,
                 timestamp: Utc::now(),
             },
         ];
@@ -2076,7 +2076,6 @@ mod tests {
                 assignee: None,
                 sources: Vec::new(),
                 template: None,
-                working_copy: None,
                 instructions: None,
                 data: HashMap::new(),
                 timestamp: Utc::now(),
@@ -2104,7 +2103,6 @@ mod tests {
                 assignee: None,
                 sources: Vec::new(),
                 template: None,
-                working_copy: None,
                 instructions: None,
                 data: HashMap::new(),
                 timestamp: Utc::now(),
@@ -2145,7 +2143,6 @@ mod tests {
                 assignee: None,
                 sources: Vec::new(),
                 template: None,
-                working_copy: None,
                 instructions: None,
                 data: HashMap::new(),
                 timestamp: Utc::now(),
@@ -2160,7 +2157,6 @@ mod tests {
                 assignee: None,
                 sources: Vec::new(),
                 template: None,
-                working_copy: None,
                 instructions: None,
                 data: HashMap::new(),
                 timestamp: Utc::now(),
@@ -2174,7 +2170,10 @@ mod tests {
             graph.find_by_slug("parent", "build").unwrap().id,
             "child-build"
         );
-        assert_eq!(graph.find_by_slug("parent", "test").unwrap().id, "child-test");
+        assert_eq!(
+            graph.find_by_slug("parent", "test").unwrap().id,
+            "child-test"
+        );
     }
 
     #[test]
@@ -2192,7 +2191,6 @@ mod tests {
                 assignee: None,
                 sources: Vec::new(),
                 template: None,
-                working_copy: None,
                 instructions: None,
                 data: HashMap::new(),
                 timestamp: Utc::now(),
@@ -2207,7 +2205,6 @@ mod tests {
                 assignee: None,
                 sources: Vec::new(),
                 template: None,
-                working_copy: None,
                 instructions: None,
                 data: HashMap::new(),
                 timestamp: Utc::now(),
@@ -2233,7 +2230,6 @@ mod tests {
                 assignee: None,
                 sources: Vec::new(),
                 template: None,
-                working_copy: None,
                 instructions: None,
                 data: HashMap::new(),
                 timestamp: Utc::now(),
@@ -2269,7 +2265,6 @@ mod tests {
                 assignee: None,
                 sources: Vec::new(),
                 template: None,
-                working_copy: None,
                 instructions: None,
                 data: HashMap::new(),
                 timestamp: Utc::now(),
@@ -2295,7 +2290,6 @@ mod tests {
                 assignee: None,
                 sources: Vec::new(),
                 template: None,
-                working_copy: None,
                 instructions: None,
                 data: HashMap::new(),
                 timestamp: Utc::now(),
@@ -2322,7 +2316,6 @@ mod tests {
                 assignee: None,
                 sources: Vec::new(),
                 template: None,
-                working_copy: None,
                 instructions: None,
                 data: HashMap::new(),
                 timestamp: Utc::now(),
@@ -2591,6 +2584,7 @@ mod tests {
                 agent_type: "test".to_string(),
                 session_id: None,
                 turn_id: None,
+                working_copy: None,
                 timestamp: Utc::now(),
             },
             make_closed("A"),
@@ -2615,6 +2609,7 @@ mod tests {
                 agent_type: "test".to_string(),
                 session_id: None,
                 turn_id: None,
+                working_copy: None,
                 timestamp: Utc::now(),
             },
             make_stopped("B"),
@@ -2929,6 +2924,7 @@ mod tests {
             agent_type: "claude-code".to_string(),
             session_id: None,
             turn_id: None,
+            working_copy: None,
             timestamp: Utc::now(),
         }
     }

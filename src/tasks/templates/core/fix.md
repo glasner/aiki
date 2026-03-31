@@ -2,7 +2,7 @@
 version: 1.0.0
 ---
 
-# Plan Fix: Review {{data.review}}
+# Plan Fix: {{data.target}}
 
 **Goal**: Read the issues from review `{{data.review}}` and produce a fix plan that `decompose` can consume.
 
@@ -81,5 +81,5 @@ version: 1.0.0
 
 5. Close this task when the plan is written:
    ```bash
-   aiki task close {{id}} --summary "Fix plan written to /tmp/aiki/plans/{{id}}.md — N issues, M steps"
+   aiki task close {{id}} --confidence 3 --summary "Fix plan written to /tmp/aiki/plans/{{id}}.md — N issues, M steps"
    ```

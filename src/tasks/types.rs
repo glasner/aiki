@@ -108,6 +108,61 @@ impl TaskOutcome {
     }
 }
 
+/// Confidence reported when an agent closes done work.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum ConfidenceLevel {
+    Low = 1,
+    Medium = 2,
+    High = 3,
+    Verified = 4,
+}
+
+impl ConfidenceLevel {
+    #[must_use]
+    pub fn from_u8(value: u8) -> Option<Self> {
+        match value {
+            1 => Some(Self::Low),
+            2 => Some(Self::Medium),
+            3 => Some(Self::High),
+            4 => Some(Self::Verified),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub fn as_u8(self) -> u8 {
+        self as u8
+    }
+
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::Verified => "verified",
+        }
+    }
+}
+
+impl fmt::Display for ConfidenceLevel {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.as_u8())
+    }
+}
+
+impl std::str::FromStr for ConfidenceLevel {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let value: u8 = s
+            .parse()
+            .map_err(|_| "Confidence must be a number 1-4".to_string())?;
+        Self::from_u8(value).ok_or_else(|| "Confidence must be 1-4".to_string())
+    }
+}
+
 /// Events stored on aiki/tasks branch
 #[derive(Debug, Clone)]
 pub enum TaskEvent {
@@ -125,8 +180,6 @@ pub enum TaskEvent {
         sources: Vec<String>,
         /// Template used to create this task (e.g., "review@1.0.0")
         template: Option<String>,
-        /// Working copy change_id at creation time (for historical template lookup)
-        working_copy: Option<String>,
         /// Instructions from template (with variables substituted)
         instructions: Option<String>,
         /// Custom data/metadata for the task
@@ -141,6 +194,8 @@ pub enum TaskEvent {
         session_id: Option<String>,
         /// Turn ID (UUID v5) from the session's current turn
         turn_id: Option<String>,
+        /// Immutable snapshot revset captured from `@` at start time.
+        working_copy: Option<String>,
         timestamp: DateTime<Utc>,
     },
     /// Task(s) were stopped (batch operation)
@@ -156,6 +211,7 @@ pub enum TaskEvent {
     Closed {
         task_ids: Vec<String>,
         outcome: TaskOutcome,
+        confidence: Option<ConfidenceLevel>,
         /// Summary of what was accomplished (replaces closing comment pattern)
         summary: Option<String>,
         session_id: Option<String>,
@@ -307,6 +363,8 @@ pub struct Task {
     pub stopped_reason: Option<String>,
     /// Closure outcome (if closed)
     pub closed_outcome: Option<TaskOutcome>,
+    /// Agent-reported confidence for done closes, when provided
+    pub confidence: Option<ConfidenceLevel>,
     /// Summary of what was accomplished when task was closed
     pub summary: Option<String>,
     /// Turn ID when this task was most recently started
@@ -357,9 +415,15 @@ impl Task {
     }
 
     /// Formatted elapsed time since started_at, e.g. "1m 23s"
+    /// For closed/stopped tasks, uses closed_at as the end time.
     pub fn elapsed_str(&self) -> Option<String> {
         let started = self.started_at?;
-        let elapsed = chrono::Utc::now() - started;
+        let end = if self.is_terminal() {
+            self.closed_at.unwrap_or_else(chrono::Utc::now)
+        } else {
+            chrono::Utc::now()
+        };
+        let elapsed = end - started;
         let secs = elapsed.num_seconds();
         if secs < 60 {
             Some(format!("{}s", secs))
@@ -463,6 +527,25 @@ mod tests {
         assert_eq!(TaskOutcome::WontDo.to_string(), "wont_do");
     }
 
+    #[test]
+    fn test_confidence_level_parse_and_display() {
+        assert_eq!("1".parse::<ConfidenceLevel>(), Ok(ConfidenceLevel::Low));
+        assert_eq!(
+            "4".parse::<ConfidenceLevel>(),
+            Ok(ConfidenceLevel::Verified)
+        );
+        assert_eq!(
+            "0".parse::<ConfidenceLevel>(),
+            Err("Confidence must be 1-4".to_string())
+        );
+        assert_eq!(
+            "hi".parse::<ConfidenceLevel>(),
+            Err("Confidence must be a number 1-4".to_string())
+        );
+        assert_eq!(ConfidenceLevel::High.to_string(), "3");
+        assert_eq!(ConfidenceLevel::Verified.label(), "verified");
+    }
+
     fn make_task_for_summary() -> Task {
         Task {
             id: "abcdefghijklmnopqrstuvwxyzabcdef".to_string(),
@@ -482,6 +565,7 @@ mod tests {
             last_session_id: None,
             stopped_reason: None,
             closed_outcome: None,
+            confidence: None,
             summary: None,
             turn_started: None,
             closed_at: None,
