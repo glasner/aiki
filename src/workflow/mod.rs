@@ -1,18 +1,48 @@
-pub mod builders;
-pub mod orchestrate;
+pub mod async_run;
+pub mod build;
+pub mod fix;
+pub mod review;
 pub mod steps;
 
 use std::path::PathBuf;
 
 use anyhow::Result;
-use std::collections::VecDeque;
+use serde::{Deserialize, Serialize};
 
 use crate::agents::AgentType;
-use crate::workflow::builders::BuildOpts;
+use crate::reviews::ReviewScope;
+use steps::Step;
+#[cfg(test)]
+use steps::StepResult;
+use steps::WorkflowChange;
 
-pub use steps::review::{
-    CreateReviewParams, CreateReviewResult, Location, ReviewScope, ReviewScopeKind,
-};
+/// Unified options bag for all workflow steps.
+///
+/// Not every workflow uses every field — unused fields are `None`/`false`.
+/// Constructed from command-specific opts (`BuildOpts`, `ReviewOpts`, `FixOpts`)
+/// when creating a `WorkflowContext`.
+#[derive(Clone, Default, Serialize, Deserialize)]
+pub struct WorkflowOpts {
+    // Build options
+    pub restart: bool,
+    pub decompose_template: Option<String>,
+    pub loop_template: Option<String>,
+    pub agent: Option<AgentType>,
+    #[serde(alias = "review_agent_str")]
+    pub reviewer: Option<String>,
+    // Review options
+    pub target: Option<String>,
+    pub code: bool,
+    pub review: bool,
+    pub review_template: Option<String>,
+    pub fix: bool,
+    pub fix_template: Option<String>,
+    pub autorun: bool,
+    // Fix options
+    pub plan_template: Option<String>,
+    #[serde(alias = "fix_assignee")]
+    pub coder: Option<String>,
+}
 
 /// Context shared across all steps in a workflow.
 pub struct WorkflowContext {
@@ -22,172 +52,160 @@ pub struct WorkflowContext {
     pub plan_path: Option<String>,
     /// Working directory.
     pub cwd: PathBuf,
+    /// Controls how workflow execution reports progress.
+    pub(crate) output: WorkflowOutput,
+    /// Unified options from the command that launched this workflow.
+    pub opts: WorkflowOpts,
+    /// Review task ID for fix workflows. Set by workflow runners before execution.
+    pub review_id: Option<String>,
+    /// Review scope for fix workflows. Set by workflow runners before execution.
+    pub scope: Option<ReviewScope>,
+    /// Assignee for fix workflows. Set by workflow runners before execution.
+    pub assignee: Option<String>,
+    /// Current iteration of the quality loop. Starts at 0.
+    pub iteration: usize,
 }
 
-/// Result returned by a single workflow step.
-pub struct StepResult {
-    pub message: String,
-    pub task_id: Option<String>,
-}
-
-/// Unified step enum covering all workflow step variants.
-///
-/// Commands compose workflows by selecting which variants to include in their
-/// step sequence.
-pub enum Step {
-    /// Validate plan file. Shows plan path on completion.
-    Plan,
-
-    /// Find/create epic, set ctx.task_id, run decompose agent.
-    Decompose {
-        restart: bool,
-        template: Option<String>,
-        agent: Option<AgentType>,
-    },
-
-    /// Run loop orchestrator over subtasks.
-    Loop {
-        template: Option<String>,
-        agent: Option<AgentType>,
-    },
-
-    /// Run a review.
-    ///
-    /// When `scope` is `Some`, creates a standalone review with the given scope
-    /// (used by `aiki review` and fix review steps).
-    /// When `scope` is `None`, derives scope from ctx (used by `aiki build` post-build review).
-    Review {
-        scope: Option<ReviewScope>,
-        template: Option<String>,
-        agent: Option<String>,
-        fix_template: Option<String>,
-        autorun: bool,
-    },
-
-    /// Create fix-parent, write fix plan, and run the plan-fix task.
-    /// Short-circuits if the review has no actionable issues.
-    Fix {
-        review_id: String,
-        scope: Option<ReviewScope>,
-        assignee: Option<String>,
-        template: Option<String>,
-        autorun: bool,
-    },
-
-    /// Regression review — re-review original scope after a fix cycle.
-    RegressionReview {
-        template: Option<String>,
-        agent: Option<String>,
-    },
-
-    /// Test-only step variant for unit testing workflow machinery.
-    #[cfg(test)]
-    _Test {
-        name: &'static str,
-        section: Option<&'static str>,
-        handler: std::sync::Arc<dyn Fn(&mut WorkflowContext) -> Result<StepResult> + Send + Sync>,
-    },
-}
-
-impl Step {
-    pub fn name(&self) -> &'static str {
-        match self {
-            Step::Plan => "plan",
-            Step::Decompose { .. } => "decompose",
-            Step::Loop { .. } => "loop",
-            Step::Review { .. } => "review",
-            Step::Fix { .. } => "fix",
-            Step::RegressionReview { .. } => "review for regressions",
-            #[cfg(test)]
-            Step::_Test { name, .. } => name,
-        }
+impl WorkflowContext {
+    /// Returns task_id or Err(AikiError::InvalidArgument).
+    pub fn require_task_id(&self) -> crate::error::Result<&str> {
+        self.task_id.as_deref().ok_or_else(|| {
+            crate::error::AikiError::InvalidArgument("No task ID in workflow context".to_string())
+        })
     }
 
-    pub fn section(&self) -> Option<&'static str> {
-        match self {
-            Step::Decompose { .. } => Some("Initial Build"),
-            #[cfg(test)]
-            Step::_Test { section, .. } => *section,
-            _ => None,
-        }
+    /// Returns task_id as Option<&str>.
+    pub fn task_id(&self) -> Option<&str> {
+        self.task_id.as_deref()
     }
 
-    pub fn run(&self, ctx: &mut WorkflowContext) -> Result<StepResult> {
-        match self {
-            Step::Plan => steps::plan::run_plan_step(ctx),
+    /// Print a section header.
+    pub fn section(&self, name: &str) {
+        self.output.section(name);
+    }
 
-            Step::Decompose {
-                restart,
-                template,
-                agent,
-            } => {
-                steps::decompose::run_decompose_step(ctx, *restart, template.clone(), agent.clone())
-            }
+    /// Print a status/progress message.
+    pub fn status(&self, msg: &str) {
+        self.output.status(msg);
+    }
 
-            Step::Loop { template, agent } => {
-                steps::r#loop::run_loop_step(ctx, template.clone(), agent.clone())
-            }
+    /// Print a success message.
+    pub fn success(&self, step: &str, msg: &str) {
+        self.output.success(step, msg);
+    }
 
-            Step::Review {
-                scope: Some(scope),
-                template,
-                agent,
-                fix_template,
-                autorun,
-            } => steps::review::run_standalone_review_step(
-                ctx,
-                scope.clone(),
-                template.clone(),
-                agent.clone(),
-                fix_template.clone(),
-                *autorun,
-            ),
+    /// Print an error message.
+    pub fn error(&self, step: &str, msg: &str) {
+        self.output.error(step, msg);
+    }
 
-            Step::Review {
-                scope: None,
-                template,
-                agent,
-                ..
-            } => steps::review::run_review_step(ctx, template.clone(), agent.clone()),
+    /// Emit a raw output line when text output is enabled.
+    pub fn emit(&self, msg: &str) {
+        self.output.emit(msg);
+    }
 
-            Step::Fix {
-                review_id,
-                scope,
-                assignee,
-                template,
-                autorun,
-            } => {
-                if let Some(scope) = scope {
-                    steps::fix::run_fix_plan_step(
-                        ctx,
-                        review_id,
-                        scope,
-                        assignee,
-                        template.as_deref(),
-                        *autorun,
-                    )
-                } else {
-                    steps::fix::run_fix_step(ctx, review_id, template.clone(), None)
-                }
-            }
-
-            Step::RegressionReview { template, agent } => {
-                steps::fix::run_regression_review_step(ctx, template.clone(), agent.clone())
-            }
-
-            #[cfg(test)]
-            Step::_Test { handler, .. } => handler(ctx),
-        }
+    /// Print a warning message.
+    pub fn warn(&self, msg: &str) {
+        self.output.warn(msg);
     }
 }
 
 /// Controls how workflow execution reports progress.
 #[derive(Clone, Copy)]
-pub enum RunMode {
+pub enum OutputKind {
     /// Sequential on main thread, minimal text output (eprintln status lines).
     Text,
     /// Silent — background/async processes.
     Quiet,
+}
+
+/// Output-focused helper for workflow status reporting.
+#[derive(Clone, Copy)]
+pub struct WorkflowOutput {
+    kind: OutputKind,
+}
+
+impl WorkflowOutput {
+    pub fn new(kind: OutputKind) -> Self {
+        Self { kind }
+    }
+
+    pub fn kind(self) -> OutputKind {
+        self.kind
+    }
+
+    pub fn section(self, name: &str) {
+        if matches!(self.kind, OutputKind::Text) {
+            eprintln!("\n── {} ──", name);
+        }
+    }
+
+    pub fn status(self, msg: &str) {
+        if matches!(self.kind, OutputKind::Text) {
+            eprintln!("⠙ {}...", msg);
+        }
+    }
+
+    pub fn success(self, step: &str, msg: &str) {
+        if matches!(self.kind, OutputKind::Text) {
+            eprintln!("合 {} — {}", step, msg);
+        }
+    }
+
+    pub fn error(self, step: &str, msg: &str) {
+        if matches!(self.kind, OutputKind::Text) {
+            eprintln!("✗ {} — {}", step, msg);
+        }
+    }
+
+    pub fn emit(self, msg: &str) {
+        if matches!(self.kind, OutputKind::Text) {
+            eprintln!("{}", msg);
+        }
+    }
+
+    pub fn warn(self, msg: &str) {
+        if matches!(self.kind, OutputKind::Text) {
+            eprintln!("Warning: {}", msg);
+        }
+    }
+}
+
+/// How to run a workflow. Replaces mutually exclusive bool flags
+/// (`run_async`, `continue_async`, `start`).
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RunKind {
+    /// Run all steps with text output (default).
+    Foreground,
+    /// Run first step only, return ID to user (e.g. `--start`).
+    SetupOnly,
+    /// Run first step, spawn background for remaining steps (e.g. `--async`).
+    Async,
+    /// Continue a previously started async workflow silently (e.g. `--_continue-async`).
+    ContinueAsync,
+}
+
+/// Trait for CLI arg structs that carry the common async/continue/start flags.
+pub trait HasRunKind {
+    fn continue_async(&self) -> Option<&str>;
+    fn run_async(&self) -> bool;
+    fn start(&self) -> bool {
+        false
+    }
+}
+
+impl RunKind {
+    pub fn from_args(args: &impl HasRunKind) -> Self {
+        if args.continue_async().is_some() {
+            RunKind::ContinueAsync
+        } else if args.start() {
+            RunKind::SetupOnly
+        } else if args.run_async() {
+            RunKind::Async
+        } else {
+            RunKind::Foreground
+        }
+    }
 }
 
 /// A sequence of steps executed against a shared context.
@@ -196,115 +214,60 @@ pub struct Workflow {
     pub ctx: WorkflowContext,
 }
 
-/// Maximum number of fix iterations before giving up.
-pub(crate) const MAX_BUILD_ITERATIONS: usize = 10;
-
-/// Drive a build workflow with dynamic fix iteration.
-///
-/// Uses a [`VecDeque`] instead of a fixed step list. After each Review or
-/// RegressionReview step, checks for actionable issues and injects a
-/// Fix step (up to [`MAX_BUILD_ITERATIONS`]).
-pub fn drive_build(
-    steps: Vec<Step>,
-    mut ctx: WorkflowContext,
-    mode: RunMode,
-    opts: &BuildOpts,
-) -> anyhow::Result<WorkflowContext> {
-    let mut queue: VecDeque<Step> = steps.into_iter().collect();
-    let mut iteration = 0;
-
-    while let Some(step) = queue.pop_front() {
-        let is_review = matches!(&step, Step::Review { .. });
-        let is_regression_review = matches!(&step, Step::RegressionReview { .. });
-
-        let result = match mode {
-            RunMode::Text => {
-                if let Some(section) = step.section() {
-                    eprintln!("\n── {} ──", section);
-                }
-                eprintln!("⠙ {}...", step.name());
-                match step.run(&mut ctx) {
-                    Ok(result) => {
-                        eprintln!("合 {} — {}", step.name(), result.message);
-                        result
-                    }
-                    Err(e) => {
-                        eprintln!("✗ {} — {}", step.name(), e);
-                        return Err(e);
-                    }
-                }
-            }
-            RunMode::Quiet => step.run(&mut ctx)?,
-        };
-
-        if (is_review || is_regression_review) && iteration < MAX_BUILD_ITERATIONS {
-            if let Some(ref review_task_id) = result.task_id {
-                let events = crate::tasks::read_events(&ctx.cwd)?;
-                let graph = crate::tasks::materialize_graph(&events);
-                if crate::tasks::find_task(&graph.tasks, review_task_id)
-                    .map(crate::workflow::orchestrate::has_actionable_issues)
-                    .unwrap_or(false)
-                {
-                    iteration += 1;
-                    queue.push_back(Step::Fix {
-                        review_id: review_task_id.clone(),
-                        scope: None,
-                        assignee: None,
-                        template: opts.fix_template.clone(),
-                        autorun: false,
-                    });
-                }
-            }
-        }
-
-        if (is_review || is_regression_review) && iteration >= MAX_BUILD_ITERATIONS {
-            eprintln!(
-                "Warning: build fix iteration reached maximum ({}) without full approval.",
-                MAX_BUILD_ITERATIONS,
-            );
-            break;
-        }
-    }
-
-    Ok(ctx)
-}
-
 impl Workflow {
-    pub fn run(mut self, mode: RunMode) -> Result<WorkflowContext> {
-        match mode {
-            RunMode::Text => {
-                for step in &self.steps {
-                    if let Some(section) = step.section() {
-                        eprintln!("\n── {} ──", section);
-                    }
-                    eprintln!("⠙ {}...", step.name());
-                    match step.run(&mut self.ctx) {
-                        Ok(result) => eprintln!("合 {} — {}", step.name(), result.message),
-                        Err(e) => {
-                            eprintln!("✗ {} — {}", step.name(), e);
-                            return Err(e);
-                        }
-                    }
-                }
-                Ok(self.ctx)
+    fn apply_change(&mut self, change: WorkflowChange) {
+        match change {
+            WorkflowChange::None => {}
+            WorkflowChange::SkipSteps(skip) => {
+                self.steps.retain(|s| !skip.contains(s));
             }
-            RunMode::Quiet => {
-                for step in &self.steps {
-                    step.run(&mut self.ctx)?;
-                }
-                Ok(self.ctx)
+            WorkflowChange::NextSteps(next) => {
+                self.steps.extend(next);
             }
         }
     }
 
-    /// Run a build workflow, using [`drive_build`] for fix iteration when
-    /// `opts.fix_after` is true, or the generic step runner otherwise.
-    pub fn run_build(self, mode: RunMode, opts: &BuildOpts) -> anyhow::Result<WorkflowContext> {
-        if opts.fix_after {
-            drive_build(self.steps, self.ctx, mode, opts)
-        } else {
-            self.run(mode)
+    /// Run only the first step, return the context.
+    ///
+    /// Used by `SetupOnly` and `Async` run kinds to execute the setup step
+    /// before handing off or spawning background work.
+    pub fn run_first_step(mut self) -> Result<WorkflowContext> {
+        if let Some(step) = self.steps.first() {
+            step.run(&mut self.ctx)?;
         }
+        Ok(self.ctx)
+    }
+
+    pub fn run(mut self) -> Result<WorkflowContext> {
+        let verbose = matches!(self.ctx.output.kind(), OutputKind::Text);
+
+        while !self.steps.is_empty() {
+            let step = self.steps.remove(0);
+
+            if verbose {
+                if let Some(section) = step.section(self.ctx.iteration) {
+                    self.ctx.section(&section);
+                }
+                self.ctx.status(step.name());
+            }
+
+            match step.run(&mut self.ctx) {
+                Ok(result) => {
+                    if verbose {
+                        self.ctx.success(step.name(), &result.message);
+                    }
+                    self.apply_change(result.change);
+                }
+                Err(e) => {
+                    if verbose {
+                        self.ctx.error(step.name(), &e.to_string());
+                    }
+                    return Err(e);
+                }
+            }
+        }
+
+        Ok(self.ctx)
     }
 }
 
@@ -329,6 +292,7 @@ mod tests {
                 ctx.task_id = Some(value.to_string());
                 ctx.plan_path = Some(value.to_string());
                 Ok(StepResult {
+                    change: WorkflowChange::None,
                     message: format!("set {value}"),
                     task_id: ctx.task_id.clone(),
                 })
@@ -350,6 +314,7 @@ mod tests {
                 ctx.task_id = Some(value.to_string());
                 ctx.plan_path = Some(value.to_string());
                 Ok(StepResult {
+                    change: WorkflowChange::None,
                     message: format!("set {value}"),
                     task_id: ctx.task_id.clone(),
                 })
@@ -370,6 +335,7 @@ mod tests {
                 assert_eq!(ctx.plan_path.as_deref(), Some(expected));
                 ctx.task_id = Some("asserted".to_string());
                 Ok(StepResult {
+                    change: WorkflowChange::None,
                     message: format!("saw {expected}"),
                     task_id: ctx.task_id.clone(),
                 })
@@ -412,7 +378,28 @@ mod tests {
         };
 
         let seen = Arc::new(Mutex::new(Vec::new()));
-        let workflow = match case.as_str() {
+        let mut workflow = match case.as_str() {
+            "text-emit-warn" | "quiet-emit-warn" => {
+                let output = if case.starts_with("quiet") {
+                    OutputKind::Quiet
+                } else {
+                    OutputKind::Text
+                };
+                let ctx = WorkflowContext {
+                    task_id: None,
+                    plan_path: None,
+                    cwd: PathBuf::from("."),
+                    output: WorkflowOutput::new(output),
+                    opts: WorkflowOpts::default(),
+                    review_id: None,
+                    scope: None,
+                    assignee: None,
+                    iteration: 0,
+                };
+                ctx.emit("workflow-emit-line");
+                ctx.warn("workflow-warn-line");
+                return;
+            }
             "text-sectioned" => Workflow {
                 steps: vec![
                     test_step_with_section(
@@ -427,6 +414,12 @@ mod tests {
                     task_id: None,
                     plan_path: None,
                     cwd: PathBuf::from("."),
+                    output: WorkflowOutput::new(OutputKind::Quiet),
+                    opts: WorkflowOpts::default(),
+                    review_id: None,
+                    scope: None,
+                    assignee: None,
+                    iteration: 0,
                 },
             },
             "text-basic" => Workflow {
@@ -435,6 +428,12 @@ mod tests {
                     task_id: None,
                     plan_path: None,
                     cwd: PathBuf::from("."),
+                    output: WorkflowOutput::new(OutputKind::Quiet),
+                    opts: WorkflowOpts::default(),
+                    review_id: None,
+                    scope: None,
+                    assignee: None,
+                    iteration: 0,
                 },
             },
             "quiet-basic" => Workflow {
@@ -443,6 +442,12 @@ mod tests {
                     task_id: None,
                     plan_path: None,
                     cwd: PathBuf::from("."),
+                    output: WorkflowOutput::new(OutputKind::Quiet),
+                    opts: WorkflowOpts::default(),
+                    review_id: None,
+                    scope: None,
+                    assignee: None,
+                    iteration: 0,
                 },
             },
             "text-shared" | "quiet-shared" => Workflow {
@@ -451,24 +456,31 @@ mod tests {
                     task_id: None,
                     plan_path: None,
                     cwd: PathBuf::from("."),
+                    output: WorkflowOutput::new(OutputKind::Quiet),
+                    opts: WorkflowOpts::default(),
+                    review_id: None,
+                    scope: None,
+                    assignee: None,
+                    iteration: 0,
                 },
             },
             other => panic!("unknown probe case: {other}"),
         };
 
-        let mode = if case.starts_with("quiet") {
-            RunMode::Quiet
+        // Set output mode on context based on case prefix
+        workflow.ctx.output = WorkflowOutput::new(if case.starts_with("quiet") {
+            OutputKind::Quiet
         } else {
-            RunMode::Text
-        };
+            OutputKind::Text
+        });
 
-        workflow.run(mode).unwrap();
+        workflow.run().unwrap();
     }
 
     #[test]
     fn test_workflow_run_executes_steps_in_order() {
         let seen = Arc::new(Mutex::new(Vec::new()));
-        let wf = Workflow {
+        let workflow = Workflow {
             steps: vec![
                 test_step("first", "first", Arc::clone(&seen)),
                 test_step("second", "second", Arc::clone(&seen)),
@@ -477,10 +489,16 @@ mod tests {
                 task_id: None,
                 plan_path: None,
                 cwd: PathBuf::from("."),
+                output: WorkflowOutput::new(OutputKind::Quiet),
+                opts: WorkflowOpts::default(),
+                review_id: None,
+                scope: None,
+                assignee: None,
+                iteration: 0,
             },
         };
 
-        let ctx = wf.run(RunMode::Quiet).unwrap();
+        let ctx = workflow.run().unwrap();
         assert_eq!(ctx.task_id.as_deref(), Some("second"));
         assert_eq!(ctx.plan_path.as_deref(), Some("second"));
         assert_eq!(*seen.lock().unwrap(), vec!["first", "second"]);
@@ -489,7 +507,7 @@ mod tests {
     #[test]
     fn test_workflow_run_stops_on_failure_and_returns_error() {
         let seen = Arc::new(Mutex::new(Vec::new()));
-        let wf = Workflow {
+        let workflow = Workflow {
             steps: vec![
                 test_step("first", "first", Arc::clone(&seen)),
                 test_step_fail("broken", "boom"),
@@ -499,10 +517,16 @@ mod tests {
                 task_id: None,
                 plan_path: None,
                 cwd: PathBuf::from("."),
+                output: WorkflowOutput::new(OutputKind::Quiet),
+                opts: WorkflowOpts::default(),
+                review_id: None,
+                scope: None,
+                assignee: None,
+                iteration: 0,
             },
         };
 
-        let err = match wf.run(RunMode::Quiet) {
+        let err = match workflow.run() {
             Ok(_) => panic!("workflow should fail"),
             Err(err) => err,
         };
@@ -513,7 +537,7 @@ mod tests {
     #[test]
     fn test_workflow_context_mutations_are_visible_to_next_step() {
         let seen = Arc::new(Mutex::new(Vec::new()));
-        let wf = Workflow {
+        let workflow = Workflow {
             steps: vec![
                 test_step("set", "shared-state", Arc::clone(&seen)),
                 test_step_assert_plan_path("assert", "shared-state", Arc::clone(&seen)),
@@ -522,10 +546,16 @@ mod tests {
                 task_id: None,
                 plan_path: None,
                 cwd: PathBuf::from("."),
+                output: WorkflowOutput::new(OutputKind::Quiet),
+                opts: WorkflowOpts::default(),
+                review_id: None,
+                scope: None,
+                assignee: None,
+                iteration: 0,
             },
         };
 
-        let ctx = wf.run(RunMode::Quiet).unwrap();
+        let ctx = workflow.run().unwrap();
         assert_eq!(ctx.plan_path.as_deref(), Some("shared-state"));
         assert_eq!(*seen.lock().unwrap(), vec!["set", "assert"]);
     }
@@ -561,9 +591,15 @@ mod tests {
                 task_id: None,
                 plan_path: None,
                 cwd: PathBuf::from("."),
+                output: WorkflowOutput::new(OutputKind::Text),
+                opts: WorkflowOpts::default(),
+                review_id: None,
+                scope: None,
+                assignee: None,
+                iteration: 0,
             },
         }
-        .run(RunMode::Text)
+        .run()
         .unwrap();
         let quiet_ctx = Workflow {
             steps: vec![test_step(
@@ -575,9 +611,15 @@ mod tests {
                 task_id: None,
                 plan_path: None,
                 cwd: PathBuf::from("."),
+                output: WorkflowOutput::new(OutputKind::Quiet),
+                opts: WorkflowOpts::default(),
+                review_id: None,
+                scope: None,
+                assignee: None,
+                iteration: 0,
             },
         }
-        .run(RunMode::Quiet)
+        .run()
         .unwrap();
         let text_output = run_output_probe("text-shared");
         let quiet_output = run_output_probe("quiet-shared");
@@ -587,4 +629,148 @@ mod tests {
         assert!(text_output.contains("workflow-shared-step"));
         assert!(!quiet_output.contains("workflow-shared-step"));
     }
+
+    #[test]
+    fn test_emit_and_warn_follow_output_mode() {
+        let text_output = run_output_probe("text-emit-warn");
+        let quiet_output = run_output_probe("quiet-emit-warn");
+
+        assert!(text_output.contains("workflow-emit-line"));
+        assert!(text_output.contains("Warning: workflow-warn-line"));
+        assert!(!quiet_output.contains("workflow-emit-line"));
+        assert!(!quiet_output.contains("workflow-warn-line"));
+    }
+
+    fn test_step_with_change(
+        name: &'static str,
+        change: WorkflowChange,
+        seen: Arc<Mutex<Vec<&'static str>>>,
+    ) -> Step {
+        let change = Arc::new(Mutex::new(Some(change)));
+        Step::_Test {
+            name,
+            section: None,
+            handler: Arc::new(move |_ctx| {
+                seen.lock().unwrap().push(name);
+                let change = change
+                    .lock()
+                    .unwrap()
+                    .take()
+                    .unwrap_or(WorkflowChange::None);
+                Ok(StepResult {
+                    change,
+                    message: format!("ran {name}"),
+                    task_id: None,
+                })
+            }),
+        }
+    }
+
+    #[test]
+    fn test_next_steps_appends_and_executes() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let extra = test_step("extra", "extra", Arc::clone(&seen));
+        let workflow = Workflow {
+            steps: vec![
+                test_step_with_change(
+                    "first",
+                    WorkflowChange::NextSteps(vec![extra]),
+                    Arc::clone(&seen),
+                ),
+                test_step("second", "second", Arc::clone(&seen)),
+            ],
+            ctx: WorkflowContext {
+                task_id: None,
+                plan_path: None,
+                cwd: PathBuf::from("."),
+                output: WorkflowOutput::new(OutputKind::Quiet),
+                opts: WorkflowOpts::default(),
+                review_id: None,
+                scope: None,
+                assignee: None,
+                iteration: 0,
+            },
+        };
+
+        workflow.run().unwrap();
+        assert_eq!(*seen.lock().unwrap(), vec!["first", "second", "extra"]);
+    }
+
+    #[test]
+    fn test_skip_steps_removes_matching() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let workflow = Workflow {
+            steps: vec![
+                test_step_with_change(
+                    "first",
+                    WorkflowChange::SkipSteps(vec![Step::_Test {
+                        name: "second",
+                        section: None,
+                        handler: Arc::new(|_| unreachable!()),
+                    }]),
+                    Arc::clone(&seen),
+                ),
+                test_step("second", "second", Arc::clone(&seen)),
+                test_step("third", "third", Arc::clone(&seen)),
+            ],
+            ctx: WorkflowContext {
+                task_id: None,
+                plan_path: None,
+                cwd: PathBuf::from("."),
+                output: WorkflowOutput::new(OutputKind::Quiet),
+                opts: WorkflowOpts::default(),
+                review_id: None,
+                scope: None,
+                assignee: None,
+                iteration: 0,
+            },
+        };
+
+        workflow.run().unwrap();
+        assert_eq!(*seen.lock().unwrap(), vec!["first", "third"]);
+    }
+
+    #[test]
+    fn test_fix_short_circuit_preserves_review_tail_in_current_pass() {
+        let mut workflow = Workflow {
+            steps: vec![
+                Step::Decompose,
+                Step::Loop,
+                Step::SetupReview,
+                Step::Review,
+                Step::RegressionReview,
+                Step::_Test {
+                    name: "after",
+                    section: None,
+                    handler: Arc::new(|_| unreachable!()),
+                },
+            ],
+            ctx: WorkflowContext {
+                task_id: None,
+                plan_path: None,
+                cwd: PathBuf::from("."),
+                output: WorkflowOutput::new(OutputKind::Quiet),
+                opts: WorkflowOpts::default(),
+                review_id: None,
+                scope: None,
+                assignee: None,
+                iteration: 0,
+            },
+        };
+
+        workflow.apply_change(WorkflowChange::SkipSteps(vec![Step::Decompose, Step::Loop]));
+
+        assert_eq!(workflow.steps.len(), 4);
+        assert!(matches!(workflow.steps.first(), Some(Step::SetupReview)));
+        assert!(matches!(workflow.steps.get(1), Some(Step::Review)));
+        assert!(matches!(
+            workflow.steps.get(2),
+            Some(Step::RegressionReview)
+        ));
+        assert!(matches!(
+            workflow.steps.get(3),
+            Some(Step::_Test { name: "after", .. })
+        ));
+    }
+
 }

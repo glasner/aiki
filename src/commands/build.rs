@@ -6,30 +6,16 @@
 //! - Shows build/epic status via the `show` subcommand
 //! - Supports async (background) execution
 
-use crate::output_utils;
-use crate::tui;
-use crate::tui::theme::{detect_mode, Theme};
 use std::env;
 use std::path::Path;
 
 use clap::Subcommand;
 
-use super::async_spawn;
 use super::OutputFormat;
-use crate::agents::AgentType;
 use crate::error::{AikiError, Result};
-use crate::plans::{parse_plan_metadata, PlanGraph};
-use crate::tasks::id::{is_task_id, is_task_id_prefix};
-use crate::tasks::{
-    find_task, get_subtasks, materialize_graph, read_events, Task, TaskOutcome, TaskStatus,
-};
-use crate::workflow::builders::{build_workflow, build_workflow_from_epic, BuildOpts};
-use crate::workflow::steps::decompose::{
-    check_epic_blockers, close_epic, close_epic_as_invalid, create_epic_task, restart_epic,
-    undo_completed_subtasks,
-};
-use crate::workflow::steps::plan::{cleanup_stale_builds, validate_plan_path};
-use crate::workflow::{RunMode, Step, Workflow};
+use crate::plans::PlanGraph;
+use crate::tasks::{materialize_graph, read_events, Task};
+use crate::workflow::build::{self, BuildOpts};
 
 /// Build subcommands
 #[derive(Subcommand)]
@@ -88,6 +74,14 @@ pub struct BuildArgs {
     #[arg(long = "fix-template")]
     pub fix_template: Option<String>,
 
+    /// Agent for coding/fixing tasks (default: claude-code)
+    #[arg(long)]
+    pub coder: Option<String>,
+
+    /// Agent for review tasks (default: opposite of coder)
+    #[arg(long)]
+    pub reviewer: Option<String>,
+
     /// Internal: continue an async build from a previously created epic
     #[arg(long = "_continue-async", hide = true)]
     pub continue_async: Option<String>,
@@ -101,11 +95,12 @@ pub struct BuildArgs {
     pub subcommand: Option<BuildSubcommands>,
 }
 
-/// Convert anyhow::Error back to AikiError for crate-level Result.
-fn anyhow_to_aiki(e: anyhow::Error) -> AikiError {
-    match e.downcast::<AikiError>() {
-        Ok(aiki_err) => aiki_err,
-        Err(e) => AikiError::JjCommandFailed(e.to_string()),
+impl crate::workflow::HasRunKind for BuildArgs {
+    fn continue_async(&self) -> Option<&str> {
+        self.continue_async.as_deref()
+    }
+    fn run_async(&self) -> bool {
+        self.run_async
     }
 }
 
@@ -114,375 +109,35 @@ pub fn run(args: BuildArgs) -> Result<()> {
     let cwd = env::current_dir()
         .map_err(|_| AikiError::InvalidArgument("Failed to get current directory".to_string()))?;
 
-    if args.continue_async.is_some() {
-        let epic_id = args.continue_async.clone().unwrap();
-        return run_continue_async(&cwd, &epic_id, args);
-    }
-
     if let Some(subcommand) = args.subcommand {
         return match subcommand {
             BuildSubcommands::Show { plan_path, output } => run_show(&cwd, &plan_path, output),
         };
     }
 
-    let target = args.target.ok_or_else(|| {
-        AikiError::InvalidArgument(
-            "No plan path or epic ID provided. Usage: aiki build <plan-path-or-epic-id>"
-                .to_string(),
-        )
-    })?;
-
-    // Resolve --fix / --fix-template into a single Option<String>
-    let fix_template = args.fix_template.or(if args.fix {
-        Some("fix".to_string())
-    } else {
-        None
-    });
-    // Resolve --review / --review-template (--fix implies --review)
-    // Pass through explicit --review-template only; None lets create_review pick scope-specific default
-    let review_template = args.review_template.clone();
-    let review_after = review_template.is_some() || args.review || fix_template.is_some();
-    let fix_after = fix_template.is_some();
-
-    let output_id = matches!(args.output, Some(OutputFormat::Id));
-
-    if is_task_id(&target) || is_task_id_prefix(&target) {
-        run_build_epic(
-            &cwd,
-            &target,
-            args.run_async,
-            args.loop_template,
-            args.agent,
-            review_after,
-            fix_after,
-            review_template,
-            fix_template,
-            output_id,
-        )
-    } else {
-        run_build_plan(
-            &cwd,
-            &target,
-            args.restart,
-            args.run_async,
-            args.decompose_template,
-            args.loop_template,
-            args.agent,
-            review_after,
-            fix_after,
-            review_template,
-            fix_template,
-            output_id,
-        )
-    }
-}
-
-/// Background process entry point after being spawned by `spawn_aiki_background`.
-///
-/// This is called when `--_continue-async` is provided. The parent process has
-/// already created the epic task and returned its ID to the caller. This function
-/// picks up from there using a workflow: decompose → loop → optional review/fix.
-fn run_continue_async(cwd: &Path, epic_id: &str, args: BuildArgs) -> Result<()> {
-    let agent_type = if let Some(ref agent_str) = args.agent {
-        Some(
-            AgentType::from_str(agent_str)
-                .ok_or_else(|| AikiError::UnknownAgentType(agent_str.clone()))?,
-        )
-    } else {
-        None
-    };
-
-    // Find the epic and get plan_path
-    let events = read_events(cwd)?;
-    let graph = materialize_graph(&events);
-    let epic = find_task(&graph.tasks, epic_id)?;
-    let epic_id = epic.id.clone();
-    let plan_path = epic.data.get("plan").cloned().unwrap_or_default();
-
-    // Resolve flags
-    let fix_template = args.fix_template.or(if args.fix {
-        Some("fix".to_string())
-    } else {
-        None
-    });
-    let review_template = args.review_template;
-    let review_after = review_template.is_some() || args.review || fix_template.is_some();
-    let fix_after = fix_template.is_some();
-
-    let opts = BuildOpts {
-        restart: false,
-        decompose_template: args.decompose_template,
-        loop_template: args.loop_template,
-        agent: agent_type,
-        agent_str: args.agent,
-        review_after,
-        review_template,
-        fix_after,
-        fix_template,
-    };
-
-    let wf = build_workflow_from_epic(cwd, &epic_id, &plan_path, &opts);
-    wf.run_build(RunMode::Quiet, &opts)
-        .map_err(anyhow_to_aiki)?;
+    let opts = BuildOpts::from_args(&args)?;
+    build::run(&cwd, &opts)?;
 
     Ok(())
 }
 
-/// Build from a plan path — deterministic find-or-create.
-///
-/// - `--async`: validate plan, create epic, spawn background (workflow runs there)
-/// - Sync: run full workflow with text output (Plan → Decompose → Loop → [Review → Fix])
-fn run_build_plan(
-    cwd: &Path,
-    plan_path: &str,
-    restart: bool,
-    run_async: bool,
-    decompose_template: Option<String>,
-    loop_template: Option<String>,
-    agent: Option<String>,
-    review_after: bool,
-    fix_after: bool,
-    review_template: Option<String>,
-    fix_template: Option<String>,
-    output_id: bool,
-) -> Result<()> {
-    let agent_type = if let Some(ref agent_str) = agent {
-        Some(
-            AgentType::from_str(agent_str)
-                .ok_or_else(|| AikiError::UnknownAgentType(agent_str.clone()))?,
-        )
-    } else {
-        None
-    };
+/// Show build/epic status for a plan
+fn run_show(cwd: &Path, plan_path: &str, output_format: Option<OutputFormat>) -> Result<()> {
+    use crate::workflow::build::output_build_status;
+    use crate::workflow::WorkflowContext;
 
-    // Sync (non-async): use full workflow with text output
-    if !run_async {
-        let opts = BuildOpts {
-            restart,
-            decompose_template,
-            loop_template,
-            agent: agent_type,
-            agent_str: agent,
-            review_after,
-            review_template,
-            fix_after,
-            fix_template,
-        };
-
-        let wf = build_workflow(cwd, plan_path, &opts);
-        wf.run_build(RunMode::Text, &opts).map_err(anyhow_to_aiki)?;
-
-        output_after_workflow(cwd, plan_path, output_id)?;
-        return Ok(());
-    }
-
-    // --async path: plan validation and epic setup happen before spawning.
-    validate_plan_path(cwd, plan_path)?;
-
-    let full_path = if plan_path.starts_with('/') {
-        std::path::PathBuf::from(plan_path)
-    } else {
-        cwd.join(plan_path)
-    };
-    let metadata = parse_plan_metadata(&full_path);
-    if metadata.draft {
-        return Err(AikiError::InvalidArgument(
-            "Cannot build draft plan. Remove `draft: true` from frontmatter first.".to_string(),
-        ));
-    }
-
-    cleanup_stale_builds(cwd, plan_path)?;
-
-    // Deterministic epic lookup
-    let events = read_events(cwd)?;
-    let graph = materialize_graph(&events);
-    let plan_graph = PlanGraph::build(&graph);
-    let existing_epic = plan_graph.find_epic_for_plan(plan_path, &graph);
-
-    let epic_id = if restart {
-        if let Some(epic) = existing_epic {
-            if epic.status != TaskStatus::Closed {
-                undo_completed_subtasks(cwd, &epic.id)?;
-                close_epic(cwd, &epic.id)?;
-            }
-        }
-        None
-    } else {
-        match existing_epic {
-            Some(epic) if epic.status != TaskStatus::Closed => {
-                let subtasks = get_subtasks(&graph, &epic.id);
-                if subtasks.is_empty() {
-                    close_epic_as_invalid(cwd, &epic.id)?;
-                    None
-                } else {
-                    restart_epic(cwd, &epic.id)?;
-                    Some(epic.id.clone())
-                }
-            }
-            _ => None,
-        }
-    };
-
-    // --async: spawn background process and return immediately
-    {
-        let is_existing_epic = epic_id.is_some();
-        let epic_id = match epic_id {
-            Some(id) => id,
-            None => create_epic_task(cwd, plan_path)?,
-        };
-
-        if is_existing_epic {
+    match output_format {
+        Some(OutputFormat::Id) => {
             let events = read_events(cwd)?;
             let graph = materialize_graph(&events);
-            check_epic_blockers(&graph, &epic_id)?;
-        }
+            let plan_graph = PlanGraph::build(&graph);
 
-        let mut spawn_args: Vec<String> = vec![
-            "build".to_string(),
-            "--_continue-async".to_string(),
-            epic_id.to_string(),
-        ];
-        if let Some(tmpl) = decompose_template.as_deref() {
-            spawn_args.push("--decompose-template".to_string());
-            spawn_args.push(tmpl.to_string());
-        }
-        if let Some(tmpl) = loop_template.as_deref() {
-            spawn_args.push("--loop-template".to_string());
-            spawn_args.push(tmpl.to_string());
-        }
-        if let Some(a) = agent.as_deref() {
-            spawn_args.push("--agent".to_string());
-            spawn_args.push(a.to_string());
-        }
-        if let Some(tmpl) = review_template.as_deref() {
-            spawn_args.push("--review-template".to_string());
-            spawn_args.push(tmpl.to_string());
-        } else if review_after {
-            spawn_args.push("--review".to_string());
-        }
-        if let Some(tmpl) = fix_template.as_deref() {
-            spawn_args.push("--fix-template".to_string());
-            spawn_args.push(tmpl.to_string());
-        }
-        let spawn_args_refs: Vec<&str> = spawn_args.iter().map(|s| s.as_str()).collect();
-        async_spawn::spawn_aiki_background(cwd, &spawn_args_refs)?;
+            let epic = plan_graph
+                .resolve_epic_for_plan(plan_path, &graph)?
+                .ok_or_else(|| {
+                    AikiError::InvalidArgument(format!("No epic found for plan: {}", plan_path))
+                })?;
 
-        if output_id {
-            println!("{}", epic_id);
-        }
-
-        Ok(())
-    }
-}
-
-/// Build from an existing epic ID.
-///
-/// - `--async`: spawn background (workflow runs there via `--_continue-async`)
-/// - Sync: run workflow with text output
-fn run_build_epic(
-    cwd: &Path,
-    epic_id: &str,
-    run_async: bool,
-    loop_template: Option<String>,
-    agent: Option<String>,
-    review_after: bool,
-    fix_after: bool,
-    review_template: Option<String>,
-    fix_template: Option<String>,
-    output_id: bool,
-) -> Result<()> {
-    let agent_type = if let Some(ref agent_str) = agent {
-        Some(
-            AgentType::from_str(agent_str)
-                .ok_or_else(|| AikiError::UnknownAgentType(agent_str.clone()))?,
-        )
-    } else {
-        None
-    };
-
-    // Find epic task (resolve prefix to canonical ID)
-    let events = read_events(cwd)?;
-    let graph = materialize_graph(&events);
-    let epic = find_task(&graph.tasks, epic_id)?;
-    let epic_id = epic.id.as_str();
-
-    // Check if epic is blocked before running
-    check_epic_blockers(&graph, epic_id)?;
-
-    let plan_path = epic.data.get("plan").cloned().ok_or_else(|| {
-        AikiError::InvalidArgument(format!(
-            "Epic task {} missing data.plan. Cannot run build without a plan path.",
-            epic_id
-        ))
-    })?;
-
-    let opts = BuildOpts {
-        restart: false,
-        decompose_template: None,
-        loop_template,
-        agent: agent_type,
-        agent_str: agent.clone(),
-        review_after,
-        review_template,
-        fix_after,
-        fix_template,
-    };
-
-    // --async: spawn background process and return immediately
-    if run_async {
-        let mut spawn_args: Vec<String> = vec![
-            "build".to_string(),
-            "--_continue-async".to_string(),
-            epic_id.to_string(),
-        ];
-        if let Some(tmpl) = opts.loop_template.as_deref() {
-            spawn_args.push("--loop-template".to_string());
-            spawn_args.push(tmpl.to_string());
-        }
-        if let Some(a) = agent.as_deref() {
-            spawn_args.push("--agent".to_string());
-            spawn_args.push(a.to_string());
-        }
-        if let Some(tmpl) = opts.review_template.as_deref() {
-            spawn_args.push("--review-template".to_string());
-            spawn_args.push(tmpl.to_string());
-        } else if review_after {
-            spawn_args.push("--review".to_string());
-        }
-        if let Some(tmpl) = opts.fix_template.as_deref() {
-            spawn_args.push("--fix-template".to_string());
-            spawn_args.push(tmpl.to_string());
-        }
-        let spawn_args_refs: Vec<&str> = spawn_args.iter().map(|s| s.as_str()).collect();
-        async_spawn::spawn_aiki_background(cwd, &spawn_args_refs)?;
-
-        if output_id {
-            println!("{}", epic_id);
-        }
-
-        return Ok(());
-    }
-
-    // Sync path: run workflow with text output
-    let wf = build_workflow_from_epic(cwd, epic_id, &plan_path, &opts);
-    wf.run_build(RunMode::Text, &opts).map_err(anyhow_to_aiki)?;
-
-    output_after_workflow(cwd, &plan_path, output_id)?;
-
-    Ok(())
-}
-
-fn output_after_workflow(cwd: &Path, plan_path: &str, output_id: bool) -> Result<()> {
-    let events = read_events(cwd)?;
-    let graph = materialize_graph(&events);
-    let plan_graph = PlanGraph::build(&graph);
-
-    let epic = plan_graph.find_epic_for_plan(plan_path, &graph);
-    if let Some(epic) = epic {
-        if output_id {
-            println!("{}", epic.id);
-        } else {
-            let subtasks = get_subtasks(&graph, &epic.id);
             let build_tasks: Vec<&Task> = graph
                 .tasks
                 .values()
@@ -491,41 +146,8 @@ fn output_after_workflow(cwd: &Path, plan_path: &str, output_id: bool) -> Result
                         && t.data.get("plan").map(|s| s.as_str()) == Some(plan_path)
                 })
                 .collect();
-            output_build_show(epic, &subtasks, &build_tasks, &graph)?;
-        }
-    }
 
-    Ok(())
-}
-// The output_after_workflow helper is also there.
-
-/// Show build/epic status for a plan
-fn run_show(cwd: &Path, plan_path: &str, output_format: Option<OutputFormat>) -> Result<()> {
-    let events = read_events(cwd)?;
-    let graph = materialize_graph(&events);
-    let plan_graph = PlanGraph::build(&graph);
-
-    // Find epic via PlanGraph
-    let epic = plan_graph
-        .find_epic_for_plan(plan_path, &graph)
-        .ok_or_else(|| {
-            AikiError::InvalidArgument(format!("No epic found for plan: {}", plan_path))
-        })?;
-
-    // Find build tasks associated with this plan
-    let build_tasks: Vec<&Task> = graph
-        .tasks
-        .values()
-        .filter(|t| {
-            t.task_type.as_deref() == Some("orchestrator")
-                && t.data.get("plan").map(|s| s.as_str()) == Some(plan_path)
-        })
-        .collect();
-
-    match output_format {
-        Some(OutputFormat::Id) => {
             if build_tasks.is_empty() {
-                // No builds yet -- emit the epic ID as fallback
                 println!("{}", epic.id);
             } else {
                 for build in &build_tasks {
@@ -534,32 +156,21 @@ fn run_show(cwd: &Path, plan_path: &str, output_format: Option<OutputFormat>) ->
             }
         }
         None => {
-            let subtasks = get_subtasks(&graph, &epic.id);
-            output_build_show(epic, &subtasks, &build_tasks, &graph)?;
+            let ctx = WorkflowContext {
+                task_id: None,
+                plan_path: Some(plan_path.to_string()),
+                cwd: cwd.to_path_buf(),
+                output: crate::workflow::WorkflowOutput::new(crate::workflow::OutputKind::Text),
+                opts: crate::workflow::WorkflowOpts::default(),
+                review_id: None,
+                scope: None,
+                assignee: None,
+                iteration: 0,
+            };
+            output_build_status(&ctx, &None);
         }
     }
 
-    Ok(())
-}
-
-/// Output build show (detailed status display)
-pub(crate) fn output_build_show(
-    epic: &Task,
-    _subtasks: &[&Task],
-    _build_tasks: &[&Task],
-    graph: &crate::tasks::graph::TaskGraph,
-) -> Result<()> {
-    let plan_path = epic
-        .data
-        .get("plan")
-        .map(|s| s.as_str())
-        .unwrap_or("unknown");
-    output_utils::emit(|| {
-        let theme = Theme::from_mode(detect_mode());
-        let window = tui::app::WindowState::new(80);
-        let mut lines = tui::screens::build::view(graph, &epic.id, plan_path, &window);
-        tui::render::render_to_string(&mut lines, &theme)
-    });
     Ok(())
 }
 
@@ -567,8 +178,10 @@ pub(crate) fn output_build_show(
 mod tests {
     use super::*;
     use crate::tasks::graph::{EdgeStore, TaskGraph};
+    use crate::tasks::id::is_task_id;
     use crate::tasks::types::FastHashMap;
-    use crate::tasks::TaskPriority;
+    use crate::tasks::{TaskOutcome, TaskPriority, TaskStatus};
+    use crate::epic::check_epic_blockers;
     use std::collections::HashMap;
 
     fn make_task(id: &str, name: &str, status: TaskStatus) -> Task {
@@ -590,6 +203,7 @@ mod tests {
             last_session_id: None,
             stopped_reason: None,
             closed_outcome: None,
+            confidence: None,
             summary: None,
             turn_started: None,
             closed_at: None,
@@ -627,9 +241,12 @@ mod tests {
     }
 
     /// Helper: find epic for plan via PlanGraph
-    fn find_epic_for_plan_via_graph<'a>(graph: &'a TaskGraph, plan_path: &str) -> Option<&'a Task> {
+    fn find_epic_for_plan_via_graph<'a>(
+        graph: &'a TaskGraph,
+        plan_path: &str,
+    ) -> anyhow::Result<Option<&'a Task>> {
         let sg = PlanGraph::build(graph);
-        sg.find_epic_for_plan(plan_path, graph)
+        sg.resolve_epic_for_plan(plan_path, graph)
     }
 
     // --- find_epic_for_plan tests ---
@@ -637,7 +254,9 @@ mod tests {
     #[test]
     fn test_find_epic_for_plan_none() {
         let graph = make_graph(FastHashMap::default(), EdgeStore::new());
-        assert!(find_epic_for_plan_via_graph(&graph, "ops/now/feature.md").is_none());
+        assert!(find_epic_for_plan_via_graph(&graph, "ops/now/feature.md")
+            .unwrap()
+            .is_none());
     }
 
     #[test]
@@ -650,7 +269,7 @@ mod tests {
         edges.add("epic1", "file:ops/now/feature.md", "implements-plan");
 
         let graph = make_graph(tasks, edges);
-        let result = find_epic_for_plan_via_graph(&graph, "ops/now/feature.md");
+        let result = find_epic_for_plan_via_graph(&graph, "ops/now/feature.md").unwrap();
         assert!(result.is_some());
         assert_eq!(result.unwrap().id, "epic1");
     }
@@ -665,11 +284,13 @@ mod tests {
         edges.add("epic1", "file:ops/now/other.md", "implements-plan");
 
         let graph = make_graph(tasks, edges);
-        assert!(find_epic_for_plan_via_graph(&graph, "ops/now/feature.md").is_none());
+        assert!(find_epic_for_plan_via_graph(&graph, "ops/now/feature.md")
+            .unwrap()
+            .is_none());
     }
 
     #[test]
-    fn test_find_epic_for_plan_most_recent() {
+    fn test_find_epic_for_plan_returns_ambiguity_error() {
         let mut tasks = FastHashMap::default();
 
         let mut task1 = make_task("epic_old", "Epic: Old", TaskStatus::Closed);
@@ -684,9 +305,11 @@ mod tests {
         edges.add("epic_new", "file:ops/now/feature.md", "implements-plan");
 
         let graph = make_graph(tasks, edges);
-        let result = find_epic_for_plan_via_graph(&graph, "ops/now/feature.md");
-        assert!(result.is_some());
-        assert_eq!(result.unwrap().id, "epic_new");
+        let err = find_epic_for_plan_via_graph(&graph, "ops/now/feature.md").unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("Multiple epics implement file:ops/now/feature.md"));
+        assert!(msg.contains("epic_old (Epic: Old)"));
+        assert!(msg.contains("epic_new (Epic: New)"));
     }
 
     // --- cleanup_stale_builds helper logic tests ---
@@ -845,53 +468,44 @@ mod tests {
     // --- Build show output formatting tests ---
 
     #[test]
-    fn test_output_build_show_basic() {
-        let mut data = HashMap::new();
-        data.insert("plan".to_string(), "ops/now/feature.md".to_string());
-        let epic = make_task_with_data("epic1", "Epic: Feature", TaskStatus::Open, data);
-        let subtasks: Vec<&Task> = vec![];
-        let build_tasks: Vec<&Task> = vec![];
-        let graph = empty_graph();
-        let result = output_build_show(&epic, &subtasks, &build_tasks, &graph);
-        assert!(result.is_ok());
+    fn test_output_build_status_no_panic_with_missing_plan() {
+        use crate::workflow::build::output_build_status;
+        use crate::workflow::WorkflowContext;
+
+        // output_build_status should gracefully handle missing epic (no panic)
+        let ctx = WorkflowContext {
+            task_id: None,
+            plan_path: Some("nonexistent/plan.md".to_string()),
+            cwd: std::path::PathBuf::from("/tmp"),
+            output: crate::workflow::WorkflowOutput::new(crate::workflow::OutputKind::Text),
+            opts: crate::workflow::WorkflowOpts::default(),
+            review_id: None,
+            scope: None,
+            assignee: None,
+            iteration: 0,
+        };
+        output_build_status(&ctx, &None);
+        output_build_status(&ctx, &Some(crate::commands::OutputFormat::Id));
     }
 
     #[test]
-    fn test_output_build_show_with_subtasks_and_builds() {
-        let mut data = HashMap::new();
-        data.insert("plan".to_string(), "ops/now/feature.md".to_string());
-        let mut epic = make_task_with_data("epic1", "Epic: Feature", TaskStatus::InProgress, data);
-        epic.sources = vec!["file:ops/now/feature.md".to_string()];
+    fn test_output_build_status_no_panic_without_plan_path() {
+        use crate::workflow::build::output_build_status;
+        use crate::workflow::WorkflowContext;
 
-        let sub1 = make_task("sub1", "Step 1", TaskStatus::Closed);
-        let sub2 = make_task("sub2", "Step 2", TaskStatus::InProgress);
-        let subtasks: Vec<&Task> = vec![&sub1, &sub2];
-
-        let mut build_data = HashMap::new();
-        build_data.insert("plan".to_string(), "ops/now/feature.md".to_string());
-        let mut build =
-            make_task_with_data("build1", "Build: feature", TaskStatus::Closed, build_data);
-        build.task_type = Some("orchestrator".to_string());
-        build.closed_outcome = Some(TaskOutcome::Done);
-        let build_tasks: Vec<&Task> = vec![&build];
-
-        let graph = empty_graph();
-        let result = output_build_show(&epic, &subtasks, &build_tasks, &graph);
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_output_build_show_closed_epic_with_outcome() {
-        let mut data = HashMap::new();
-        data.insert("plan".to_string(), "ops/now/feature.md".to_string());
-        let mut epic = make_task_with_data("epic1", "Epic: Feature", TaskStatus::Closed, data);
-        epic.closed_outcome = Some(TaskOutcome::Done);
-
-        let subtasks: Vec<&Task> = vec![];
-        let build_tasks: Vec<&Task> = vec![];
-        let graph = empty_graph();
-        let result = output_build_show(&epic, &subtasks, &build_tasks, &graph);
-        assert!(result.is_ok());
+        // No plan_path → early return, no panic
+        let ctx = WorkflowContext {
+            task_id: None,
+            plan_path: None,
+            cwd: std::path::PathBuf::from("/tmp"),
+            output: crate::workflow::WorkflowOutput::new(crate::workflow::OutputKind::Text),
+            opts: crate::workflow::WorkflowOpts::default(),
+            review_id: None,
+            scope: None,
+            assignee: None,
+            iteration: 0,
+        };
+        output_build_status(&ctx, &None);
     }
 
     // --- OutputFormat tests ---
@@ -932,6 +546,8 @@ mod tests {
             review_template: None,
             fix: false,
             fix_template: None,
+            coder: None,
+            reviewer: None,
             continue_async: None,
             output: None,
             subcommand: None,
@@ -953,6 +569,8 @@ mod tests {
             review_template: None,
             fix: false,
             fix_template: None,
+            coder: None,
+            reviewer: None,
             continue_async: None,
             output: None,
             subcommand: None,
@@ -973,6 +591,8 @@ mod tests {
             review_template: None,
             fix: false,
             fix_template: None,
+            coder: None,
+            reviewer: None,
             continue_async: None,
             output: None,
             subcommand: None,
@@ -993,6 +613,8 @@ mod tests {
             review_template: None,
             fix: false,
             fix_template: Some("fix".to_string()),
+            coder: None,
+            reviewer: None,
             continue_async: None,
             output: None,
             subcommand: None,
@@ -1004,8 +626,8 @@ mod tests {
             None
         });
         let review_template = args.review_template.clone();
-        let review_after = review_template.is_some() || args.review || fix_template.is_some();
-        assert!(review_after);
+        let review = review_template.is_some() || args.review || fix_template.is_some();
+        assert!(review);
         assert!(review_template.is_none()); // No explicit template — create_review picks default
         assert!(fix_template.is_some());
     }
@@ -1023,6 +645,8 @@ mod tests {
             review_template: None,
             fix: true,
             fix_template: None,
+            coder: None,
+            reviewer: None,
             continue_async: None,
             output: None,
             subcommand: None,
@@ -1034,8 +658,8 @@ mod tests {
             None
         });
         let review_template = args.review_template.clone();
-        let review_after = review_template.is_some() || args.review || fix_template.is_some();
-        assert!(review_after);
+        let review = review_template.is_some() || args.review || fix_template.is_some();
+        assert!(review);
         assert!(review_template.is_none()); // No explicit template — create_review picks default
         assert!(fix_template.is_some());
     }
@@ -1053,6 +677,8 @@ mod tests {
             review_template: None,
             fix: false,
             fix_template: None,
+            coder: None,
+            reviewer: None,
             continue_async: None,
             output: None,
             subcommand: None,
@@ -1063,8 +689,8 @@ mod tests {
             None
         });
         let review_template = args.review_template.clone();
-        let review_after = review_template.is_some() || args.review || fix_template.is_some();
-        assert!(review_after);
+        let review = review_template.is_some() || args.review || fix_template.is_some();
+        assert!(review);
         assert!(review_template.is_none()); // No explicit template — create_review picks default
         assert!(fix_template.is_none());
     }
@@ -1082,6 +708,8 @@ mod tests {
             review_template: Some("my/review".to_string()),
             fix: false,
             fix_template: None,
+            coder: None,
+            reviewer: None,
             continue_async: None,
             output: None,
             subcommand: None,
@@ -1102,6 +730,8 @@ mod tests {
             review_template: None,
             fix: false,
             fix_template: Some("fix".to_string()),
+            coder: None,
+            reviewer: None,
             continue_async: None,
             output: None,
             subcommand: None,
@@ -1124,6 +754,8 @@ mod tests {
             review_template: None,
             fix: false,
             fix_template: None,
+            coder: None,
+            reviewer: None,
             continue_async: None,
             output: None,
             subcommand: None,
@@ -1134,8 +766,8 @@ mod tests {
             None
         });
         let review_template = args.review_template.clone();
-        let review_after = review_template.is_some() || args.review || fix_template.is_some();
-        assert!(!review_after);
+        let review = review_template.is_some() || args.review || fix_template.is_some();
+        assert!(!review);
         assert!(review_template.is_none());
         assert!(fix_template.is_none());
     }
@@ -1365,7 +997,7 @@ mod tests {
 
     // --- Build flag resolution contract ---
     // These verify that the --fix / --review / --fix-template flag
-    // resolution logic produces the correct (review_after, fix_after) pair.
+    // resolution logic produces the correct (review, has_fix) pair.
 
     fn resolve_build_flags(
         review: bool,
@@ -1378,53 +1010,52 @@ mod tests {
         } else {
             None
         });
-        let review_after = review_template.is_some() || review || fix_template.is_some();
-        let fix_after = fix_template.is_some();
-        (review_after, fix_after)
+        let review = review_template.is_some() || review || fix_template.is_some();
+        let has_fix = fix_template.is_some();
+        (review, has_fix)
     }
 
     #[test]
     fn test_build_flags_bare_build() {
-        let (review_after, fix_after) = resolve_build_flags(false, None, false, None);
-        assert!(!review_after);
-        assert!(!fix_after);
+        let (review, has_fix) = resolve_build_flags(false, None, false, None);
+        assert!(!review);
+        assert!(!has_fix);
     }
 
     #[test]
     fn test_build_flags_review_only() {
-        let (review_after, fix_after) = resolve_build_flags(true, None, false, None);
-        assert!(review_after);
-        assert!(!fix_after);
+        let (review, has_fix) = resolve_build_flags(true, None, false, None);
+        assert!(review);
+        assert!(!has_fix);
     }
 
     #[test]
     fn test_build_flags_fix_implies_review() {
-        let (review_after, fix_after) = resolve_build_flags(false, None, true, None);
-        assert!(review_after);
-        assert!(fix_after);
+        let (review, has_fix) = resolve_build_flags(false, None, true, None);
+        assert!(review);
+        assert!(has_fix);
     }
 
     #[test]
     fn test_build_flags_fix_template_implies_both() {
-        let (review_after, fix_after) = resolve_build_flags(false, None, false, Some("custom/fix"));
-        assert!(review_after);
-        assert!(fix_after);
+        let (review, has_fix) = resolve_build_flags(false, None, false, Some("custom/fix"));
+        assert!(review);
+        assert!(has_fix);
     }
 
     #[test]
     fn test_build_flags_review_template_only() {
-        let (review_after, fix_after) =
-            resolve_build_flags(false, Some("custom/review"), false, None);
-        assert!(review_after);
-        assert!(!fix_after);
+        let (review, has_fix) = resolve_build_flags(false, Some("custom/review"), false, None);
+        assert!(review);
+        assert!(!has_fix);
     }
 
     #[test]
     fn test_build_flags_all_flags() {
-        let (review_after, fix_after) =
+        let (review, has_fix) =
             resolve_build_flags(true, Some("custom/review"), true, Some("custom/fix"));
-        assert!(review_after);
-        assert!(fix_after);
+        assert!(review);
+        assert!(has_fix);
     }
 
     // --- Stale build detection contract (pure logic) ---
@@ -1597,71 +1228,14 @@ mod tests {
         );
     }
 
-    // --- drive_build / fix iteration contract ---
-
-    /// The build fix iteration loop must cap at MAX_BUILD_ITERATIONS (10).
-    #[test]
-    fn test_max_iterations_cap() {
-        assert_eq!(
-            crate::workflow::MAX_BUILD_ITERATIONS,
-            10,
-            "Build fix iteration must cap at 10"
-        );
-        // Simulate: when every review returns issues, iteration counter stops at MAX
-        let mut iteration = 0;
-        let mut cycles_injected = 0;
-        for _ in 0..crate::workflow::MAX_BUILD_ITERATIONS + 5 {
-            if iteration < crate::workflow::MAX_BUILD_ITERATIONS {
-                cycles_injected += 1;
-                iteration += 1;
-            }
-        }
-        assert_eq!(
-            cycles_injected,
-            crate::workflow::MAX_BUILD_ITERATIONS,
-            "Should inject exactly MAX_BUILD_ITERATIONS cycles before stopping"
-        );
-    }
-
-    /// drive_build does NOT inject fix cycles when fix_after is false.
-    /// run_build falls through to the generic Workflow::run in that case.
-    #[test]
-    fn test_drive_build_only_active_when_fix_after() {
-        let opts_no_fix = BuildOpts {
-            restart: false,
-            decompose_template: None,
-            loop_template: None,
-            agent: None,
-            agent_str: None,
-            review_after: true,
-            review_template: None,
-            fix_after: false,
-            fix_template: None,
-        };
-        // When fix_after is false, run_build delegates to the generic runner
-        assert!(!opts_no_fix.fix_after);
-
-        let opts_with_fix = BuildOpts {
-            restart: false,
-            decompose_template: None,
-            loop_template: None,
-            agent: None,
-            agent_str: None,
-            review_after: true,
-            review_template: None,
-            fix_after: true,
-            fix_template: Some("fix".to_string()),
-        };
-        // When fix_after is true, run_build uses drive_build
-        assert!(opts_with_fix.fix_after);
-    }
+    // --- Review + fix integration contract ---
 
     /// has_actionable_issues returns true when issue_count > 0.
     #[test]
     fn test_has_review_issues_logic() {
         let mut task = make_task("review1", "Review", TaskStatus::Closed);
         task.data.insert("issue_count".to_string(), "3".to_string());
-        let has_issues = crate::workflow::orchestrate::has_actionable_issues(&task);
+        let has_issues = crate::reviews::has_actionable_issues(&task);
         assert!(
             has_issues,
             "issue_count=3 should indicate actionable issues"
@@ -1673,119 +1247,10 @@ mod tests {
     fn test_no_review_issues_logic() {
         let mut task = make_task("review2", "Review", TaskStatus::Closed);
         task.data.insert("issue_count".to_string(), "0".to_string());
-        let has_issues = crate::workflow::orchestrate::has_actionable_issues(&task);
+        let has_issues = crate::reviews::has_actionable_issues(&task);
         assert!(
             !has_issues,
             "issue_count=0 should indicate no actionable issues"
         );
-    }
-
-    /// build_workflow omits static Fix step when fix_after is true (drive_build handles it).
-    #[test]
-    fn test_build_workflow_no_static_fix_when_fix_after() {
-        let temp_dir = tempfile::TempDir::new().unwrap();
-        let plan_file = temp_dir.path().join("plan.md");
-        std::fs::write(&plan_file, "# Plan").unwrap();
-
-        let opts = BuildOpts {
-            restart: false,
-            decompose_template: None,
-            loop_template: None,
-            agent: None,
-            agent_str: None,
-            review_after: true,
-            review_template: None,
-            fix_after: true,
-            fix_template: Some("fix".to_string()),
-        };
-
-        let wf = build_workflow(temp_dir.path(), "plan.md", &opts);
-        // Should have: Plan, Decompose, Loop, Review (no Fix)
-        assert_eq!(wf.steps.len(), 4);
-        assert_eq!(wf.steps[0].name(), "plan");
-        assert_eq!(wf.steps[1].name(), "decompose");
-        assert_eq!(wf.steps[2].name(), "loop");
-        assert_eq!(wf.steps[3].name(), "review");
-        // No Fix step — drive_build handles fix iteration dynamically
-        assert!(
-            !wf.steps.iter().any(|s| s.name() == "fix"),
-            "Static Fix step should not be present when fix_after is true"
-        );
-    }
-
-    #[test]
-    fn test_build_workflow_default_steps() {
-        let temp_dir = tempfile::TempDir::new().unwrap();
-        let plan_file = temp_dir.path().join("plan.md");
-        std::fs::write(&plan_file, "# Plan").unwrap();
-
-        let opts = BuildOpts {
-            restart: false,
-            decompose_template: None,
-            loop_template: None,
-            agent: None,
-            agent_str: None,
-            review_after: false,
-            review_template: None,
-            fix_after: false,
-            fix_template: None,
-        };
-
-        let wf = build_workflow(temp_dir.path(), "plan.md", &opts);
-        let names: Vec<_> = wf.steps.iter().map(|s| s.name()).collect();
-        assert_eq!(names, vec!["plan", "decompose", "loop"]);
-        assert_eq!(wf.steps.len(), 3);
-    }
-
-    #[test]
-    #[test]
-    fn test_build_review_scope_uses_task_kind() {
-        use crate::workflow::ReviewScopeKind;
-
-        let epic_id = "onnlrwntommtvtnzovwromnkyulorwtz";
-        let scope = crate::workflow::steps::review::build_review_scope(epic_id);
-
-        // Must be Task scope so that fix tasks become subtasks of the epic,
-        // triggering reopen_if_closed. Using Code/Plan scope breaks this.
-        assert_eq!(scope.kind, ReviewScopeKind::Task);
-        assert_eq!(scope.id, epic_id);
-        assert!(scope.task_ids.is_empty());
-    }
-
-    #[test]
-    fn test_build_workflow_review_step_only_when_enabled() {
-        let temp_dir = tempfile::TempDir::new().unwrap();
-        let plan_file = temp_dir.path().join("plan.md");
-        std::fs::write(&plan_file, "# Plan").unwrap();
-
-        let without_review = BuildOpts {
-            restart: false,
-            decompose_template: None,
-            loop_template: None,
-            agent: None,
-            agent_str: None,
-            review_after: false,
-            review_template: None,
-            fix_after: false,
-            fix_template: None,
-        };
-        let wf_without_review = build_workflow(temp_dir.path(), "plan.md", &without_review);
-        let with_review = BuildOpts {
-            restart: false,
-            decompose_template: None,
-            loop_template: None,
-            agent: None,
-            agent_str: None,
-            review_after: true,
-            review_template: None,
-            fix_after: false,
-            fix_template: None,
-        };
-        let wf_with_review = build_workflow(temp_dir.path(), "plan.md", &with_review);
-
-        assert_eq!(wf_without_review.steps.len(), 3);
-        assert_eq!(wf_with_review.steps.len(), 4);
-        assert!(!wf_without_review.steps.iter().any(|s| s.name() == "review"));
-        assert!(wf_with_review.steps.iter().any(|s| s.name() == "review"));
     }
 }

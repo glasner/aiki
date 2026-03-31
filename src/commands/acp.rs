@@ -908,6 +908,7 @@ pub fn run(agent: String, bin: Option<String>, agent_args: Vec<String>) -> Resul
             cwd: working_dir.clone(),
             timestamp: chrono::Utc::now(),
             reason: "connection_close".to_string(),
+            tokens: None,
         });
         if let Err(e) = event_bus::dispatch(event) {
             debug_log(|| format!("[acp] Failed to fire session.ended on close: {}", e));

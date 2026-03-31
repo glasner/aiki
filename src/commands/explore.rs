@@ -12,6 +12,7 @@ use crate::agents::AgentType;
 use crate::commands::OutputFormat;
 use crate::error::{AikiError, Result};
 use crate::output_utils;
+use crate::reviews::{detect_target, ReviewScope, ReviewScopeKind};
 use crate::session::find_active_session;
 use crate::tasks::md::MdBuilder;
 use crate::tasks::runner::{task_run, task_run_async, TaskRunOptions};
@@ -20,7 +21,6 @@ use crate::tasks::{
     get_current_scope_set, get_in_progress, get_ready_queue_for_scope_set, materialize_graph,
     read_events, reassign_task, start_task_core, Task, TaskStatus,
 };
-use crate::workflow::steps::review::{detect_target, ReviewScope, ReviewScopeKind};
 
 /// Arguments for the explore command
 #[derive(clap::Args)]

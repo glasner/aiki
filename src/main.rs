@@ -3,6 +3,7 @@ mod agents;
 mod cache;
 mod commands;
 mod config;
+mod epic;
 mod editors;
 mod error;
 mod event_bus;
@@ -19,9 +20,11 @@ mod plugins;
 mod prerequisites;
 mod provenance;
 mod repos;
+mod reviews;
 
 mod plans;
 mod session;
+mod settings;
 mod tasks;
 mod tools;
 mod tui;
@@ -51,6 +54,7 @@ Setup:
   init        Initialize Aiki in the current repository
   doctor      Diagnose and fix configuration issues
   plugin      Manage plugins (install, update, list, remove)
+  config      Manage config settings (get, set, unset, file)
 
 For Humans:
   plan        Interactive plan authoring with AI agent
@@ -68,6 +72,7 @@ For Agents:
   resolve     Resolve JJ merge conflicts
 
 For Everyone:
+  tldr        Summarize what a closed epic changed
   session     Manage sessions
   blame       Show line-by-line AI attribution for a file
   authors     Show authors who contributed to changes
@@ -164,6 +169,11 @@ enum Commands {
         #[command(subcommand)]
         command: commands::session::SessionCommands,
     },
+    /// Manage config settings
+    Config {
+        #[command(subcommand)]
+        command: commands::config::ConfigCommands,
+    },
     /// Manage tasks
     Task {
         #[command(subcommand)]
@@ -176,43 +186,7 @@ enum Commands {
         command: EventCommands,
     },
     /// Create and run followup tasks from review comments
-    Fix {
-        /// Task ID to read comments from (reads from stdin if not provided)
-        task_id: Option<String>,
-        /// Run followup task asynchronously
-        #[arg(long = "async")]
-        run_async: bool,
-        /// Internal: continue an async fix from a previously created fix-parent
-        #[arg(long = "_continue-async", hide = true)]
-        continue_async: Option<String>,
-        /// Custom plan template (default: fix)
-        #[arg(long)]
-        template: Option<String>,
-        /// Custom decompose template (default: decompose)
-        #[arg(long = "decompose-template")]
-        decompose_template: Option<String>,
-        /// Custom loop template (default: loop)
-        #[arg(long = "loop-template")]
-        loop_template: Option<String>,
-        /// Enable quality loop review step
-        #[arg(long, short = 'r')]
-        review: bool,
-        /// Quality loop review with custom template (implies --review)
-        #[arg(long = "review-template")]
-        review_template: Option<String>,
-        /// Agent for task assignment (default: claude-code)
-        #[arg(long)]
-        agent: Option<String>,
-        /// Enable autorun (auto-start this fix task when its target closes)
-        #[arg(long)]
-        autorun: bool,
-        /// Disable post-fix review loop (single pass only)
-        #[arg(long)]
-        once: bool,
-        /// Output format (e.g., `id` for bare task ID on stdout)
-        #[arg(long, short = 'o', value_name = "FORMAT")]
-        output: Option<commands::OutputFormat>,
-    },
+    Fix(commands::fix::FixArgs),
     /// Explore a scope (plan, code, task, or session)
     Explore(commands::explore::ExploreArgs),
     /// Create and run code review tasks
@@ -230,6 +204,8 @@ enum Commands {
     Build(commands::build::BuildArgs),
     /// Orchestrate a parent task's subtasks via lanes
     Loop(commands::loop_cmd::LoopArgs),
+    /// Summarize what a closed epic changed
+    Tldr(commands::tldr::TldrArgs),
     /// Interactive plan authoring with AI agent.
     /// Subcommands: epic (default), fix.
     /// Examples: `aiki plan feature.md`, `aiki plan epic Add auth`,
@@ -360,41 +336,12 @@ fn run() -> Result<()> {
             output,
         ),
         Commands::Session { command } => commands::session::run(command),
+        Commands::Config { command } => commands::config::run(command),
         Commands::Task { command } => commands::task::run(command),
         Commands::Event { command } => match command {
             EventCommands::PrepareCommitMessage => commands::event::run_prepare_commit_message(),
         },
-        Commands::Fix {
-            task_id,
-            run_async,
-            continue_async,
-            template,
-            decompose_template,
-            loop_template,
-            review,
-            review_template,
-            agent,
-            autorun,
-            once,
-            output,
-        } => {
-            // Pass through explicit --review-template only; create_review picks scope-specific default
-            // --review flag is a no-op for fix (fix always runs reviews), kept for CLI symmetry with build
-            let _ = review;
-            commands::fix::run(
-                task_id,
-                run_async,
-                continue_async,
-                template,
-                decompose_template,
-                loop_template,
-                review_template,
-                agent,
-                autorun,
-                once,
-                output,
-            )
-        }
+        Commands::Fix(args) => commands::fix::run(args),
         Commands::Explore(args) => commands::explore::run(args),
         Commands::Review(args) => commands::review::run(args),
         Commands::Resolve(args) => commands::resolve::run(args),
@@ -402,6 +349,7 @@ fn run() -> Result<()> {
         Commands::Decompose(args) => commands::decompose::run(args),
         Commands::Build(args) => commands::build::run(args),
         Commands::Loop(args) => commands::loop_cmd::run(args),
+        Commands::Tldr(args) => commands::tldr::run(args),
         Commands::Plan {
             args,
             template,

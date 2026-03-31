@@ -12,6 +12,7 @@ use crate::agents::AgentType;
 use crate::commands::OutputFormat;
 use crate::error::{AikiError, Result};
 pub use crate::workflow::steps::r#loop::{run_loop, LoopOptions};
+use crate::workflow::OutputKind;
 
 /// Arguments for the loop command
 #[derive(clap::Args)]
@@ -58,7 +59,7 @@ pub fn run(args: LoopArgs) -> Result<()> {
         options = options.with_template(template);
     }
 
-    let loop_task_id = run_loop(&cwd, &args.parent_id, options, false)?;
+    let loop_task_id = run_loop(&cwd, &args.parent_id, options, false, OutputKind::Text)?;
 
     // --output id: emit bare task ID and exit before orchestration
     if matches!(args.output, Some(OutputFormat::Id)) {

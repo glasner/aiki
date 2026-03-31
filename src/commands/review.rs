@@ -10,31 +10,19 @@
 use clap::Subcommand;
 use std::collections::HashMap;
 use std::env;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::output_utils;
 
-use super::async_spawn;
-use crate::agents::AgentType;
 use crate::commands::OutputFormat;
 use crate::error::{AikiError, Result};
-use crate::session::find_active_session;
-use crate::tasks::md::MdBuilder;
-use crate::tasks::runner::{task_run, TaskRunOptions};
-use crate::tasks::{
-    find_task, materialize_graph, read_events, reassign_task, start_task_core, Task, TaskComment,
-    TaskStatus,
-};
-use crate::workflow::builders::review_workflow;
-use crate::workflow::orchestrate::{is_review_task, run_fix};
+use crate::reviews::{get_issue_comments, Location};
+use crate::reviews::{is_review_task, issue_count};
 #[cfg(test)]
-use crate::workflow::steps::review::looks_like_task_id;
-use crate::workflow::steps::review::{
-    build_async_review_args, create_review, detect_target, format_locations, get_issue_comments,
-    parse_locations, CreateReviewParams, CreateReviewResult, Location, ReviewScope,
-    ReviewScopeKind,
-};
-use crate::workflow::RunMode;
+use crate::tasks::looks_like_task_id;
+use crate::tasks::md::MdBuilder;
+use crate::tasks::{find_task, materialize_graph, read_events, Task, TaskStatus};
+use crate::workflow::review::ReviewOpts;
 
 /// Parse and validate a severity value for clap's value_parser.
 fn parse_severity(s: &str) -> std::result::Result<String, String> {
@@ -56,6 +44,10 @@ pub enum ReviewSubcommands {
         /// Show all reviews (not just open)
         #[arg(long)]
         all: bool,
+
+        /// Limit the number of results shown
+        #[arg(long, short = 'n')]
+        number: Option<usize>,
     },
 
     /// Show review task details
@@ -98,6 +90,10 @@ pub enum ReviewIssueSubcommands {
     List {
         /// The review task ID
         review_id: String,
+
+        /// Limit the number of results shown
+        #[arg(long, short = 'n')]
+        number: Option<usize>,
     },
 }
 
@@ -135,6 +131,10 @@ pub struct ReviewArgs {
     #[arg(long)]
     pub agent: Option<String>,
 
+    /// Agent for coding/fixing tasks (default: claude-code)
+    #[arg(long)]
+    pub coder: Option<String>,
+
     /// Enable autorun (auto-start this review when its target closes)
     #[arg(long)]
     pub autorun: bool,
@@ -152,27 +152,27 @@ pub struct ReviewArgs {
     pub subcommand: Option<ReviewSubcommands>,
 }
 
+impl crate::workflow::HasRunKind for ReviewArgs {
+    fn continue_async(&self) -> Option<&str> {
+        self.continue_async.as_deref()
+    }
+    fn run_async(&self) -> bool {
+        self.run_async
+    }
+    fn start(&self) -> bool {
+        self.start
+    }
+}
+
 /// Run the review command
 pub fn run(args: ReviewArgs) -> Result<()> {
     let cwd = env::current_dir()
         .map_err(|_| AikiError::InvalidArgument("Failed to get current directory".to_string()))?;
 
-    // Resolve --fix / --fix-template into a single Option<String>
-    let fix_template = args.fix_template.or(if args.fix {
-        Some("fix".to_string())
-    } else {
-        None
-    });
-
-    // Internal: continue an async review+fix from a previously created review task
-    if let Some(ref review_id) = args.continue_async {
-        return run_continue_async(&cwd, review_id, fix_template, args.agent, args.autorun);
-    }
-
     // If a subcommand is provided, dispatch to it
     if let Some(subcommand) = args.subcommand {
         return match subcommand {
-            ReviewSubcommands::List { all } => list_reviews(&cwd, all),
+            ReviewSubcommands::List { all, number } => list_reviews(&cwd, all, number),
             ReviewSubcommands::Show { task_id } => show_review(&cwd, &task_id),
             ReviewSubcommands::Issue { command } => match command {
                 ReviewIssueSubcommands::Add {
@@ -183,296 +183,15 @@ pub fn run(args: ReviewArgs) -> Result<()> {
                     high,
                     low,
                 } => run_issue_add(&cwd, &review_id, &text, severity, &files, high, low),
-                ReviewIssueSubcommands::List { review_id } => run_issue_list(&cwd, &review_id),
+                ReviewIssueSubcommands::List { review_id, number } => {
+                    run_issue_list(&cwd, &review_id, number)
+                }
             },
         };
     }
 
-    // Otherwise, run the create/review flow with top-level args
-    run_review(
-        &cwd,
-        args.target,
-        args.code,
-        fix_template,
-        args.run_async,
-        args.start,
-        args.template,
-        args.agent,
-        args.autorun,
-        args.output,
-    )
-}
-
-/// Core review implementation
-fn run_review(
-    cwd: &Path,
-    target: Option<String>,
-    code: bool,
-    fix_template: Option<String>,
-    run_async: bool,
-    start: bool,
-    template_name: Option<String>,
-    agent: Option<String>,
-    autorun: bool,
-    output_format: Option<OutputFormat>,
-) -> Result<()> {
-    // --fix/--fix-template and --start cannot be used together
-    if fix_template.is_some() && start {
-        return Err(AikiError::InvalidArgument(
-            "--fix and --start cannot be used together. Use --fix with blocking or --async mode."
-                .to_string(),
-        ));
-    }
-
-    // Parse agent if provided
-    let agent_override = if let Some(ref agent_str) = agent {
-        let agent_type = AgentType::from_str(agent_str)
-            .ok_or_else(|| AikiError::UnknownAgentType(agent_str.clone()))?;
-        Some(agent_type.as_str().to_string())
-    } else {
-        None
-    };
-
-    // Detect target and resolve scope at CLI layer (BEFORE workflow assembly)
-    let (scope, _worker) = match detect_target(cwd, target.as_deref(), code) {
-        Ok(r) => r,
-        Err(AikiError::NothingToReview) => {
-            return Ok(());
-        }
-        Err(e) => return Err(e),
-    };
-
-    // --fix is not supported for session reviews
-    if fix_template.is_some() && scope.kind == ReviewScopeKind::Session {
-        return Err(AikiError::InvalidArgument(
-            "--fix is not supported for session reviews".to_string(),
-        ));
-    }
-
-    let output_id = matches!(output_format, Some(OutputFormat::Id));
-
-    // --start path: create review task but don't run it (NOT a workflow)
-    if start {
-        let result = match create_review(
-            cwd,
-            CreateReviewParams {
-                scope,
-                agent_override,
-                template: template_name,
-                fix_template,
-                autorun,
-            },
-        ) {
-            Ok(r) => r,
-            Err(AikiError::NothingToReview) => return Ok(()),
-            Err(e) => return Err(e),
-        };
-        let review_id = result.review_task_id;
-
-        // Reassign task to current agent (caller takes over)
-        if let Some(session) = find_active_session(cwd) {
-            reassign_task(cwd, &review_id, session.agent_type.as_str())?;
-        }
-        // Start task using core logic (validates, auto-stops, emits events)
-        start_task_core(cwd, &[review_id.clone()])?;
-        if !output_id {
-            output_review_started(cwd, &review_id)?;
-        }
-        if output_id {
-            println!("{}", review_id);
-        }
-        return Ok(());
-    }
-
-    // --async path: create review task and spawn background process
-    if run_async {
-        let fix_template_for_spawn = fix_template.clone();
-        let result = match create_review(
-            cwd,
-            CreateReviewParams {
-                scope,
-                agent_override,
-                template: template_name,
-                fix_template,
-                autorun,
-            },
-        ) {
-            Ok(r) => r,
-            Err(AikiError::NothingToReview) => return Ok(()),
-            Err(e) => return Err(e),
-        };
-        let review_id = result.review_task_id;
-
-        let spawn_args = build_async_review_args(
-            &review_id,
-            fix_template_for_spawn.as_deref(),
-            agent.as_deref(),
-            autorun,
-        );
-        let spawn_args_refs: Vec<&str> = spawn_args.iter().map(|s| s.as_str()).collect();
-        async_spawn::spawn_aiki_background(cwd, &spawn_args_refs)?;
-
-        if !output_id {
-            output_review_async(cwd, &review_id)?;
-        }
-        if output_id {
-            println!("{}", review_id);
-        }
-        return Ok(());
-    }
-
-    // Sync path: blocking review (+ optional fix)
-    {
-        let has_fix = fix_template.is_some();
-        let wf = review_workflow(
-            cwd.to_path_buf(),
-            scope,
-            template_name,
-            agent_override,
-            fix_template.clone(),
-            autorun,
-        );
-        let ctx = wf.run(RunMode::Text)?;
-        let review_id = ctx
-            .task_id
-            .expect("Review step should set task_id in context");
-
-        // Post-workflow: check for issues, maybe run fix
-        let has_issues = {
-            let events = read_events(cwd)?;
-            let graph = materialize_graph(&events);
-            find_task(&graph.tasks, &review_id)
-                .map(|t| {
-                    t.data
-                        .get("issue_count")
-                        .and_then(|c| c.parse::<usize>().ok())
-                        .unwrap_or(0)
-                        > 0
-                })
-                .unwrap_or(false)
-        };
-
-        if has_fix && has_issues {
-            run_fix(
-                cwd,
-                &review_id,
-                false,
-                None,
-                fix_template,
-                None,
-                None,
-                None,
-                agent,
-                autorun,
-                false,
-                output_format,
-            )?;
-        } else if output_id {
-            println!("{}", review_id);
-        } else {
-            output_review_completed(cwd, &review_id)?;
-        }
-    }
-
-    Ok(())
-}
-
-/// Background process entry point for async review+fix.
-///
-/// This is called when `--_continue-async` is provided. The parent process has
-/// already created the review task and returned its ID to the caller. This function
-/// picks up from there: runs the review to completion, checks for issues, and if
-/// `fix` is true and issues exist, runs the fix pipeline.
-fn run_continue_async(
-    cwd: &Path,
-    review_id: &str,
-    fix_template: Option<String>,
-    agent: Option<String>,
-    autorun: bool,
-) -> Result<()> {
-    // Run the review (quiet — no TUI, background/workflow handles output)
-    let mut options = TaskRunOptions::new().quiet();
-    if let Some(ref agent_str) = agent {
-        if let Some(agent_type) = AgentType::from_str(agent_str) {
-            options = options.with_agent(agent_type);
-        }
-    }
-    task_run(cwd, review_id, options)?;
-
-    if fix_template.is_none() {
-        return Ok(());
-    }
-
-    // Check for issues
-    let events = read_events(cwd)?;
-    let graph = materialize_graph(&events);
-    let has_issues = find_task(&graph.tasks, review_id)
-        .map(|t| {
-            t.data
-                .get("issue_count")
-                .and_then(|c| c.parse::<usize>().ok())
-                .unwrap_or(0)
-                > 0
-        })
-        .unwrap_or(false);
-
-    if has_issues {
-        run_fix(
-            cwd,
-            review_id,
-            false,
-            None,
-            fix_template,
-            None,
-            None,
-            None,
-            agent,
-            autorun,
-            false,
-            None,
-        )?;
-    }
-
-    Ok(())
-}
-
-/// Summarize a review task as a short text line (issue count or approved).
-fn review_summary(cwd: &Path, review_id: &str) -> Result<String> {
-    let events = read_events(cwd)?;
-    let graph = materialize_graph(&events);
-    let task = find_task(&graph.tasks, review_id)?;
-    let issue_count = task
-        .data
-        .get("issue_count")
-        .and_then(|c| c.parse::<usize>().ok())
-        .unwrap_or(0);
-    if issue_count > 0 {
-        Ok(format!("Found {} issues", issue_count))
-    } else {
-        Ok("approved".to_string())
-    }
-}
-
-/// Output review started message (for --start mode)
-fn output_review_started(_cwd: &Path, review_id: &str) -> Result<()> {
-    output_utils::emit(|| format!("Started: {review_id}\n"));
-    Ok(())
-}
-
-/// Output review async message (for --async mode)
-fn output_review_async(_cwd: &Path, review_id: &str) -> Result<()> {
-    output_utils::emit(|| format!("Dispatched: {review_id}\n"));
-    Ok(())
-}
-
-/// Output review completed message (for blocking mode)
-fn output_review_completed(cwd: &Path, review_id: &str) -> Result<()> {
-    let summary = review_summary(cwd, review_id)?;
-    let hint = format!("\n---\nRun `aiki fix {}` to remediate.\n", review_id);
-    output_utils::emit(|| {
-        let status = format!("Completed: {review_id} — {summary}\n");
-        format!("{status}{hint}")
-    });
+    let opts = ReviewOpts::from_args(&args)?;
+    crate::workflow::review::run(&cwd, &opts)?;
     Ok(())
 }
 
@@ -549,7 +268,7 @@ fn run_issue_add(
 }
 
 /// List issues on a review task
-fn run_issue_list(cwd: &Path, review_id: &str) -> Result<()> {
+fn run_issue_list(cwd: &Path, review_id: &str, number: Option<usize>) -> Result<()> {
     let events = read_events(cwd)?;
     let graph = materialize_graph(&events);
     let task = find_task(&graph.tasks, review_id)?;
@@ -562,7 +281,10 @@ fn run_issue_list(cwd: &Path, review_id: &str) -> Result<()> {
         )));
     }
 
-    let issues = get_issue_comments(task);
+    let mut issues = get_issue_comments(task);
+    if let Some(n) = number {
+        issues.truncate(n);
+    }
     if issues.is_empty() {
         output_utils::emit(|| "No issues found.\n".to_string());
     } else {
@@ -593,7 +315,7 @@ fn run_issue_list(cwd: &Path, review_id: &str) -> Result<()> {
 }
 
 /// List review tasks
-fn list_reviews(cwd: &Path, all: bool) -> Result<()> {
+fn list_reviews(cwd: &Path, all: bool, number: Option<usize>) -> Result<()> {
     let events = read_events(cwd)?;
     let tasks = materialize_graph(&events).tasks;
 
@@ -609,6 +331,11 @@ fn list_reviews(cwd: &Path, all: bool) -> Result<()> {
 
     // Sort by created_at (most recent first)
     reviews.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+
+    // Apply --number truncation
+    if let Some(n) = number {
+        reviews.truncate(n);
+    }
 
     if reviews.is_empty() {
         output_utils::emit(|| {
@@ -639,15 +366,11 @@ fn list_reviews(cwd: &Path, all: bool) -> Result<()> {
                 .map(|o| format!("{:?}", o).to_lowercase())
                 .unwrap_or_default();
 
-            let issue_count = if let Some(count) = review.data.get("issue_count") {
-                count.parse::<usize>().unwrap_or(review.comments.len())
-            } else {
-                review.comments.len()
-            };
+            let ic = issue_count(&review);
 
             content.push_str(&format!(
                 "| {} | {} | {} | {} | {} |\n",
-                &review.id, status_str, outcome_str, issue_count, &review.name
+                &review.id, status_str, outcome_str, ic, &review.name
             ));
         }
         MdBuilder::new().build(&content)
@@ -715,7 +438,12 @@ fn show_review(cwd: &Path, task_id: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agents::determine_reviewer_with;
+
+    use crate::agents::{determine_reviewer_with, AgentType};
+    use crate::reviews::{
+        detect_target, format_locations, parse_locations, ReviewScope, ReviewScopeKind,
+    };
+    use crate::tasks::TaskComment;
 
     #[test]
     fn test_determine_reviewer_empty_list_errors() {
@@ -830,27 +558,6 @@ mod tests {
             task_ids: vec![],
         };
         assert_eq!(scope.name(), "Session");
-    }
-
-    #[test]
-    fn test_review_workflow_is_single_step() {
-        let scope = ReviewScope {
-            kind: ReviewScopeKind::Task,
-            id: "abc123".to_string(),
-            task_ids: vec![],
-        };
-
-        let wf = review_workflow(
-            PathBuf::from("."),
-            scope,
-            Some("review/code".to_string()),
-            Some("codex".to_string()),
-            Some("fix".to_string()),
-            true,
-        );
-
-        assert_eq!(wf.steps.len(), 1);
-        assert_eq!(wf.steps[0].name(), "review");
     }
 
     #[test]
@@ -1031,7 +738,7 @@ mod tests {
     #[test]
     fn test_detect_target_code_flag_task_id() {
         let dir = tempfile::tempdir().unwrap();
-        let result = detect_target(dir.path(), Some("abcdefgh"), true);
+        let result = detect_target(dir.path(), Some("klmnopqr"), true);
         assert!(result.is_err());
         assert!(result
             .unwrap_err()
@@ -1067,12 +774,8 @@ mod tests {
 
     #[test]
     fn test_looks_like_task_id_valid() {
-        assert!(looks_like_task_id("abcdefghijklmnopqrstuvwxyzabcdef"));
-        assert!(looks_like_task_id("abc")); // prefix
-        assert!(looks_like_task_id("x"));
-        assert!(looks_like_task_id("abcdefghijklmnopqrstuvwxyzabcdef.1")); // subtask
-        assert!(looks_like_task_id("abcdefghijklmnopqrstuvwxyzabcdef.1.2")); // nested subtask
-        assert!(looks_like_task_id("abc.3")); // prefix with subtask
+        assert!(looks_like_task_id("klmnopqrstuvwxyzklmnopqrstuvwxyz"));
+        assert!(looks_like_task_id("klm")); // prefix (3 chars minimum)
     }
 
     #[test]
@@ -1080,11 +783,11 @@ mod tests {
         assert!(!looks_like_task_id("")); // empty
         assert!(!looks_like_task_id("ABC")); // uppercase
         assert!(!looks_like_task_id("abc123")); // digits in root
+        assert!(!looks_like_task_id("abc")); // a-j not in k-z range
         assert!(!looks_like_task_id("ops/now/feature.md")); // path
         assert!(!looks_like_task_id("hello-world")); // hyphen
         assert!(!looks_like_task_id("has spaces")); // spaces
-        assert!(!looks_like_task_id(".1")); // no root
-        assert!(!looks_like_task_id("abc.")); // trailing dot, empty suffix
+        assert!(!looks_like_task_id("klm.1")); // dot notation removed
     }
 
     // Location tests
@@ -1245,58 +948,6 @@ mod tests {
         );
     }
 
-    // build_async_review_args tests
-
-    #[test]
-    fn build_async_review_args_minimal() {
-        let args = build_async_review_args("rev123", None, None, false);
-        assert_eq!(args, vec!["review", "--_continue-async", "rev123"]);
-    }
-
-    #[test]
-    fn build_async_review_args_includes_autorun_when_set() {
-        let args = build_async_review_args("rev123", None, None, true);
-        assert!(args.contains(&"--autorun".to_string()));
-    }
-
-    #[test]
-    fn build_async_review_args_excludes_autorun_when_unset() {
-        let args = build_async_review_args("rev123", None, None, false);
-        assert!(!args.contains(&"--autorun".to_string()));
-    }
-
-    #[test]
-    fn build_async_review_args_includes_fix_template() {
-        let args = build_async_review_args("rev123", Some("fix"), None, false);
-        assert!(args.contains(&"--fix-template".to_string()));
-        assert!(args.contains(&"fix".to_string()));
-    }
-
-    #[test]
-    fn build_async_review_args_includes_agent() {
-        let args = build_async_review_args("rev123", None, Some("claude-code"), false);
-        assert!(args.contains(&"--agent".to_string()));
-        assert!(args.contains(&"claude-code".to_string()));
-    }
-
-    #[test]
-    fn build_async_review_args_all_flags() {
-        let args = build_async_review_args("rev123", Some("fix"), Some("claude-code"), true);
-        assert_eq!(
-            args,
-            vec![
-                "review",
-                "--_continue-async",
-                "rev123",
-                "--fix-template",
-                "fix",
-                "--agent",
-                "claude-code",
-                "--autorun",
-            ]
-        );
-    }
-
     // ── Regression tests for review-fix execution paths ──────────────
 
     fn make_test_task(id: &str) -> Task {
@@ -1319,6 +970,7 @@ mod tests {
             last_session_id: None,
             stopped_reason: None,
             closed_outcome: None,
+            confidence: None,
             summary: None,
             turn_started: None,
             closed_at: None,
@@ -1407,46 +1059,6 @@ mod tests {
         assert!(get_issue_comments(&task).is_empty());
     }
 
-    #[test]
-    fn build_async_review_args_fix_template_only() {
-        // Verify --fix-template flag is correctly placed in args for async path
-        let args = build_async_review_args("rev456", Some("fix"), None, false);
-        assert_eq!(
-            args,
-            vec![
-                "review",
-                "--_continue-async",
-                "rev456",
-                "--fix-template",
-                "fix",
-            ]
-        );
-    }
-
-    #[test]
-    fn build_async_review_args_fix_template_with_autorun() {
-        // --fix-template + --autorun (no agent) for async path
-        let args = build_async_review_args("rev789", Some("fix"), None, true);
-        assert_eq!(
-            args,
-            vec![
-                "review",
-                "--_continue-async",
-                "rev789",
-                "--fix-template",
-                "fix",
-                "--autorun",
-            ]
-        );
-    }
-
-    #[test]
-    fn build_async_review_args_preserves_review_id() {
-        // Ensure the review ID is passed as the third element
-        let args = build_async_review_args("abcdefghijklmnopqrstuvwxyzabcdef", None, None, false);
-        assert_eq!(args[2], "abcdefghijklmnopqrstuvwxyzabcdef");
-    }
-
     // ═══════════════════════════════════════════════════════════════════
     // Pre-refactor behavioral contract tests for review orchestration
     // ═══════════════════════════════════════════════════════════════════
@@ -1489,7 +1101,7 @@ mod tests {
     #[test]
     fn test_detect_target_code_flag_with_task_id_errors() {
         let dir = tempfile::tempdir().unwrap();
-        let result = detect_target(dir.path(), Some("abcdefgh"), true);
+        let result = detect_target(dir.path(), Some("klmnopqr"), true);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("--code"));
     }
@@ -1508,19 +1120,19 @@ mod tests {
 
     #[test]
     fn test_looks_like_task_id_full_id() {
-        assert!(looks_like_task_id("abcdefghijklmnopqrstuvwxyzabcdef"));
+        assert!(looks_like_task_id("klmnopqrstuvwxyzklmnopqrstuvwxyz"));
     }
 
     #[test]
     fn test_looks_like_task_id_prefix() {
-        assert!(looks_like_task_id("abc"));
-        assert!(looks_like_task_id("x"));
+        assert!(looks_like_task_id("klm"));
+        assert!(looks_like_task_id("xyz")); // 3-char minimum prefix
     }
 
     #[test]
-    fn test_looks_like_task_id_subtask() {
-        assert!(looks_like_task_id("abc.1"));
-        assert!(looks_like_task_id("abc.1.2"));
+    fn test_looks_like_task_id_rejects_dot_notation() {
+        assert!(!looks_like_task_id("klm.1"));
+        assert!(!looks_like_task_id("klm.1.2"));
     }
 
     #[test]
@@ -1537,7 +1149,7 @@ mod tests {
         assert!(!looks_like_task_id("hello-world")); // hyphen
         assert!(!looks_like_task_id("")); // empty
         assert!(!looks_like_task_id(".1")); // no root
-        assert!(!looks_like_task_id("abc.")); // trailing dot
+        assert!(!looks_like_task_id("klm.")); // trailing dot
     }
 
     // --- get_issue_comments contract ---
@@ -1696,27 +1308,5 @@ mod tests {
 
         assert!(scope_data.get("options.fix").is_none());
         assert!(scope_data.get("options.fix_template").is_none());
-    }
-
-    // --- build_async_review_args contract ---
-
-    #[test]
-    fn test_async_review_args_structure() {
-        // The args must always start with ["review", "--_continue-async", <review_id>]
-        let args = build_async_review_args("rev1", None, None, false);
-        assert_eq!(args[0], "review");
-        assert_eq!(args[1], "--_continue-async");
-        assert_eq!(args[2], "rev1");
-        assert_eq!(args.len(), 3);
-    }
-
-    #[test]
-    fn test_async_review_args_with_all_options() {
-        let args = build_async_review_args("rev1", Some("fix"), Some("claude-code"), true);
-        assert!(args.contains(&"--fix-template".to_string()));
-        assert!(args.contains(&"fix".to_string()));
-        assert!(args.contains(&"--agent".to_string()));
-        assert!(args.contains(&"claude-code".to_string()));
-        assert!(args.contains(&"--autorun".to_string()));
     }
 }

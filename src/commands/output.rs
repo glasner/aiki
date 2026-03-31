@@ -3,8 +3,8 @@
 //! Provides a `CommandOutput` struct and `format_command_output()` that both
 //! review.rs and fix.rs use to produce consistent output.
 
+use crate::reviews::{format_locations, parse_locations, ReviewScope};
 use crate::tasks::TaskComment;
-use crate::workflow::steps::review::{format_locations, parse_locations, ReviewScope};
 
 /// Structured output data for review/fix commands.
 ///
@@ -95,7 +95,7 @@ pub fn format_command_output(output: &CommandOutput) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workflow::steps::review::{ReviewScope, ReviewScopeKind};
+    use crate::reviews::{ReviewScope, ReviewScopeKind};
     use std::collections::HashMap;
 
     #[test]

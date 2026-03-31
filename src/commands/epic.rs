@@ -10,19 +10,17 @@ use std::path::Path;
 
 use clap::Subcommand;
 
-use super::decompose::{run_decompose, DecomposeOptions};
 use super::OutputFormat;
 use crate::agents::AgentType;
+use crate::epic::{
+    close_epic, close_epic_as_invalid, create_epic_with_decompose, undo_completed_subtasks,
+};
 use crate::error::{AikiError, Result};
 use crate::output_utils;
 use crate::plans::{parse_plan_metadata, PlanGraph};
-use crate::tasks::id::is_task_id;
 use crate::tasks::md::MdBuilder;
 use crate::tasks::{
-    find_task, get_subtasks, is_task_id_prefix, materialize_graph, read_events, Task, TaskStatus,
-};
-use crate::workflow::steps::decompose::{
-    close_epic, close_epic_as_invalid, create_epic_task, undo_completed_subtasks,
+    find_task, get_subtasks, looks_like_task_id, materialize_graph, read_events, Task, TaskStatus,
 };
 use crate::workflow::steps::plan::validate_plan_path;
 
@@ -61,7 +59,11 @@ pub enum EpicCommands {
         output: Option<OutputFormat>,
     },
     /// List all epics
-    List,
+    List {
+        /// Limit the number of results shown
+        #[arg(long, short = 'n')]
+        number: Option<usize>,
+    },
 }
 
 /// Run the epic command
@@ -78,7 +80,7 @@ pub fn run(command: EpicCommands) -> Result<()> {
             output,
         } => run_add(&cwd, &plan_path, restart, template, agent, output),
         EpicCommands::Show { arg, output } => run_show(&cwd, &arg, output),
-        EpicCommands::List => run_list(&cwd),
+        EpicCommands::List { number } => run_list(&cwd, number),
     }
 }
 
@@ -132,18 +134,19 @@ fn run_add(
 
     // --restart always creates a new epic
     if restart {
-        if let Some(epic) = plan_graph.find_epic_for_plan(plan_path, &graph) {
+        if let Some(epic) = plan_graph.resolve_epic_for_plan(plan_path, &graph)? {
             if epic.status != TaskStatus::Closed {
                 undo_completed_subtasks(cwd, &epic.id)?;
                 close_epic(cwd, &epic.id)?;
             }
         }
-        let epic_id = create_epic(cwd, plan_path, template_name.as_deref(), agent_type, false)?;
+        let epic_id =
+            create_epic_with_decompose(cwd, plan_path, template_name.as_deref(), agent_type, false)?;
         return output_epic_result(cwd, &epic_id, true, output_format);
     }
 
     // Find-or-create: check for existing epic
-    let existing_epic = plan_graph.find_epic_for_plan(plan_path, &graph);
+    let existing_epic = plan_graph.resolve_epic_for_plan(plan_path, &graph)?;
 
     match existing_epic {
         Some(epic) if epic.status != TaskStatus::Closed => {
@@ -153,7 +156,7 @@ fn run_add(
                 // Invalid epic (no subtasks) — decompose agent failed
                 close_epic_as_invalid(cwd, &epic.id)?;
                 let epic_id =
-                    create_epic(cwd, plan_path, template_name.as_deref(), agent_type, false)?;
+                    create_epic_with_decompose(cwd, plan_path, template_name.as_deref(), agent_type, false)?;
                 return output_epic_result(cwd, &epic_id, true, output_format);
             }
 
@@ -167,68 +170,10 @@ fn run_add(
         }
         _ => {
             // No epic, or epic is closed — create new
-            let epic_id = create_epic(cwd, plan_path, template_name.as_deref(), agent_type, false)?;
+            let epic_id =
+                create_epic_with_decompose(cwd, plan_path, template_name.as_deref(), agent_type, false)?;
             output_epic_result(cwd, &epic_id, true, output_format)
         }
-    }
-}
-
-/// Create a new epic by running the decompose agent.
-///
-/// 1. Creates the epic task (container for subtasks)
-/// 2. Calls `run_decompose()` which handles implements-plan link, decompose task,
-///    decomposes-plan link, depends-on link, and running the decompose agent
-/// 3. Returns the epic task ID
-pub(super) fn create_epic(
-    cwd: &Path,
-    plan_path: &str,
-    template_name: Option<&str>,
-    agent_type: Option<AgentType>,
-    show_tui: bool,
-) -> Result<String> {
-    // Create the epic task first so the decompose agent can add subtasks to it
-    let epic_id = create_epic_task(cwd, plan_path)?;
-
-    let options = DecomposeOptions {
-        template: template_name.map(|s| s.to_string()),
-        agent: agent_type,
-    };
-    run_decompose(cwd, plan_path, &epic_id, options, show_tui)?;
-
-    Ok(epic_id)
-}
-
-/// Find an existing epic or create a new one for the given plan.
-///
-/// Deterministic behavior (no interactive prompts):
-/// - Valid incomplete epic exists (has subtasks) → return its ID
-/// - Invalid epic exists (no subtasks, still open) → close as wont_do, create new
-/// - No epic or closed epic → create new via decompose agent
-///
-/// Returns the epic task ID.
-pub fn find_or_create_epic(
-    cwd: &Path,
-    plan_path: &str,
-    decompose_template: Option<&str>,
-    show_tui: bool,
-) -> Result<String> {
-    let events = read_events(cwd)?;
-    let graph = materialize_graph(&events);
-    let plan_graph = PlanGraph::build(&graph);
-
-    let existing_epic = plan_graph.find_epic_for_plan(plan_path, &graph);
-
-    match existing_epic {
-        Some(epic) if epic.status != TaskStatus::Closed => {
-            let subtasks = get_subtasks(&graph, &epic.id);
-            if subtasks.is_empty() {
-                close_epic_as_invalid(cwd, &epic.id)?;
-                create_epic(cwd, plan_path, decompose_template, None, show_tui)
-            } else {
-                Ok(epic.id.clone())
-            }
-        }
-        _ => create_epic(cwd, plan_path, decompose_template, None, show_tui),
     }
 }
 
@@ -238,14 +183,14 @@ fn run_show(cwd: &Path, arg: &str, output_format: Option<OutputFormat>) -> Resul
     let graph = materialize_graph(&events);
 
     // Determine if arg is a task ID or plan path
-    let epic = if is_task_id(arg) || is_task_id_prefix(arg) {
+    let epic = if looks_like_task_id(arg) {
         // Task ID or prefix lookup
         find_task(&graph.tasks, arg)?
     } else {
         // Plan path lookup via PlanGraph
         let plan_graph = PlanGraph::build(&graph);
         plan_graph
-            .find_epic_for_plan(arg, &graph)
+            .resolve_epic_for_plan(arg, &graph)?
             .ok_or_else(|| AikiError::InvalidArgument(format!("No epic found for plan: {}", arg)))?
     };
 
@@ -263,7 +208,7 @@ fn run_show(cwd: &Path, arg: &str, output_format: Option<OutputFormat>) -> Resul
 }
 
 /// List all epics
-fn run_list(cwd: &Path) -> Result<()> {
+fn run_list(cwd: &Path, number: Option<usize>) -> Result<()> {
     let events = read_events(cwd)?;
     let graph = materialize_graph(&events);
 
@@ -283,6 +228,11 @@ fn run_list(cwd: &Path) -> Result<()> {
 
     // Sort by created_at (newest first)
     epics.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+
+    // Apply --number truncation
+    if let Some(n) = number {
+        epics.truncate(n);
+    }
 
     if epics.is_empty() {
         output_utils::emit(|| "No epics found.".to_string());
@@ -498,6 +448,7 @@ mod tests {
             last_session_id: None,
             stopped_reason: None,
             closed_outcome: None,
+            confidence: None,
             summary: None,
             turn_started: None,
             closed_at: None,
@@ -515,15 +466,20 @@ mod tests {
         }
     }
 
-    fn find_epic_for_plan_via_graph<'a>(graph: &'a TaskGraph, plan_path: &str) -> Option<&'a Task> {
+    fn find_epic_for_plan_via_graph<'a>(
+        graph: &'a TaskGraph,
+        plan_path: &str,
+    ) -> anyhow::Result<Option<&'a Task>> {
         let sg = PlanGraph::build(graph);
-        sg.find_epic_for_plan(plan_path, graph)
+        sg.resolve_epic_for_plan(plan_path, graph)
     }
 
     #[test]
     fn test_find_epic_for_plan_none() {
         let graph = make_graph(FastHashMap::default(), EdgeStore::new());
-        assert!(find_epic_for_plan_via_graph(&graph, "ops/now/feature.md").is_none());
+        assert!(find_epic_for_plan_via_graph(&graph, "ops/now/feature.md")
+            .unwrap()
+            .is_none());
     }
 
     #[test]
@@ -536,13 +492,13 @@ mod tests {
         edges.add("epic1", "file:ops/now/feature.md", "implements-plan");
 
         let graph = make_graph(tasks, edges);
-        let result = find_epic_for_plan_via_graph(&graph, "ops/now/feature.md");
+        let result = find_epic_for_plan_via_graph(&graph, "ops/now/feature.md").unwrap();
         assert!(result.is_some());
         assert_eq!(result.unwrap().id, "epic1");
     }
 
     #[test]
-    fn test_find_epic_for_plan_most_recent() {
+    fn test_find_epic_for_plan_returns_ambiguity_error() {
         let mut tasks = FastHashMap::default();
 
         let mut task1 = make_task("epic_old", "Epic: Old", TaskStatus::Closed);
@@ -557,9 +513,11 @@ mod tests {
         edges.add("epic_new", "file:ops/now/feature.md", "implements-plan");
 
         let graph = make_graph(tasks, edges);
-        let result = find_epic_for_plan_via_graph(&graph, "ops/now/feature.md");
-        assert!(result.is_some());
-        assert_eq!(result.unwrap().id, "epic_new");
+        let err = find_epic_for_plan_via_graph(&graph, "ops/now/feature.md").unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("Multiple epics implement file:ops/now/feature.md"));
+        assert!(msg.contains("epic_old (Epic: Old)"));
+        assert!(msg.contains("epic_new (Epic: New)"));
     }
 
     #[test]
