@@ -249,8 +249,13 @@ change.completed:
                 - with_author_and_message: metadata
                   jj: metaedit --message "{{message}}" --ignore-working-copy
 
-          # Create a new change for the next edit
-          - jj: new
+          # Create a new change for the next edit.
+          # Skip for Codex — OTel events arrive asynchronously, so jj new
+          # would race with in-flight tool operations. Codex relies on
+          # turn boundaries for change separation instead.
+          - if: event.agent_type != "codex"
+            then:
+                - jj: new
 
     # Delete operations: record provenance and separate from other operations
     - if: event.delete
@@ -262,7 +267,9 @@ change.completed:
           - with_author_and_message: metadata
             jj: metaedit --message "{{message}}" --ignore-working-copy
 
-          - jj: new
+          - if: event.agent_type != "codex"
+            then:
+                - jj: new
 
     # Move operations: record provenance and separate from other operations
     - if: event.move
@@ -274,7 +281,9 @@ change.completed:
           - with_author_and_message: metadata
             jj: metaedit --message "{{message}}" --ignore-working-copy
 
-          - jj: new
+          - if: event.agent_type != "codex"
+            then:
+                - jj: new
 
 # ==============================================================================
 # Read Operation Events

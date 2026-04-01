@@ -268,7 +268,8 @@ fn event_session_id(event: &ConversationEvent) -> &str {
         | ConversationEvent::Response { session_id, .. }
         | ConversationEvent::SessionStart { session_id, .. }
         | ConversationEvent::SessionEnd { session_id, .. }
-        | ConversationEvent::Autoreply { session_id, .. } => session_id,
+        | ConversationEvent::Autoreply { session_id, .. }
+        | ConversationEvent::ModelChanged { session_id, .. } => session_id,
     }
 }
 
@@ -411,6 +412,20 @@ fn run_show(id: &str) -> Result<()> {
                 for line in content.lines() {
                     println!("  {}", line);
                 }
+            }
+            ConversationEvent::ModelChanged {
+                timestamp,
+                previous_model,
+                new_model,
+                ..
+            } => {
+                let from = previous_model.as_deref().unwrap_or("unknown");
+                println!(
+                    "\n  \u{1f500} model changed  ({})  {} \u{2192} {}",
+                    format_time_only(timestamp),
+                    from,
+                    new_model,
+                );
             }
         }
     }

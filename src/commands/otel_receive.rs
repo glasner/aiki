@@ -1,8 +1,11 @@
 use crate::cache::debug_log;
-use crate::editors::codex::otel::{self, CodexOtelContext, CodexOtelEvent};
+use crate::editors::codex::otel::{self, CodexOtelContext, CodexOtelEvent, ToolKind};
 use crate::error::Result;
 use crate::event_bus;
-use crate::events::{AikiEvent, AikiSessionStartPayload, AikiTurnStartedPayload};
+use crate::events::{
+    AikiChangeCompletedPayload, AikiEvent, AikiSessionStartPayload, AikiTurnStartedPayload,
+    ChangeOperation, DeleteOperation, MoveOperation, WriteOperation,
+};
 use crate::provenance::record::{AgentType, DetectionMethod};
 use crate::session::{AikiSession, AikiSessionFile, SessionMode};
 use chrono::Utc;
@@ -642,15 +645,40 @@ fn process_event(event: CodexOtelEvent, context: &CodexOtelContext) {
         }
 
         CodexOtelEvent::ToolResult {
-            conversation_id, ..
+            conversation_id,
+            tool_name,
+            arguments,
         } => {
-            // Modified files come from JJ file tracking, not OTel
+            let kind = tool_name
+                .as_deref()
+                .map(otel::classify_tool)
+                .unwrap_or(ToolKind::Other);
+
             debug_log(|| {
                 format!(
-                    "OTel: tool_result: conv={} (ignored, files from JJ)",
-                    conversation_id
+                    "OTel: tool_result: conv={} tool={:?} kind={:?}",
+                    conversation_id, tool_name, kind
                 )
             });
+
+            match kind {
+                ToolKind::Write => {
+                    maybe_emit_change_completed(
+                        &conversation_id,
+                        context,
+                        &tool_name,
+                        &arguments,
+                    );
+                }
+                ToolKind::Read | ToolKind::Shell | ToolKind::Other => {
+                    debug_log(|| {
+                        format!(
+                            "OTel: tool_result {:?} ({:?}) — no provenance needed",
+                            tool_name, kind
+                        )
+                    });
+                }
+            }
         }
 
         CodexOtelEvent::Unknown { event_name } => {
@@ -756,6 +784,135 @@ fn maybe_emit_turn_started(
 
     if let Err(e) = event_bus::dispatch(event) {
         debug_log(|| format!("Failed to dispatch turn.started from OTel: {}", e));
+    }
+}
+
+/// Emit change.completed events for Codex apply_patch tool results.
+///
+/// Parses the patch content from tool arguments, extracts file operations,
+/// and dispatches change.completed events so the hooks flow can write provenance
+/// metadata (including task= IDs) to JJ change descriptions.
+fn maybe_emit_change_completed(
+    conversation_id: &str,
+    context: &CodexOtelContext,
+    tool_name: &Option<String>,
+    arguments: &Option<String>,
+) {
+    let patch_content = match arguments {
+        Some(args) => match otel::extract_patch_content(args) {
+            Some(content) => content,
+            None => {
+                debug_log(|| "OTel: apply_patch skipped (no patch content in args)".to_string());
+                return;
+            }
+        },
+        None => {
+            debug_log(|| "OTel: apply_patch skipped (no arguments)".to_string());
+            return;
+        }
+    };
+
+    if patch_content.is_empty() {
+        debug_log(|| "OTel: apply_patch skipped (empty patch content)".to_string());
+        return;
+    }
+
+    let operations = otel::parse_apply_patch(&patch_content);
+    if operations.is_empty() {
+        debug_log(|| "OTel: apply_patch skipped (no operations parsed)".to_string());
+        return;
+    }
+
+    let cwd = match context.cwd.clone() {
+        Some(c) => c,
+        None => match lookup_cwd_from_codex_session(conversation_id) {
+            Some(c) => c,
+            None => {
+                debug_log(|| {
+                    format!(
+                        "OTel: apply_patch skipped for {} (no cwd)",
+                        conversation_id
+                    )
+                });
+                return;
+            }
+        },
+    };
+
+    let session = AikiSession::new(
+        AgentType::Codex,
+        conversation_id,
+        context.agent_version.as_deref(),
+        DetectionMethod::Hook,
+        SessionMode::Interactive,
+    )
+    .with_parent_pid(context.agent_pid);
+
+    let session_file = AikiSessionFile::new(&session);
+    if !session_file.exists() {
+        debug_log(|| {
+            format!(
+                "OTel: apply_patch skipped for {} (no session file)",
+                conversation_id
+            )
+        });
+        return;
+    }
+
+    let tool = tool_name
+        .clone()
+        .unwrap_or_else(|| "apply_patch".to_string());
+    let now = Utc::now();
+
+    for (op_type, file_info) in &operations {
+        let operation = match *op_type {
+            "write" => ChangeOperation::Write(WriteOperation {
+                file_paths: vec![file_info.clone()],
+                edit_details: vec![],
+            }),
+            "delete" => ChangeOperation::Delete(DeleteOperation {
+                file_paths: vec![file_info.clone()],
+            }),
+            "move" => {
+                // file_info is "source:dest" for moves
+                let parts: Vec<&str> = file_info.splitn(2, ':').collect();
+                if parts.len() == 2 {
+                    ChangeOperation::Move(MoveOperation::from_move_paths(vec![
+                        parts[0].to_string(),
+                        parts[1].to_string(),
+                    ]))
+                } else {
+                    continue;
+                }
+            }
+            _ => continue,
+        };
+
+        debug_log(|| {
+            format!(
+                "OTel: dispatching change.completed for {} ({}: {})",
+                conversation_id, op_type, file_info
+            )
+        });
+
+        let event = AikiEvent::ChangeCompleted(AikiChangeCompletedPayload {
+            session: session.clone(),
+            cwd: cwd.clone(),
+            timestamp: now,
+            tool_name: tool.clone(),
+            success: true,
+            turn: crate::events::Turn::unknown(),
+            operation,
+        });
+
+        if let Err(e) = event_bus::dispatch(event) {
+            debug_log(|| {
+                format!(
+                    "Failed to dispatch change.completed for {}: {}",
+                    file_info, e
+                )
+            });
+        }
     }
 }
 

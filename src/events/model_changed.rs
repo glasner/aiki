@@ -29,6 +29,21 @@ pub fn handle_model_changed(payload: AikiModelChangedPayload) -> Result<HookResu
         )
     });
 
+    // Record model change to conversation history
+    let cwd_str = payload.cwd.to_string_lossy();
+    let repo_id = crate::repos::compute_repo_id(&payload.cwd).ok();
+    if let Err(e) = crate::history::record_model_changed(
+        &crate::global::global_aiki_dir(),
+        &payload.session,
+        payload.previous_model.as_deref(),
+        &payload.new_model,
+        payload.timestamp,
+        repo_id.as_deref(),
+        Some(&cwd_str),
+    ) {
+        debug_log(|| format!("Failed to record model change: {}", e));
+    }
+
     let core_hook = crate::flows::load_core_hook();
     let mut state = AikiState::new(payload);
 

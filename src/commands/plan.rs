@@ -48,7 +48,7 @@ pub enum PlanMode {
         text: String,
     },
     /// Create a new plan with an auto-generated filename
-    Autogen { description: String, slug: String },
+    Autogen { description: String },
 }
 
 /// Run the plan command
@@ -122,13 +122,7 @@ fn determine_mode(
         }
         let description = prompt_multiline_input("What would you like to plan?")?
             .ok_or_else(|| AikiError::InvalidArgument("No description provided".to_string()))?;
-        let slug = generate_slug(&description);
-        let base_path = repo_root.join(plan_dir);
-        let path = find_unique_path(&base_path, &slug)?;
-        return Ok(PlanMode::Autogen {
-            description,
-            slug: path.file_stem().unwrap().to_string_lossy().to_string(),
-        });
+        return Ok(PlanMode::Autogen { description });
     }
 
     let first_arg = &args[0];
@@ -169,16 +163,7 @@ fn determine_mode(
     } else {
         // Autogen mode - join all args as description
         let description = args.join(" ");
-        let slug = generate_slug(&description);
-
-        // Find a unique filename using configured plan dir
-        let base_path = repo_root.join(plan_dir);
-        let path = find_unique_path(&base_path, &slug)?;
-
-        Ok(PlanMode::Autogen {
-            description,
-            slug: path.file_stem().unwrap().to_string_lossy().to_string(),
-        })
+        Ok(PlanMode::Autogen { description })
     }
 }
 
@@ -235,6 +220,7 @@ fn parse_idea_from_filename(path: &Path) -> String {
 
 /// Generate a slug from a description
 /// e.g., "Add User Auth" -> "add-user-auth"
+#[allow(dead_code)]
 fn generate_slug(description: &str) -> String {
     description
         .to_lowercase()
@@ -363,6 +349,7 @@ fn prompt_multiline_input(header: &str) -> Result<Option<String>> {
 }
 
 /// Find a unique path for a plan file, incrementing suffix if needed
+#[allow(dead_code)]
 fn find_unique_path(base_dir: &Path, slug: &str) -> Result<PathBuf> {
     // Ensure base directory exists
     fs::create_dir_all(base_dir).map_err(|e| {
@@ -404,17 +391,19 @@ fn run_epic(
 ) -> Result<()> {
     let timestamp = chrono::Utc::now();
 
+    let is_autogen = matches!(&mode, PlanMode::Autogen { .. });
+
     // Determine plan file path, initial idea, and args-provided text
-    let (plan_path, is_new, args_idea, args_text) = match &mode {
+    let (mut plan_path, is_new, args_idea, args_text) = match &mode {
         PlanMode::Edit { path, text } => (path.clone(), false, String::new(), text.clone()),
         PlanMode::CreateAtPath {
             path,
             initial_idea,
             text,
         } => (path.clone(), true, initial_idea.clone(), text.clone()),
-        PlanMode::Autogen { description, slug } => {
-            let path = cwd.join(plan_dir).join(format!("{}.md", slug));
-            (path, true, description.clone(), String::new())
+        PlanMode::Autogen { description } => {
+            // Path is determined after task creation (uses task ID as filename)
+            (PathBuf::new(), true, description.clone(), String::new())
         }
     };
 
@@ -469,31 +458,11 @@ fn run_epic(
         )));
     }
 
-    // Check for existing plan task with source: file:<path>
-    let events = read_events(cwd)?;
-    let tasks = materialize_graph(&events).tasks;
+    let plan_task_id = if is_autogen {
+        // For autogen mode: generate task ID first, then derive pending filename from it
+        let task_id = generate_task_id(&initial_idea);
+        plan_path = cwd.join(plan_dir).join(format!(".pending-{}.md", task_id));
 
-    let source_key = format!("file:{}", plan_path.display());
-    let existing_task = tasks.values().find(|t| {
-        t.task_type.as_deref() == Some("plan")
-            && t.status != TaskStatus::Closed
-            && t.sources.iter().any(|s| s == &source_key)
-    });
-
-    let plan_task_id = if let Some(task) = existing_task {
-        // Resume existing task
-        output_utils::emit(|| format!("Resuming existing plan task: {}", task.id));
-
-        // If agent differs, update assignee
-        if let Some(agent) = agent_type {
-            if task.assignee.as_deref() != Some(agent.as_str()) {
-                reassign_task(cwd, &task.id, agent.as_str())?;
-            }
-        }
-
-        task.id.clone()
-    } else {
-        // Create new plan task
         create_plan_task(
             cwd,
             &plan_path,
@@ -502,7 +471,45 @@ fn run_epic(
             template_name.as_deref().unwrap_or("plan"),
             agent_type.as_ref().map(|a| a.as_str().to_string()),
             timestamp,
+            Some(task_id),
         )?
+    } else {
+        // For Edit/CreateAtPath: check for existing plan task with source: file:<path>
+        let events = read_events(cwd)?;
+        let tasks = materialize_graph(&events).tasks;
+
+        let source_key = format!("file:{}", plan_path.display());
+        let existing_task = tasks.values().find(|t| {
+            t.task_type.as_deref() == Some("plan")
+                && t.status != TaskStatus::Closed
+                && t.sources.iter().any(|s| s == &source_key)
+        });
+
+        if let Some(task) = existing_task {
+            // Resume existing task
+            output_utils::emit(|| format!("Resuming existing plan task: {}", task.id));
+
+            // If agent differs, update assignee
+            if let Some(agent) = &agent_type {
+                if task.assignee.as_deref() != Some(agent.as_str()) {
+                    reassign_task(cwd, &task.id, agent.as_str())?;
+                }
+            }
+
+            task.id.clone()
+        } else {
+            // Create new plan task
+            create_plan_task(
+                cwd,
+                &plan_path,
+                &initial_idea,
+                is_new,
+                template_name.as_deref().unwrap_or("plan"),
+                agent_type.as_ref().map(|a| a.as_str().to_string()),
+                timestamp,
+                None,
+            )?
+        }
     };
 
     // If this is a new file, create it
@@ -630,6 +637,7 @@ fn create_plan_task(
     template_name: &str,
     assignee: Option<String>,
     timestamp: chrono::DateTime<chrono::Utc>,
+    pre_generated_id: Option<String>,
 ) -> Result<String> {
     // Load the template
     let templates_dir = find_templates_dir(cwd)?;
@@ -647,8 +655,8 @@ fn create_plan_task(
     // Create tasks from template
     let (parent_def, mut subtask_defs) = create_tasks_from_template(&template, &variables, None)?;
 
-    // Generate parent task ID
-    let parent_id = generate_task_id(&parent_def.name);
+    // Use pre-generated ID or generate one
+    let parent_id = pre_generated_id.unwrap_or_else(|| generate_task_id(&parent_def.name));
 
     // Substitute {{parent.id}} in subtask instructions now that we have the parent ID
     substitute_parent_id(&mut subtask_defs, &parent_id);
@@ -1032,9 +1040,8 @@ mod tests {
         .unwrap();
 
         match mode {
-            PlanMode::Autogen { description, slug } => {
+            PlanMode::Autogen { description } => {
                 assert_eq!(description, "Add user authentication");
-                assert_eq!(slug, "add-user-authentication");
             }
             _ => panic!("Expected Autogen mode"),
         }
@@ -1054,7 +1061,6 @@ mod tests {
     fn test_initial_idea_needs_input_autogen_no_text() {
         let mode = PlanMode::Autogen {
             description: "Add auth".to_string(),
-            slug: "add-auth".to_string(),
         };
         // Autogen never prompts — the description IS the idea
         assert!(!initial_idea_needs_input(&mode, false, true));
@@ -1064,7 +1070,6 @@ mod tests {
     fn test_initial_idea_needs_input_autogen_with_text() {
         let mode = PlanMode::Autogen {
             description: "Add auth".to_string(),
-            slug: "add-auth".to_string(),
         };
         assert!(!initial_idea_needs_input(&mode, true, true));
     }
@@ -1161,6 +1166,22 @@ mod tests {
         assert!(prompt.contains(
             "A blank draft plan file has already been created at `ops/now/test-plan.md`."
         ));
+        // Non-pending file should NOT get rename instructions
+        assert!(!prompt.contains("rename"));
+    }
+
+    #[test]
+    fn test_build_interactive_plan_prompt_for_pending_file_instructs_rename() {
+        let prompt = build_interactive_plan_prompt(
+            "task123",
+            Path::new("ops/now/.pending-task123.md"),
+            true,
+            "Add user auth",
+        );
+
+        assert!(prompt.contains("This is a temporary name"));
+        assert!(prompt.contains("rename this file"));
+        assert!(prompt.contains("ops/now"));
     }
 }
 
@@ -1182,10 +1203,34 @@ fn build_interactive_plan_prompt(
     ));
 
     if is_new {
-        prompt.push_str(&format!(
-            "\nA blank draft plan file has already been created at `{}`.",
-            plan_path.display()
-        ));
+        let filename = plan_path
+            .file_name()
+            .map(|f| f.to_string_lossy())
+            .unwrap_or_default();
+        if filename.starts_with(".pending-") {
+            // Pending file: agent must rename it based on understanding the content
+            let plan_dir = plan_path
+                .parent()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default();
+            prompt.push_str(&format!(
+                concat!(
+                    "\nA blank draft plan file has been created at `{}`.",
+                    " This is a temporary name. Before you begin writing the plan,",
+                    " rename this file to a descriptive kebab-case name in `{}/`",
+                    " (e.g., `{}/add-user-auth.md`) based on your understanding",
+                    " of what the plan is about. Use `mv` to rename it.",
+                ),
+                plan_path.display(),
+                plan_dir,
+                plan_dir,
+            ));
+        } else {
+            prompt.push_str(&format!(
+                "\nA blank draft plan file has already been created at `{}`.",
+                plan_path.display()
+            ));
+        }
     }
 
     prompt

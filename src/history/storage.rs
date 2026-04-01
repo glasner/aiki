@@ -399,7 +399,8 @@ pub fn list_conversations(cwd: &Path, limit: Option<usize>) -> Result<Vec<Conver
             | ConversationEvent::Response { session_id, .. }
             | ConversationEvent::SessionStart { session_id, .. }
             | ConversationEvent::SessionEnd { session_id, .. }
-            | ConversationEvent::Autoreply { session_id, .. } => session_id,
+            | ConversationEvent::Autoreply { session_id, .. }
+            | ConversationEvent::ModelChanged { session_id, .. } => session_id,
         };
         sessions.entry(session_id.clone()).or_default().push(event);
     }
@@ -447,7 +448,8 @@ pub fn list_conversations(cwd: &Path, limit: Option<usize>) -> Result<Vec<Conver
                 | ConversationEvent::Response { timestamp, .. }
                 | ConversationEvent::SessionStart { timestamp, .. }
                 | ConversationEvent::SessionEnd { timestamp, .. }
-                | ConversationEvent::Autoreply { timestamp, .. } => *timestamp,
+                | ConversationEvent::Autoreply { timestamp, .. }
+                | ConversationEvent::ModelChanged { timestamp, .. } => *timestamp,
             })
             .max()
             .unwrap_or(started_at);
@@ -692,6 +694,23 @@ fn event_to_metadata_block(event: &ConversationEvent) -> String {
             add_location_metadata(repo_id, cwd, &mut lines);
             add_metadata_timestamp(timestamp, &mut lines);
         }
+        ConversationEvent::ModelChanged {
+            session_id,
+            previous_model,
+            new_model,
+            timestamp,
+            repo_id,
+            cwd,
+        } => {
+            add_metadata("event", "model_changed", &mut lines);
+            add_metadata("session", session_id, &mut lines);
+            if let Some(prev) = previous_model {
+                add_metadata("previous_model", prev, &mut lines);
+            }
+            add_metadata("new_model", new_model, &mut lines);
+            add_location_metadata(repo_id, cwd, &mut lines);
+            add_metadata_timestamp(timestamp, &mut lines);
+        }
     }
 
     lines.push(METADATA_END.to_string());
@@ -899,6 +918,23 @@ fn parse_metadata_block(block: &str) -> Option<ConversationEvent> {
                 agent_type,
                 turn,
                 content,
+                timestamp,
+                repo_id,
+                cwd,
+            })
+        }
+        "model_changed" => {
+            let session_id = fields.get("session")?.first()?.to_string();
+            let previous_model = fields
+                .get("previous_model")
+                .and_then(|v| v.first())
+                .map(|s| s.to_string());
+            let new_model = fields.get("new_model")?.first()?.to_string();
+
+            Some(ConversationEvent::ModelChanged {
+                session_id,
+                previous_model,
+                new_model,
                 timestamp,
                 repo_id,
                 cwd,

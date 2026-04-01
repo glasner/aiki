@@ -211,7 +211,11 @@ pub enum CodexOtelEvent {
         prompt: Option<String>,
     },
     /// `codex.tool_result` - Tool execution completed (may contain file modifications)
-    ToolResult { conversation_id: String },
+    ToolResult {
+        conversation_id: String,
+        tool_name: Option<String>,
+        arguments: Option<String>,
+    },
     /// Unrecognized event (acknowledged but not processed)
     Unknown { event_name: String },
 }
@@ -223,6 +227,131 @@ pub struct CodexOtelContext {
     pub agent_pid: Option<u32>,
     pub cwd: Option<PathBuf>,
 }
+
+// ============================================================================
+// Tool Classification
+// ============================================================================
+
+/// Classification of Codex tool types for event routing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolKind {
+    /// Read operations: read_file, list_dir, grep_files, view_image, MCP reads
+    Read,
+    /// Write operations: apply_patch (the ONLY file-modifying tool)
+    Write,
+    /// Shell operations: shell, shell_command, exec_command, write_stdin
+    Shell,
+    /// Everything else: web_search, update_plan, agent tools, etc.
+    Other,
+}
+
+/// Classify a Codex tool by operation type.
+pub fn classify_tool(tool_name: &str) -> ToolKind {
+    match tool_name {
+        "read_file" | "list_dir" | "grep_files" | "view_image" | "list_mcp_resources"
+        | "read_mcp_resource" => ToolKind::Read,
+        "apply_patch" => ToolKind::Write,
+        "shell" | "shell_command" | "exec_command" | "write_stdin" => ToolKind::Shell,
+        _ => ToolKind::Other,
+    }
+}
+
+/// Parse apply_patch content to extract affected file paths.
+///
+/// The patch format uses headers to indicate operations:
+/// - `*** Add File:` → create new file
+/// - `*** Delete File:` → delete file
+/// - `*** Update File:` → edit file (may include `*** Move to:` for rename)
+///
+/// Returns a list of (operation_type, file_path) pairs where operation_type
+/// is "write", "delete", or "move".
+pub fn parse_apply_patch(patch_content: &str) -> Vec<(&'static str, String)> {
+    let mut results = Vec::new();
+    let mut current_file: Option<String> = None;
+    let mut current_op: Option<&str> = None;
+    let mut move_target: Option<String> = None;
+
+    for line in patch_content.lines() {
+        if let Some(file) = line.strip_prefix("*** Add File: ").or_else(|| line.strip_prefix("*** Add File:")) {
+            // Flush previous
+            if let (Some(op), Some(f)) = (current_op.take(), current_file.take()) {
+                if op == "move" {
+                    if let Some(target) = move_target.take() {
+                        results.push(("move", format!("{}:{}", f, target)));
+                    }
+                } else {
+                    results.push((op, f));
+                }
+            }
+            current_file = Some(file.trim().to_string());
+            current_op = Some("write");
+        } else if let Some(file) = line.strip_prefix("*** Delete File: ").or_else(|| line.strip_prefix("*** Delete File:")) {
+            if let (Some(op), Some(f)) = (current_op.take(), current_file.take()) {
+                if op == "move" {
+                    if let Some(target) = move_target.take() {
+                        results.push(("move", format!("{}:{}", f, target)));
+                    }
+                } else {
+                    results.push((op, f));
+                }
+            }
+            current_file = Some(file.trim().to_string());
+            current_op = Some("delete");
+        } else if let Some(file) = line.strip_prefix("*** Update File: ").or_else(|| line.strip_prefix("*** Update File:")) {
+            if let (Some(op), Some(f)) = (current_op.take(), current_file.take()) {
+                if op == "move" {
+                    if let Some(target) = move_target.take() {
+                        results.push(("move", format!("{}:{}", f, target)));
+                    }
+                } else {
+                    results.push((op, f));
+                }
+            }
+            current_file = Some(file.trim().to_string());
+            current_op = Some("write");
+        } else if let Some(target) = line.strip_prefix("*** Move to: ").or_else(|| line.strip_prefix("*** Move to:")) {
+            move_target = Some(target.trim().to_string());
+            current_op = Some("move");
+        }
+    }
+
+    // Flush final
+    if let (Some(op), Some(f)) = (current_op, current_file) {
+        if op == "move" {
+            if let Some(target) = move_target {
+                results.push(("move", format!("{}:{}", f, target)));
+            }
+        } else {
+            results.push((op, f));
+        }
+    }
+
+    results
+}
+
+/// Extract file path from read tool arguments JSON.
+pub fn extract_read_path(arguments: &str) -> Option<String> {
+    let json: serde_json::Value = serde_json::from_str(arguments).ok()?;
+    for key in &["path", "file_path", "file", "filename"] {
+        if let Some(serde_json::Value::String(p)) = json.get(key) {
+            return Some(p.clone());
+        }
+    }
+    None
+}
+
+/// Extract patch content from apply_patch arguments JSON.
+pub fn extract_patch_content(arguments: &str) -> Option<String> {
+    let json: serde_json::Value = serde_json::from_str(arguments).ok()?;
+    json.get("patch")
+        .or_else(|| json.get("content"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+}
+
+// ============================================================================
+// OTLP Parsing
+// ============================================================================
 
 /// Parse an OTLP/HTTP protobuf payload into Codex events
 ///
@@ -367,7 +496,17 @@ fn parse_span_event(event: &SpanEvent) -> Option<CodexOtelEvent> {
                 prompt,
             })
         }
-        "codex.tool_result" => Some(CodexOtelEvent::ToolResult { conversation_id }),
+        "codex.tool_result" => {
+            let tool_name = get_string_attribute(&event.attributes, "tool_name")
+                .or_else(|| get_string_attribute(&event.attributes, "tool"));
+            let arguments = get_string_attribute(&event.attributes, "arguments")
+                .or_else(|| get_string_attribute(&event.attributes, "args"));
+            Some(CodexOtelEvent::ToolResult {
+                conversation_id,
+                tool_name,
+                arguments,
+            })
+        }
         // Deferred events: acknowledged but not mapped
         "codex.api_request" | "codex.sse_event" | "codex.tool_decision" => {
             Some(CodexOtelEvent::Unknown {
@@ -401,7 +540,17 @@ fn parse_log_record(record: &LogRecord) -> Option<CodexOtelEvent> {
                 prompt,
             })
         }
-        "codex.tool_result" => Some(CodexOtelEvent::ToolResult { conversation_id }),
+        "codex.tool_result" => {
+            let tool_name = get_string_attribute(&record.attributes, "tool_name")
+                .or_else(|| get_string_attribute(&record.attributes, "tool"));
+            let arguments = get_string_attribute(&record.attributes, "arguments")
+                .or_else(|| get_string_attribute(&record.attributes, "args"));
+            Some(CodexOtelEvent::ToolResult {
+                conversation_id,
+                tool_name,
+                arguments,
+            })
+        }
         // Deferred events: acknowledged but not mapped
         "codex.api_request" | "codex.sse_event" | "codex.tool_decision" => {
             Some(CodexOtelEvent::Unknown {
@@ -790,8 +939,17 @@ mod tests {
 
         assert_eq!(events.len(), 1);
         match &events[0].0 {
-            CodexOtelEvent::ToolResult { conversation_id } => {
+            CodexOtelEvent::ToolResult {
+                conversation_id,
+                tool_name,
+                arguments,
+            } => {
                 assert_eq!(conversation_id, "conv_789");
+                assert_eq!(tool_name.as_deref(), Some("write_file"));
+                assert_eq!(
+                    arguments.as_deref(),
+                    Some(r#"{"file_path": "src/main.rs"}"#)
+                );
             }
             _ => panic!("Expected ToolResult event"),
         }
@@ -1080,5 +1238,130 @@ mod tests {
     fn test_parse_traces_malformed() {
         let events = parse_otlp_traces(b"not a valid protobuf");
         assert!(events.is_empty());
+    }
+
+    // ========================================================================
+    // ToolKind and classify_tool tests
+    // ========================================================================
+
+    #[test]
+    fn test_classify_tool_read_operations() {
+        assert_eq!(classify_tool("read_file"), ToolKind::Read);
+        assert_eq!(classify_tool("list_dir"), ToolKind::Read);
+        assert_eq!(classify_tool("grep_files"), ToolKind::Read);
+        assert_eq!(classify_tool("view_image"), ToolKind::Read);
+        assert_eq!(classify_tool("list_mcp_resources"), ToolKind::Read);
+        assert_eq!(classify_tool("read_mcp_resource"), ToolKind::Read);
+    }
+
+    #[test]
+    fn test_classify_tool_write_operations() {
+        assert_eq!(classify_tool("apply_patch"), ToolKind::Write);
+    }
+
+    #[test]
+    fn test_classify_tool_shell_operations() {
+        assert_eq!(classify_tool("shell"), ToolKind::Shell);
+        assert_eq!(classify_tool("shell_command"), ToolKind::Shell);
+        assert_eq!(classify_tool("exec_command"), ToolKind::Shell);
+        assert_eq!(classify_tool("write_stdin"), ToolKind::Shell);
+    }
+
+    #[test]
+    fn test_classify_tool_other_operations() {
+        assert_eq!(classify_tool("web_search"), ToolKind::Other);
+        assert_eq!(classify_tool("update_plan"), ToolKind::Other);
+        assert_eq!(classify_tool("spawn_agent"), ToolKind::Other);
+        assert_eq!(classify_tool("unknown_tool"), ToolKind::Other);
+    }
+
+    // ========================================================================
+    // parse_apply_patch tests
+    // ========================================================================
+
+    #[test]
+    fn test_parse_apply_patch_add_file() {
+        let patch = "*** Add File: src/new.rs\n+ fn main() {}\n";
+        let ops = parse_apply_patch(patch);
+        assert_eq!(ops.len(), 1);
+        assert_eq!(ops[0], ("write", "src/new.rs".to_string()));
+    }
+
+    #[test]
+    fn test_parse_apply_patch_delete_file() {
+        let patch = "*** Delete File: src/old.rs\n";
+        let ops = parse_apply_patch(patch);
+        assert_eq!(ops.len(), 1);
+        assert_eq!(ops[0], ("delete", "src/old.rs".to_string()));
+    }
+
+    #[test]
+    fn test_parse_apply_patch_update_file() {
+        let patch = "*** Update File: src/lib.rs\n@@ -1,3 +1,3 @@\n";
+        let ops = parse_apply_patch(patch);
+        assert_eq!(ops.len(), 1);
+        assert_eq!(ops[0], ("write", "src/lib.rs".to_string()));
+    }
+
+    #[test]
+    fn test_parse_apply_patch_move_file() {
+        let patch = "*** Update File: src/old.rs\n*** Move to: src/new.rs\n";
+        let ops = parse_apply_patch(patch);
+        assert_eq!(ops.len(), 1);
+        assert_eq!(ops[0], ("move", "src/old.rs:src/new.rs".to_string()));
+    }
+
+    #[test]
+    fn test_parse_apply_patch_multiple_operations() {
+        let patch = "*** Add File: src/a.rs\n+ code\n*** Delete File: src/b.rs\n*** Update File: src/c.rs\n@@ diff\n";
+        let ops = parse_apply_patch(patch);
+        assert_eq!(ops.len(), 3);
+        assert_eq!(ops[0], ("write", "src/a.rs".to_string()));
+        assert_eq!(ops[1], ("delete", "src/b.rs".to_string()));
+        assert_eq!(ops[2], ("write", "src/c.rs".to_string()));
+    }
+
+    #[test]
+    fn test_parse_apply_patch_empty() {
+        let ops = parse_apply_patch("");
+        assert!(ops.is_empty());
+    }
+
+    // ========================================================================
+    // extract helpers tests
+    // ========================================================================
+
+    #[test]
+    fn test_extract_patch_content() {
+        let args = r#"{"patch": "*** Update File: src/main.rs\n@@ diff"}"#;
+        let content = extract_patch_content(args);
+        assert!(content.is_some());
+        assert!(content.unwrap().contains("Update File"));
+    }
+
+    #[test]
+    fn test_extract_patch_content_content_field() {
+        let args = r#"{"content": "*** Add File: new.rs"}"#;
+        let content = extract_patch_content(args);
+        assert!(content.is_some());
+    }
+
+    #[test]
+    fn test_extract_patch_content_missing() {
+        let args = r#"{"other": "value"}"#;
+        assert!(extract_patch_content(args).is_none());
+    }
+
+    #[test]
+    fn test_extract_read_path() {
+        assert_eq!(
+            extract_read_path(r#"{"file_path": "src/main.rs"}"#),
+            Some("src/main.rs".to_string())
+        );
+        assert_eq!(
+            extract_read_path(r#"{"path": "README.md"}"#),
+            Some("README.md".to_string())
+        );
+        assert!(extract_read_path(r#"{"other": "value"}"#).is_none());
     }
 }

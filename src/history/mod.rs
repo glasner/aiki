@@ -9,7 +9,8 @@ pub mod storage;
 pub mod types;
 
 pub use recorder::{
-    record_autoreply, record_prompt, record_response, record_session_end, record_session_start,
+    record_autoreply, record_model_changed, record_prompt, record_response, record_session_end,
+    record_session_start,
 };
 pub use storage::{
     get_current_turn_info, get_current_turn_number, get_latest_prompt_change_id,

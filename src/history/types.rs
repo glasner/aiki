@@ -114,6 +114,19 @@ pub enum ConversationEvent {
         /// Current working directory where the event occurred
         cwd: Option<String>,
     },
+    /// Model changed mid-session
+    ModelChanged {
+        session_id: String,
+        /// The model previously stored in the session (None if first observation)
+        previous_model: Option<String>,
+        /// The new model observed
+        new_model: String,
+        timestamp: DateTime<Utc>,
+        /// Stable repository identifier (from repo-id file)
+        repo_id: Option<String>,
+        /// Current working directory where the event occurred
+        cwd: Option<String>,
+    },
 }
 
 /// Summary of a conversation for listing purposes

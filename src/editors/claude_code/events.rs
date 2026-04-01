@@ -844,12 +844,13 @@ fn build_turn_completed_event(payload: StopPayload) -> AikiEvent {
     })
 }
 
-/// Extract the last assistant entry from a Claude Code JSONL transcript file.
+/// Extract assistant data from a Claude Code JSONL transcript file.
 ///
 /// The transcript is a JSONL file where each line is a JSON object. Assistant entries
 /// have `"type": "assistant"` with a `message.content` array containing blocks like
-/// `{"type": "text", "text": "..."}`. We find the last assistant entry and extract
-/// the response text, token usage, and model.
+/// `{"type": "text", "text": "..."}`. A single turn may contain multiple assistant
+/// entries (e.g. tool-use rounds). We sum token usage across **all** assistant entries
+/// and take the response text and model from the last one.
 fn extract_last_assistant_entry(path: &str) -> Option<TranscriptExtract> {
     let content = match std::fs::read_to_string(path) {
         Ok(c) => c,
@@ -859,8 +860,11 @@ fn extract_last_assistant_entry(path: &str) -> Option<TranscriptExtract> {
         }
     };
 
-    // Walk lines in reverse to find the last assistant entry
-    for line in content.lines().rev() {
+    let mut last_response: Option<String> = None;
+    let mut last_model: Option<String> = None;
+    let mut total_tokens: Option<TokenUsage> = None;
+
+    for line in content.lines() {
         let line = line.trim();
         if line.is_empty() {
             continue;
@@ -870,61 +874,88 @@ fn extract_last_assistant_entry(path: &str) -> Option<TranscriptExtract> {
             continue;
         };
 
-        if entry.get("type").and_then(|t| t.as_str()) != Some("assistant") {
+        let entry_type = entry.get("type").and_then(|t| t.as_str());
+
+        // Reset accumulators on user entry so we only count the current turn
+        if entry_type == Some("user") {
+            last_response = None;
+            last_model = None;
+            total_tokens = None;
             continue;
         }
 
-        let message = entry.get("message")?;
+        if entry_type != Some("assistant") {
+            continue;
+        }
 
-        // Extract text from message.content array
-        let Some(content_arr) = message.get("content").and_then(|c| c.as_array()) else {
+        let Some(message) = entry.get("message") else {
             continue;
         };
 
-        let text: String = content_arr
-            .iter()
-            .filter(|block| block.get("type").and_then(|t| t.as_str()) == Some("text"))
-            .filter_map(|block| block.get("text").and_then(|t| t.as_str()))
-            // Skip streaming placeholder entries that Claude Code writes before the real response
-            .filter(|t| *t != "(no content)")
-            .collect::<Vec<_>>()
-            .join("\n");
+        // Extract text from message.content array
+        if let Some(content_arr) = message.get("content").and_then(|c| c.as_array()) {
+            let text: String = content_arr
+                .iter()
+                .filter(|block| block.get("type").and_then(|t| t.as_str()) == Some("text"))
+                .filter_map(|block| block.get("text").and_then(|t| t.as_str()))
+                // Skip streaming placeholder entries that Claude Code writes before the real response
+                .filter(|t| *t != "(no content)")
+                .collect::<Vec<_>>()
+                .join("\n");
 
-        if text.is_empty() {
-            continue;
+            if !text.is_empty() {
+                last_response = Some(text);
+            }
         }
 
-        // Extract model string
-        let model = message
-            .get("model")
-            .and_then(|m| m.as_str())
-            .map(|s| s.to_string());
+        // Extract model string (keep the latest)
+        if let Some(model) = message.get("model").and_then(|m| m.as_str()) {
+            last_model = Some(model.to_string());
+        }
 
-        // Extract token usage from message.usage
-        let tokens = message.get("usage").and_then(|usage| {
-            Some(TokenUsage {
-                input: usage.get("input_tokens")?.as_u64()?,
-                output: usage.get("output_tokens")?.as_u64()?,
-                cache_read: usage
+        // Accumulate token usage from message.usage
+        if let Some(usage) = message.get("usage") {
+            let input = usage.get("input_tokens").and_then(|v| v.as_u64());
+            let output = usage.get("output_tokens").and_then(|v| v.as_u64());
+            if let (Some(input), Some(output)) = (input, output) {
+                let cache_read = usage
                     .get("cache_read_input_tokens")
                     .and_then(|v| v.as_u64())
-                    .unwrap_or(0),
-                cache_created: usage
+                    .unwrap_or(0);
+                let cache_created = usage
                     .get("cache_creation_input_tokens")
                     .and_then(|v| v.as_u64())
-                    .unwrap_or(0),
-            })
-        });
+                    .unwrap_or(0);
 
-        return Some(TranscriptExtract {
-            response: text,
-            tokens,
-            model,
-        });
+                total_tokens = Some(match total_tokens {
+                    Some(prev) => TokenUsage {
+                        input: prev.input + input,
+                        output: prev.output + output,
+                        cache_read: prev.cache_read + cache_read,
+                        cache_created: prev.cache_created + cache_created,
+                    },
+                    None => TokenUsage {
+                        input,
+                        output,
+                        cache_read,
+                        cache_created,
+                    },
+                });
+            }
+        }
     }
 
-    debug_log(|| format!("No assistant response found in transcript '{}'", path));
-    None
+    match last_response {
+        Some(response) => Some(TranscriptExtract {
+            response,
+            tokens: total_tokens,
+            model: last_model,
+        }),
+        None => {
+            debug_log(|| format!("No assistant response found in transcript '{}'", path));
+            None
+        }
+    }
 }
 
 /// Build session.ended event (maps from SessionEnd hook)
@@ -1137,5 +1168,57 @@ mod tests {
             }
             _ => panic!("Expected TurnCompleted"),
         }
+    }
+
+    #[test]
+    fn test_extract_sums_tokens_across_multiple_assistant_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("transcript.jsonl");
+        // Simulate a turn with three assistant entries (tool-use rounds)
+        let content = [
+            r#"{"type":"user","message":{"content":"Do something complex"}}"#,
+            r#"{"type":"assistant","message":{"model":"claude-sonnet-4-20250514","content":[{"type":"text","text":"Let me check..."}],"usage":{"input_tokens":100,"output_tokens":20,"cache_read_input_tokens":10,"cache_creation_input_tokens":5}}}"#,
+            r#"{"type":"assistant","message":{"model":"claude-sonnet-4-20250514","content":[{"type":"text","text":"(no content)"}],"usage":{"input_tokens":150,"output_tokens":30,"cache_read_input_tokens":20,"cache_creation_input_tokens":0}}}"#,
+            r#"{"type":"assistant","message":{"model":"claude-sonnet-4-20250514","content":[{"type":"text","text":"Here is the result."}],"usage":{"input_tokens":200,"output_tokens":50,"cache_read_input_tokens":30,"cache_creation_input_tokens":10}}}"#,
+        ]
+        .join("\n");
+        std::fs::write(&path, content).unwrap();
+
+        let extract = extract_last_assistant_entry(path.to_str().unwrap()).unwrap();
+        // Response text should be from the last entry with non-empty/non-placeholder text
+        assert_eq!(extract.response, "Here is the result.");
+        assert_eq!(extract.model.as_deref(), Some("claude-sonnet-4-20250514"));
+        // Tokens should be summed across all three assistant entries
+        let tokens = extract.tokens.unwrap();
+        assert_eq!(tokens.input, 450);    // 100 + 150 + 200
+        assert_eq!(tokens.output, 100);   // 20 + 30 + 50
+        assert_eq!(tokens.cache_read, 60);     // 10 + 20 + 30
+        assert_eq!(tokens.cache_created, 15);  // 5 + 0 + 10
+    }
+
+    #[test]
+    fn test_extract_resets_accumulators_on_user_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("transcript.jsonl");
+        // Two turns: first turn has large tokens, second turn has small tokens.
+        // Only the second turn's tokens should be returned.
+        let content = [
+            r#"{"type":"user","message":{"content":"First question"}}"#,
+            r#"{"type":"assistant","message":{"model":"claude-sonnet-4-20250514","content":[{"type":"text","text":"First answer"}],"usage":{"input_tokens":1000,"output_tokens":500,"cache_read_input_tokens":200,"cache_creation_input_tokens":100}}}"#,
+            r#"{"type":"user","message":{"content":"Second question"}}"#,
+            r#"{"type":"assistant","message":{"model":"claude-opus-4-20250514","content":[{"type":"text","text":"Second answer"}],"usage":{"input_tokens":50,"output_tokens":25,"cache_read_input_tokens":10,"cache_creation_input_tokens":5}}}"#,
+        ]
+        .join("\n");
+        std::fs::write(&path, content).unwrap();
+
+        let extract = extract_last_assistant_entry(path.to_str().unwrap()).unwrap();
+        assert_eq!(extract.response, "Second answer");
+        assert_eq!(extract.model.as_deref(), Some("claude-opus-4-20250514"));
+        // Only second turn's tokens, not accumulated from the first turn
+        let tokens = extract.tokens.unwrap();
+        assert_eq!(tokens.input, 50);
+        assert_eq!(tokens.output, 25);
+        assert_eq!(tokens.cache_read, 10);
+        assert_eq!(tokens.cache_created, 5);
     }
 }

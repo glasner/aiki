@@ -151,6 +151,28 @@ pub fn record_response(
     Ok(())
 }
 
+/// Record a model-changed event
+pub fn record_model_changed(
+    jj_cwd: &Path,
+    session: &AikiSession,
+    previous_model: Option<&str>,
+    new_model: &str,
+    timestamp: DateTime<Utc>,
+    repo_id: Option<&str>,
+    event_cwd: Option<&str>,
+) -> Result<()> {
+    let event = ConversationEvent::ModelChanged {
+        session_id: session.uuid().to_string(),
+        previous_model: previous_model.map(String::from),
+        new_model: new_model.to_string(),
+        timestamp,
+        repo_id: repo_id.map(String::from),
+        cwd: event_cwd.map(String::from),
+    };
+
+    write_event(jj_cwd, &event)
+}
+
 /// Record an autoreply event (pending injection into next turn)
 pub fn record_autoreply(
     jj_cwd: &Path,

@@ -209,22 +209,63 @@ aiki run <task-id> --async
 
 **Scenario 2: User asks you to have a subagent do something new**
 ```bash
-# 1. Create a task describing the work
-aiki task add "Description of the work to delegate"
+# 1. Create the task
+aiki task add "Fix the auth bug"
 
-# 2. Run it with a subagent
+# 2. Set instructions (reads from stdin — use heredoc for multiline)
+aiki task set <task-id> --instructions <<'EOF'
+The login endpoint returns 401 for valid tokens.
+Root cause: token validation in cli/src/auth.rs:42 compares expiry
+against UTC but the token uses local time. Fix the timezone handling
+and add a test that catches the regression.
+EOF
+
+# 3. Run it with a subagent
 aiki run <task-id>
 ```
 
 **Scenario 3: User asks you to run multiple things in parallel**
 ```bash
-# Create tasks for each piece of work
-aiki task add "First piece of work"
-aiki task add "Second piece of work"
+# Create tasks and set instructions on each
+aiki task add "Fix null check in auth"
+aiki task set <id1> --instructions <<'EOF'
+auth.rs:42 dereferences token.claims without checking for None.
+Add a guard and return 401.
+EOF
+
+aiki task add "Add retry logic to API client"
+aiki task set <id2> --instructions <<'EOF'
+api_client.rs fetch() fails on transient 503s.
+Add exponential backoff with 3 retries.
+EOF
 
 # Run them concurrently in background
 aiki run <id1> --async
 aiki run <id2> --async
+```
+
+### Always add instructions before `aiki run`
+
+**Every task MUST have instructions before you run it** — even tasks you create yourself. Instructions record your intent and context so that:
+
+- If the session crashes or is interrupted, another agent can pick up the work
+- If the task is retried, the new agent has full context without your conversation history
+- Reviewers can understand what was intended vs what was done
+- The orchestrating agent (you) can verify the subagent did the right thing
+
+```bash
+# ❌ WRONG: Running without instructions
+aiki task add "Fix the auth bug"
+aiki run <task-id>  # Subagent has no context!
+
+# ✅ CORRECT: Create task, set instructions, then run
+aiki task add "Fix the auth bug"
+aiki task set <task-id> --instructions <<'EOF'
+The login endpoint returns 401 for valid tokens.
+Root cause: timezone mismatch in token validation.
+Fix cli/src/auth.rs:42 and add a regression test.
+EOF
+aiki run <task-id>
 ```
 
 ### ❌ WRONG: Using native subagents
@@ -242,6 +283,11 @@ spawn_agent(role="fixer", prompt="Go fix the tests")
 ### ✅ CORRECT: Using aiki run
 ```bash
 aiki task add "Fix failing tests in auth module"
+aiki task set <task-id> --instructions <<'EOF'
+Tests in cli/tests/auth_tests.rs fail because the mock server
+returns 200 but the handler expects 201. Update the mock to
+match the real API response code.
+EOF
 aiki run <task-id>
 ```
 

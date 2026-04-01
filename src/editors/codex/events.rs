@@ -248,20 +248,42 @@ fn build_turn_completed_event(payload: StopPayload) -> AikiEvent {
 // Token Usage Parsing
 // ============================================================================
 
-/// A `token_count` event from a Codex session JSONL file.
+/// Token usage counts from `last_token_usage` / `total_token_usage` in Codex
+/// session JSONL `event_msg` events with `payload.type == "token_count"`.
 #[derive(Deserialize, Debug, Clone)]
-struct CodexTokenCount {
-    input: u64,
-    output: u64,
+struct CodexTokenUsageDetail {
     #[serde(default)]
-    cached_input: u64,
+    input_tokens: u64,
+    #[serde(default)]
+    output_tokens: u64,
+    #[serde(default)]
+    cached_input_tokens: u64,
+}
+
+/// The `info` object inside a `token_count` payload.
+#[derive(Deserialize, Debug, Clone)]
+struct CodexTokenCountInfo {
+    last_token_usage: CodexTokenUsageDetail,
+}
+
+/// Payload of a `token_count` event_msg.
+#[derive(Deserialize, Debug, Clone)]
+struct CodexTokenCountPayload {
+    /// `null` on the initial event before any API call completes.
+    info: Option<CodexTokenCountInfo>,
+}
+
+/// Top-level JSONL line: `{"type":"event_msg","payload":{...}}`
+#[derive(Deserialize, Debug, Clone)]
+struct CodexEventMsg {
+    payload: CodexTokenCountPayload,
 }
 
 /// Parse per-turn token usage from a Codex session JSONL transcript file.
 ///
-/// Codex writes cumulative `token_count` events to the session JSONL.
-/// Per-turn usage is the delta between the last two such events.
-/// If there is only one event, it is used as-is (first turn).
+/// Codex wraps token data in `event_msg` lines whose `payload.type` is
+/// `"token_count"`. The nested `payload.info.last_token_usage` already
+/// contains per-turn (non-cumulative) counts, so we simply take the last one.
 fn parse_token_usage_from_transcript(path: &str) -> Option<TokenUsage> {
     let content = match std::fs::read_to_string(path) {
         Ok(c) => c,
@@ -272,8 +294,7 @@ fn parse_token_usage_from_transcript(path: &str) -> Option<TokenUsage> {
 
 /// Parse per-turn token usage from JSONL content (testable without filesystem).
 fn parse_token_usage_from_lines(content: &str) -> Option<TokenUsage> {
-    let mut prev: Option<CodexTokenCount> = None;
-    let mut last: Option<CodexTokenCount> = None;
+    let mut last_usage: Option<CodexTokenUsageDetail> = None;
 
     for line in content.lines() {
         let line = line.trim();
@@ -284,31 +305,30 @@ fn parse_token_usage_from_lines(content: &str) -> Option<TokenUsage> {
         if !line.contains("\"token_count\"") {
             continue;
         }
+        // Codex format: {"type":"event_msg","payload":{"type":"token_count","info":{...}}}
         if let Ok(val) = serde_json::from_str::<serde_json::Value>(line) {
-            if val.get("type").and_then(|t| t.as_str()) == Some("token_count") {
-                if let Ok(tc) = serde_json::from_value::<CodexTokenCount>(val) {
-                    prev = last;
-                    last = Some(tc);
+            let is_token_count = val
+                .get("payload")
+                .and_then(|p| p.get("type"))
+                .and_then(|t| t.as_str())
+                == Some("token_count");
+            if is_token_count {
+                if let Ok(msg) = serde_json::from_value::<CodexEventMsg>(val) {
+                    if let Some(info) = msg.payload.info {
+                        last_usage = Some(info.last_token_usage);
+                    }
                 }
             }
         }
     }
 
-    let last = last?;
-    match prev {
-        None => Some(TokenUsage {
-            input: last.input,
-            output: last.output,
-            cache_read: last.cached_input,
-            cache_created: 0,
-        }),
-        Some(prev) => Some(TokenUsage {
-            input: last.input.saturating_sub(prev.input),
-            output: last.output.saturating_sub(prev.output),
-            cache_read: last.cached_input.saturating_sub(prev.cached_input),
-            cache_created: 0,
-        }),
-    }
+    let u = last_usage?;
+    Some(TokenUsage {
+        input: u.input_tokens,
+        output: u.output_tokens,
+        cache_read: u.cached_input_tokens,
+        cache_created: 0,
+    })
 }
 
 #[cfg(test)]
@@ -539,8 +559,8 @@ mod tests {
 
     #[test]
     fn test_parse_token_usage_single_event() {
-        let content = r#"{"type":"message","content":"hello"}
-{"type":"token_count","input":1000,"output":500,"cached_input":200,"reasoning":50,"total":1750}
+        let content = r#"{"type":"event_msg","payload":{"type":"agent_message","message":"hello"}}
+{"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":1000,"output_tokens":500,"cached_input_tokens":200,"reasoning_output_tokens":50,"total_tokens":1750},"total_token_usage":{"input_tokens":1000,"output_tokens":500,"cached_input_tokens":200,"reasoning_output_tokens":50,"total_tokens":1750},"model_context_window":258400},"rate_limits":null}}
 "#;
         let usage = parse_token_usage_from_lines(content).unwrap();
         assert_eq!(usage.input, 1000);
@@ -550,35 +570,36 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_token_usage_delta_two_events() {
-        let content = r#"{"type":"token_count","input":1000,"output":500,"cached_input":200,"reasoning":50,"total":1750}
-{"type":"message","content":"working..."}
-{"type":"token_count","input":2500,"output":1200,"cached_input":800,"reasoning":100,"total":4600}
+    fn test_parse_token_usage_uses_last_token_usage() {
+        // last_token_usage already provides per-turn deltas — we take the last one
+        let content = r#"{"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":1000,"output_tokens":500,"cached_input_tokens":200,"reasoning_output_tokens":50,"total_tokens":1750},"total_token_usage":{"input_tokens":1000,"output_tokens":500,"cached_input_tokens":200,"reasoning_output_tokens":50,"total_tokens":1750},"model_context_window":258400},"rate_limits":null}}
+{"type":"event_msg","payload":{"type":"agent_message","message":"working..."}}
+{"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":24014,"output_tokens":98,"cached_input_tokens":23808,"reasoning_output_tokens":13,"total_tokens":24112},"total_token_usage":{"input_tokens":47759,"output_tokens":249,"cached_input_tokens":27264,"reasoning_output_tokens":79,"total_tokens":48008},"model_context_window":258400},"rate_limits":null}}
 "#;
         let usage = parse_token_usage_from_lines(content).unwrap();
-        assert_eq!(usage.input, 1500);
-        assert_eq!(usage.output, 700);
-        assert_eq!(usage.cache_read, 600);
+        // Should use last_token_usage (per-turn), NOT total_token_usage
+        assert_eq!(usage.input, 24014);
+        assert_eq!(usage.output, 98);
+        assert_eq!(usage.cache_read, 23808);
         assert_eq!(usage.cache_created, 0);
     }
 
     #[test]
-    fn test_parse_token_usage_delta_three_events() {
-        // Only the last two matter
-        let content = r#"{"type":"token_count","input":500,"output":200,"cached_input":100,"reasoning":0,"total":800}
-{"type":"token_count","input":1000,"output":500,"cached_input":200,"reasoning":50,"total":1750}
-{"type":"token_count","input":2500,"output":1200,"cached_input":800,"reasoning":100,"total":4600}
+    fn test_parse_token_usage_skips_null_info() {
+        // First token_count event has info: null, second has data
+        let content = r#"{"type":"event_msg","payload":{"type":"token_count","info":null,"rate_limits":null}}
+{"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":5000,"output_tokens":300,"cached_input_tokens":1000,"reasoning_output_tokens":20,"total_tokens":5300},"total_token_usage":{"input_tokens":5000,"output_tokens":300,"cached_input_tokens":1000,"reasoning_output_tokens":20,"total_tokens":5300},"model_context_window":258400},"rate_limits":null}}
 "#;
         let usage = parse_token_usage_from_lines(content).unwrap();
-        assert_eq!(usage.input, 1500);
-        assert_eq!(usage.output, 700);
-        assert_eq!(usage.cache_read, 600);
+        assert_eq!(usage.input, 5000);
+        assert_eq!(usage.output, 300);
+        assert_eq!(usage.cache_read, 1000);
     }
 
     #[test]
     fn test_parse_token_usage_no_events() {
-        let content = r#"{"type":"message","content":"hello"}
-{"type":"message","content":"world"}
+        let content = r#"{"type":"event_msg","payload":{"type":"agent_message","message":"hello"}}
+{"type":"event_msg","payload":{"type":"agent_message","message":"world"}}
 "#;
         assert!(parse_token_usage_from_lines(content).is_none());
     }
@@ -589,12 +610,10 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_token_usage_missing_cached_input_defaults_zero() {
-        let content = r#"{"type":"token_count","input":1000,"output":500}
+    fn test_parse_token_usage_only_null_info() {
+        // Only token_count events with info: null — should return None
+        let content = r#"{"type":"event_msg","payload":{"type":"token_count","info":null,"rate_limits":null}}
 "#;
-        let usage = parse_token_usage_from_lines(content).unwrap();
-        assert_eq!(usage.input, 1000);
-        assert_eq!(usage.output, 500);
-        assert_eq!(usage.cache_read, 0);
+        assert!(parse_token_usage_from_lines(content).is_none());
     }
 }
