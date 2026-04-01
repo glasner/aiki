@@ -1,3 +1,5 @@
+> ⚠️ **EXPERIMENTAL** — This repo is under active development. Reach out to glasner@aiki.sh if you have issues.
+
 # Getting Started with Aiki
 
 ## 1) Install Aiki

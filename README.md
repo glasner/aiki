@@ -1,5 +1,7 @@
 45
 23
+> ⚠️ **EXPERIMENTAL** — This repo is under active development. Reach out to glasner@aiki.sh if you have issues.
+
 # Aiki: Structured AI coding with safe defaults
 
 Aiki gives teams a practical way to let AI edit code without losing control.
