@@ -460,12 +460,23 @@ Ready (3):
 
 ### Task IDs
 
-Task IDs are 32 lowercase letters (a-z only). All `aiki task` commands accept **unique prefixes** — you do not need the full ID. When a command prints `Started uvvloqn`, pass `uvvloqn` directly to `close`, `show`, etc. Users may also refer to tasks by prefix. Do NOT guess the remaining characters; just use the prefix as-is.
+**Full ID:** Exactly 32 lowercase letters using JJ reverse-hex characters (`k-z` only), e.g., `mvslrspmoynoxyyywqyutmovxpvztkls`
 
-Examples of user intent:
-- `fix luppzup` → Work on the task matching prefix `luppzup`
+**Prefix resolution:** All `aiki task` commands accept unique prefixes (minimum 3 characters). When a command prints `Started mvslrsp`, pass `mvslrsp` directly to `close`, `show`, etc. Do NOT guess the remaining characters; just use the prefix as-is.
+
+| Input | Result |
+|-------|--------|
+| `< 3` chars | `PrefixTooShort` error |
+| 3+ chars, one match | Resolves to full ID |
+| 3+ chars, multiple matches | `AmbiguousTaskId` error (lists matches) |
+| Exact 32 chars | Direct lookup (fast path) |
+
+**Slug notation:** Subtasks can be referenced as `<parent-prefix>:<slug>`, e.g., `mvslrsp:build`.
+
+**Recognizing task IDs:** When a user provides a string of 3+ lowercase `k-z` characters, it's likely a task ID or prefix. Examples:
+- `fix mvslrsp` → Work on the task matching prefix `mvslrsp`
 - `show oorznpr` → Show task details
-- `close tnslzmp` → Close that task
+- `close tnslzmpqpzypnymnzlroorzvxkqtulml` → Close that task (full ID)
 
 **When you see a task ID (full or prefix):**
 1. Run `aiki task start <id>` to begin the task and read its instructions
