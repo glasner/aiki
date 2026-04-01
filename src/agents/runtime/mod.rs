@@ -15,7 +15,7 @@ use std::io::Read;
 use std::path::Path;
 use std::process::{Child, ChildStderr, ChildStdout, ExitStatus};
 
-use super::AgentType;
+pub(crate) use super::AgentType;
 
 /// Handle for a background agent process
 ///
@@ -27,6 +27,8 @@ pub struct BackgroundHandle {
     pub thread: ThreadId,
     /// Session UUID, resolved after spawn via event polling
     pub session_id: Option<String>,
+    /// Agent type that was spawned
+    pub agent_type: AgentType,
 }
 
 /// Handle for a monitored child process

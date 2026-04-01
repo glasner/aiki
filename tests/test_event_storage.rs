@@ -162,7 +162,7 @@ fn test_task_event_chaining_multiple_writes() {
     init_jj_workspace(cwd).unwrap();
 
     use aiki::tasks::storage::{read_events, write_event};
-    use aiki::tasks::types::{TaskEvent, TaskOutcome, TaskPriority};
+    use aiki::tasks::types::{ConfidenceLevel, TaskEvent, TaskOutcome, TaskPriority};
     use chrono::Utc;
 
     // Write 3 events sequentially: Created, Started, Closed
@@ -192,6 +192,7 @@ fn test_task_event_chaining_multiple_writes() {
         TaskEvent::Closed {
             task_ids: vec!["chain001".to_string()],
             outcome: TaskOutcome::Done,
+            confidence: Some(ConfidenceLevel::High),
             summary: Some("Completed the test".to_string()),
             session_id: None,
             turn_id: None,

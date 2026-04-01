@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::io::{self, IsTerminal};
 use std::path::Path;
 use std::process::Command;
@@ -257,13 +256,19 @@ fn continue_async_workflow(
 fn run_foreground(cwd: &Path, opts: &FixOpts) -> Result<WorkflowContext> {
     let (scope, assignee) =
         resolve_scope_and_assignee(cwd, &opts.review_id, opts.workflow.coder.as_deref())?;
+    let agent_type = super::steps::fix::resolve_fix_agent(
+        opts.workflow.coder.as_deref(),
+        assignee.as_deref(),
+        false, // foreground = autonomous
+    )?;
+    let resolved_assignee = Some(agent_type.as_str().to_string());
     let show_tui = io::stderr().is_terminal();
     let output = if show_tui {
         OutputKind::Text
     } else {
         OutputKind::Quiet
     };
-    let mut wf = workflow(cwd, &opts.review_id, opts, &scope, assignee.as_deref());
+    let mut wf = workflow(cwd, &opts.review_id, opts, &scope, resolved_assignee.as_deref());
     wf.ctx.output = WorkflowOutput::new(output);
     wf.run().map_err(AikiError::Other)
 }
@@ -302,12 +307,12 @@ fn run_pair(cwd: &Path, opts: &FixOpts) -> Result<WorkflowContext> {
         autorun,
     )?;
 
-    // 4. Resolve launch agent binary (follows plan.rs pattern)
-    let agent_type = match assignee.as_deref() {
-        Some(agent_str) => AgentType::from_str(agent_str)
-            .ok_or_else(|| AikiError::UnknownAgentType(agent_str.to_string()))?,
-        None => AgentType::ClaudeCode,
-    };
+    // 4. Resolve launch agent binary.
+    let agent_type = super::steps::fix::resolve_fix_agent(
+        opts.workflow.coder.as_deref(),
+        assignee.as_deref(),
+        true, // pair = interactive
+    )?;
     let binary = agent_type.cli_binary().ok_or_else(|| {
         AikiError::InvalidArgument(format!(
             "Agent '{}' does not support interactive sessions. {}",
@@ -329,7 +334,7 @@ fn run_pair(cwd: &Path, opts: &FixOpts) -> Result<WorkflowContext> {
         // ── Pair session ──
         let issues_md = build_issues_md(cwd, &current_review_id)?;
         let pair_fix_id =
-            create_pair_fix_task(cwd, &issues_md, &current_review_id, &fix_parent_id)?;
+            create_pair_fix_task(cwd, &issues_md, &current_review_id, &fix_parent_id, &scope)?;
         start_task_core(cwd, &[pair_fix_id.clone()])?;
 
         let prompt = format!(
@@ -487,8 +492,9 @@ fn create_pair_fix_task(
     issues_md: &str,
     review_id: &str,
     fix_parent_id: &str,
+    scope: &ReviewScope,
 ) -> Result<String> {
-    let mut data = HashMap::new();
+    let mut data = scope.to_data();
     data.insert("review".to_string(), review_id.to_string());
     data.insert("issues_md".to_string(), issues_md.to_string());
 

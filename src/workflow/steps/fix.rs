@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use crate::error::Result;
+use crate::agents::AgentType;
+use crate::error::{AikiError, Result};
 use crate::tasks::runner::TaskRunOptions;
 use crate::tasks::{find_task, materialize_graph_with_ids, read_events_with_ids};
 use crate::tasks::{
@@ -21,6 +22,34 @@ use crate::reviews::{has_actionable_issues, ReviewScope, ReviewScopeKind};
 // across commands/, making the move non-trivial.
 use super::fix_skip_to_regression_review;
 use crate::commands::task::{create_from_template, TemplateTaskParams};
+
+/// Resolve the agent type for a fix session.
+///
+/// When `--agent` is provided, it always wins. Otherwise, interactive sessions
+/// (pair mode) default to `ClaudeCode`, and autonomous sessions use the
+/// followup assignee from the review.
+pub(crate) fn resolve_fix_agent(
+    agent_override: Option<&str>,
+    assignee: Option<&str>,
+    interactive: bool,
+) -> Result<AgentType> {
+    // Tier 1: Explicit --agent override
+    if let Some(agent_str) = agent_override {
+        return AgentType::from_str(agent_str)
+            .ok_or_else(|| AikiError::UnknownAgentType(agent_str.to_string()));
+    }
+
+    // Tier 2: Interactive sessions default to claude-code
+    if interactive {
+        return Ok(AgentType::ClaudeCode);
+    }
+
+    // Tier 3: Use the resolved assignee, fall back to claude-code
+    match assignee.and_then(AgentType::from_str) {
+        Some(agent) => Ok(agent),
+        None => Ok(AgentType::ClaudeCode),
+    }
+}
 
 /// Create the fix-parent task (container for fix subtasks, like an epic).
 ///
@@ -188,5 +217,29 @@ mod tests {
         assert!(steps.contains(&Step::SetupReview));
         assert!(steps.contains(&Step::Review));
         assert!(!steps.contains(&Step::RegressionReview));
+    }
+
+    #[test]
+    fn resolve_fix_agent_override_wins() {
+        let agent = resolve_fix_agent(Some("codex"), Some("claude-code"), true).unwrap();
+        assert_eq!(agent, AgentType::Codex);
+    }
+
+    #[test]
+    fn resolve_fix_agent_interactive_defaults_to_claude() {
+        let agent = resolve_fix_agent(None, Some("codex"), true).unwrap();
+        assert_eq!(agent, AgentType::ClaudeCode);
+    }
+
+    #[test]
+    fn resolve_fix_agent_autonomous_uses_assignee() {
+        let agent = resolve_fix_agent(None, Some("codex"), false).unwrap();
+        assert_eq!(agent, AgentType::Codex);
+    }
+
+    #[test]
+    fn resolve_fix_agent_autonomous_no_assignee_defaults_to_claude() {
+        let agent = resolve_fix_agent(None, None, false).unwrap();
+        assert_eq!(agent, AgentType::ClaudeCode);
     }
 }

@@ -399,10 +399,12 @@ fn spawn_and_discover(
 ) -> Result<()> {
     use crate::tasks::runner::task_run_async;
 
-    let codex_fallback = options.agent_override == Some(AgentType::Codex);
-
     // Always spawn async first to get the handle
     let handle = task_run_async(cwd, task_id, options)?;
+
+    // Codex doesn't yet support session discovery via conversation history,
+    // so fall back to task-based completion tracking.
+    let codex_fallback = handle.agent_type == AgentType::Codex;
 
     let head_id = &handle.thread.head;
 

@@ -9,6 +9,7 @@ use super::{
     build_spawn_env, AgentRuntime, AgentSessionResult, AgentSpawnOptions, BackgroundHandle,
     MonitoredChild,
 };
+use super::AgentType;
 use crate::error::{AikiError, Result};
 
 /// Check if the working directory is inside a git repository.
@@ -134,6 +135,7 @@ impl AgentRuntime for CodexRuntime {
             Ok(_child) => Ok(BackgroundHandle {
                 thread: options.thread.clone(),
                 session_id: None,
+                agent_type: AgentType::Codex,
             }),
             Err(e) => Err(AikiError::AgentSpawnFailed(format!(
                 "Failed to spawn codex in background: {}",

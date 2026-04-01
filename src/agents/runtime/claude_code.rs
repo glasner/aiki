@@ -8,6 +8,7 @@ use super::{
     build_spawn_env, AgentRuntime, AgentSessionResult, AgentSpawnOptions, BackgroundHandle,
     MonitoredChild,
 };
+use super::AgentType;
 use crate::error::{AikiError, Result};
 
 /// Runtime for Claude Code agent
@@ -95,6 +96,7 @@ impl AgentRuntime for ClaudeCodeRuntime {
             Ok(_child) => Ok(BackgroundHandle {
                 thread: options.thread.clone(),
                 session_id: None,
+                agent_type: AgentType::ClaudeCode,
             }),
             Err(e) => Err(AikiError::AgentSpawnFailed(format!(
                 "Failed to spawn claude in background: {}",
