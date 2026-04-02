@@ -330,11 +330,17 @@ fn run_pair(cwd: &Path, opts: &FixOpts) -> Result<WorkflowContext> {
 
     // 5. Two-phase quality loop
     let mut current_review_id = opts.review_id.clone();
-    for _iteration in 0..MAX_QUALITY_ITERATIONS {
+    for iteration in 0..MAX_QUALITY_ITERATIONS {
         // ── Pair session ──
         let issues_md = build_issues_md(cwd, &current_review_id)?;
-        let pair_fix_id =
-            create_pair_fix_task(cwd, &issues_md, &current_review_id, &fix_parent_id, &scope)?;
+        let pair_fix_id = create_pair_fix_task(
+            cwd,
+            &issues_md,
+            &current_review_id,
+            &fix_parent_id,
+            &scope,
+            iteration + 1,
+        )?;
         start_task_core(cwd, &[pair_fix_id.clone()])?;
 
         let prompt = format!(
@@ -493,10 +499,12 @@ fn create_pair_fix_task(
     review_id: &str,
     fix_parent_id: &str,
     scope: &ReviewScope,
+    iteration: usize,
 ) -> Result<String> {
     let mut data = scope.to_data();
     data.insert("review".to_string(), review_id.to_string());
     data.insert("issues_md".to_string(), issues_md.to_string());
+    data.insert("iteration".to_string(), iteration.to_string());
 
     let params = TemplateTaskParams {
         template_name: "pair-fix".to_string(),

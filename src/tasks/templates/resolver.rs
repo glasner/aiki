@@ -135,7 +135,7 @@ fn resolve_template_path(name: &str, templates_dir: &Path) -> Result<PathBuf> {
             let plugin_path = plugins_base
                 .join(ns)
                 .join(plugin)
-                .join("templates")
+                .join(TASKS_DIR_NAME)
                 .join(format!("{}.md", template));
 
             if plugin_path.is_file() {
@@ -2222,5 +2222,114 @@ Review the changes."#;
             !temp_dir.path().join(".aiki/templates").exists(),
             "sync_default_templates should NOT create .aiki/templates/"
         );
+    }
+
+    #[test]
+    fn test_three_part_ref_project_override() {
+        let temp_dir = TempDir::new().unwrap();
+        let templates_dir = temp_dir.path();
+
+        // Create project-level override: .aiki/tasks/eslint/standard/lint-report.md
+        let override_dir = templates_dir.join("eslint").join("standard");
+        fs::create_dir_all(&override_dir).unwrap();
+        fs::write(
+            override_dir.join("lint-report.md"),
+            "---\ndescription: Project override\n---\n\n# Lint Report\n\nOverridden.\n",
+        )
+        .unwrap();
+
+        let path = resolve_template_path("eslint/standard/lint-report", templates_dir).unwrap();
+        assert_eq!(path, override_dir.join("lint-report.md"));
+    }
+
+    #[test]
+    fn test_three_part_ref_plugin_lookup() {
+        let temp_dir = TempDir::new().unwrap();
+        let templates_dir = temp_dir.path().join("project_templates");
+        fs::create_dir_all(&templates_dir).unwrap();
+
+        // Create a fake AIKI_HOME with plugin installed
+        let fake_aiki_home = temp_dir.path().join("aiki_home");
+        let plugin_tasks = fake_aiki_home
+            .join("plugins")
+            .join("eslint")
+            .join("standard")
+            .join("tasks");
+        fs::create_dir_all(&plugin_tasks).unwrap();
+        fs::write(
+            plugin_tasks.join("lint-report.md"),
+            "---\ndescription: Plugin template\n---\n\n# Lint Report\n\nFrom plugin.\n",
+        )
+        .unwrap();
+
+        // Temporarily set AIKI_HOME
+        let old_aiki_home = std::env::var("AIKI_HOME").ok();
+        std::env::set_var("AIKI_HOME", fake_aiki_home.to_str().unwrap());
+
+        let result = resolve_template_path("eslint/standard/lint-report", &templates_dir);
+
+        // Restore AIKI_HOME
+        match old_aiki_home {
+            Some(h) => std::env::set_var("AIKI_HOME", h),
+            None => std::env::remove_var("AIKI_HOME"),
+        }
+
+        let path = result.unwrap();
+        assert_eq!(path, plugin_tasks.join("lint-report.md"));
+    }
+
+    #[test]
+    fn test_three_part_ref_not_found() {
+        let temp_dir = TempDir::new().unwrap();
+        let templates_dir = temp_dir.path();
+        fs::create_dir_all(templates_dir).unwrap();
+
+        let result = resolve_template_path("nonexist/plugin/template", templates_dir);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("Template not found"));
+        assert!(msg.contains("nonexist/plugin/template"));
+    }
+
+    #[test]
+    fn test_three_part_ref_project_override_takes_precedence() {
+        let temp_dir = TempDir::new().unwrap();
+        let templates_dir = temp_dir.path().join("templates");
+
+        // Create project-level override
+        let override_dir = templates_dir.join("eslint").join("standard");
+        fs::create_dir_all(&override_dir).unwrap();
+        fs::write(
+            override_dir.join("lint-report.md"),
+            "---\ndescription: Project override\n---\n\n# Override\n",
+        )
+        .unwrap();
+
+        // Create plugin version too
+        let fake_aiki_home = temp_dir.path().join("aiki_home");
+        let plugin_tasks = fake_aiki_home
+            .join("plugins")
+            .join("eslint")
+            .join("standard")
+            .join("tasks");
+        fs::create_dir_all(&plugin_tasks).unwrap();
+        fs::write(
+            plugin_tasks.join("lint-report.md"),
+            "---\ndescription: Plugin version\n---\n\n# Plugin\n",
+        )
+        .unwrap();
+
+        let old_aiki_home = std::env::var("AIKI_HOME").ok();
+        std::env::set_var("AIKI_HOME", fake_aiki_home.to_str().unwrap());
+
+        let path = resolve_template_path("eslint/standard/lint-report", &templates_dir).unwrap();
+
+        match old_aiki_home {
+            Some(h) => std::env::set_var("AIKI_HOME", h),
+            None => std::env::remove_var("AIKI_HOME"),
+        }
+
+        // Project override should win
+        assert_eq!(path, override_dir.join("lint-report.md"));
     }
 }

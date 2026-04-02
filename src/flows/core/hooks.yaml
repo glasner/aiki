@@ -357,13 +357,13 @@ task.started:
     # Empty by default - can be customized in user flows
 
 # task.closed: Handle actions when a task is closed
-# Auto-ends interactive task-driven sessions when their driving task closes
+# Auto-ends task-driven sessions when their driving task closes.
+# Fires for both interactive sessions and orchestrator tasks (--print agents).
 task.closed:
-    # Check if there's an interactive session driven by this thread
-    # session.thread.tail is empty if no session found for this task
+    # session.thread.tail is empty if no session found for this task.
     # Only closing the *tail* task (last in the thread chain) triggers session end.
-    # For single-task threads (head == tail), behavior is identical to before.
-    # - if: event.task.id == session.thread.tail && session.mode == "interactive"
-    #   then:
-    #       - log: "Task {{event.task.id}} closed (thread tail), ending thread-driven session"
-    #       - session.end: "Task completed"
+    # For single-task threads (head == tail), behavior is identical.
+    - if: event.task.id == session.thread.tail && (session.mode == "interactive" || event.task.type == "orchestrator")
+      then:
+          - log: "Task {{event.task.id}} closed (thread tail), ending session"
+          - session.end: "Task completed"

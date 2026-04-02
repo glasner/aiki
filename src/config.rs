@@ -332,7 +332,6 @@ pub fn install_cursor_hooks_global() -> Result<()> {
 pub fn install_codex_hooks_global() -> Result<()> {
     let home_dir = dirs::home_dir().context("Could not find home directory")?;
     let config_path = home_dir.join(".codex/config.toml");
-    let aiki_path = get_aiki_binary_path();
 
     // Create ~/.codex if it doesn't exist
     if let Some(parent) = config_path.parent() {
@@ -445,30 +444,19 @@ pub fn install_codex_hooks_global() -> Result<()> {
     // Remove legacy notify config if present
     config_table.remove("notify");
 
-    // Configure native hooks
-    let hook_events = ["sessionStart", "userPromptSubmit", "preToolUse", "stop"];
-    let mut hooks_table = config_table
-        .get("hooks")
-        .and_then(|v| v.as_table())
-        .cloned()
-        .unwrap_or_default();
+    // Remove legacy hooks from config.toml (now in hooks.json)
+    config_table.remove("hooks");
 
-    for event_name in &hook_events {
-        let cmd = vec![
-            toml::Value::String(aiki_path.clone()),
-            toml::Value::String("hooks".to_string()),
-            toml::Value::String("stdin".to_string()),
-            toml::Value::String("--agent".to_string()),
-            toml::Value::String("codex".to_string()),
-            toml::Value::String("--event".to_string()),
-            toml::Value::String(event_name.to_string()),
-        ];
-        let mut hook_entry = toml::map::Map::new();
-        hook_entry.insert("command".to_string(), toml::Value::Array(cmd));
-        hooks_table.insert(event_name.to_string(), toml::Value::Table(hook_entry));
-    }
-
-    config_table.insert("hooks".to_string(), toml::Value::Table(hooks_table));
+    // Enable hooks feature (disabled by default in Codex)
+    let features_table = config_table
+        .entry("features")
+        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()))
+        .as_table_mut()
+        .context("features section is not a table")?;
+    features_table.insert(
+        "codex_hooks".to_string(),
+        toml::Value::Boolean(true),
+    );
 
     // Codex native hooks inherit the session sandbox. Add ~/.aiki so hook
     // handlers can write global session state under workspace-write mode.
@@ -480,12 +468,44 @@ pub fn install_codex_hooks_global() -> Result<()> {
     atomic_write_file(&config_path, content.as_bytes())
         .context("Failed to write ~/.codex/config.toml")?;
 
-    println!("✓ Installed Codex hooks at {}", config_path.display());
+    // Write hooks.json (the documented Codex hooks mechanism)
+    let hooks_path = home_dir.join(".codex/hooks.json");
+    let hook_events = [
+        ("SessionStart", "sessionStart"),
+        ("UserPromptSubmit", "userPromptSubmit"),
+        ("PreToolUse", "preToolUse"),
+        ("Stop", "stop"),
+    ];
+
+    let mut hooks_map = serde_json::Map::new();
+    for (event_key, event_arg) in &hook_events {
+        let hook_entry = serde_json::json!([{
+            "hooks": [{
+                "type": "command",
+                "command": format!("aiki hooks stdin --agent codex --event {}", event_arg),
+            }]
+        }]);
+        hooks_map.insert(event_key.to_string(), hook_entry);
+    }
+
+    let hooks_json = serde_json::json!({ "hooks": hooks_map });
+    let hooks_content =
+        serde_json::to_string_pretty(&hooks_json).context("Failed to serialize hooks.json")?;
+    atomic_write_file(&hooks_path, hooks_content.as_bytes())
+        .context("Failed to write ~/.codex/hooks.json")?;
+
+    println!("✓ Installed Codex config at {}", config_path.display());
     println!("  - [otel.exporter]: Log events → {}", aiki_endpoint);
     println!("  - [otel.trace_exporter]: Disabled (no trace spans)");
-    println!("  - [hooks]: sessionStart, userPromptSubmit, preToolUse, stop");
     println!("  - [sandbox_workspace_write]: writable_roots includes ~/.aiki");
     println!("  - log_user_prompt: true (prompt content capture enabled)");
+    println!(
+        "✓ Installed Codex hooks at {}",
+        hooks_path.display()
+    );
+    println!(
+        "  - SessionStart, UserPromptSubmit, PreToolUse, Stop"
+    );
 
     Ok(())
 }

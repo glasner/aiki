@@ -9,6 +9,7 @@ use std::path::Path;
 use crate::error::{AikiError, Result};
 use crate::plugins::deps::{install_with_deps, resolve_deps, InstallReport};
 use crate::plugins::git::{pull_plugin, remove_plugin};
+use crate::plugins::manifest::{load_manifest, resolve_display_name};
 use crate::plugins::scanner::derive_plugin_refs;
 use crate::plugins::{check_install_status, plugins_base_dir, InstallStatus, PluginRef};
 use crate::tasks::templates::TASKS_DIR_NAME;
@@ -160,7 +161,7 @@ fn update_single(plugin: &PluginRef, plugins_base: &Path) -> Result<()> {
             _ => {
                 // New dep — install with its own deps
                 let report = install_with_deps(dep, plugins_base)?;
-                for installed in &report.installed {
+                for (installed, _) in &report.installed {
                     println!("Installed (dependency): {}", installed);
                 }
                 for (failed, err) in &report.failed {
@@ -206,9 +207,16 @@ fn run_list(number: Option<usize>) -> Result<()> {
                 println!("Plugins:");
                 for plugin in &project_refs {
                     let status = check_install_status(plugin, &plugins_base);
+                    let plugin_path = plugin.to_string();
                     match status {
                         InstallStatus::Installed => {
-                            println!("  {}    installed", plugin);
+                            let install_dir = plugin.install_dir(&plugins_base);
+                            let display = resolve_display_name(&install_dir, &plugin_path);
+                            if display != plugin_path {
+                                println!("  {}    {}    installed", plugin, display);
+                            } else {
+                                println!("  {}    installed", plugin);
+                            }
                             // Show deps
                             let deps = resolve_deps(plugin, &plugins_base);
                             for dep in &deps {
@@ -303,7 +311,14 @@ fn run_list(number: Option<usize>) -> Result<()> {
                 if hidden.contains(plugin) {
                     continue; // Only show as dependency under its parent
                 }
-                println!("  {}", plugin);
+                let plugin_path = plugin.to_string();
+                let install_dir = plugin.install_dir(&plugins_base);
+                let display = resolve_display_name(&install_dir, &plugin_path);
+                if display != plugin_path {
+                    println!("  {}    {}", plugin, display);
+                } else {
+                    println!("  {}", plugin);
+                }
                 for dep in deps {
                     println!("    └ {}    (dependency)", dep);
                 }
@@ -317,8 +332,25 @@ fn run_list(number: Option<usize>) -> Result<()> {
 fn run_remove(reference: String) -> Result<()> {
     let plugins_base = plugins_base_dir()?;
     let plugin: PluginRef = reference.parse()?;
+
+    // Try to load display name before removing
+    let install_dir = plugin.install_dir(&plugins_base);
+    let display_name = load_manifest(&install_dir)
+        .ok()
+        .and_then(|m| m.name);
+
     remove_plugin(&plugin, &plugins_base)?;
-    println!("Removed: {}", plugin);
+
+    // Remove from hooks.yml include references in the current project (if in one)
+    let cwd = env::current_dir()?;
+    if let Some(aiki_dir) = find_aiki_dir_optional(&cwd) {
+        remove_from_hooks_yml(&aiki_dir, &plugin);
+    }
+
+    match display_name {
+        Some(name) => println!("Removed: {} ({})", plugin, name),
+        None => println!("Removed: {}", plugin),
+    }
     Ok(())
 }
 
@@ -341,16 +373,77 @@ fn find_aiki_dir_optional(start: &Path) -> Option<std::path::PathBuf> {
     }
 }
 
-fn print_install_report(report: &InstallReport, root: &PluginRef) {
-    for plugin in &report.installed {
+/// Print install report.
+///
+/// Validation (plugin.yaml check + cleanup) is handled by `install_single` in
+/// `deps.rs`, so this function only formats the output.
+fn print_install_report(
+    report: &InstallReport,
+    root: &PluginRef,
+) {
+    for (plugin, manifest) in &report.installed {
+        let fallback = plugin.to_string();
+        let display = manifest.name.as_deref().unwrap_or(&fallback);
         if plugin == root {
-            println!("Installed: {}", plugin);
+            println!("Installed: {} ({})", plugin, display);
         } else {
-            println!("Installed (dependency): {}", plugin);
+            println!("Installed (dependency): {} ({})", plugin, display);
         }
     }
     for (failed, err) in &report.failed {
         eprintln!("Error: failed to install {} — {}", failed, err);
+    }
+}
+
+/// Remove a plugin reference from `include:` lists in the project's `hooks.yml`.
+///
+/// Scans both top-level `include:` and `before:/after:` composition block includes.
+/// Writes the file back only if changes were made.
+fn remove_from_hooks_yml(aiki_dir: &Path, plugin: &PluginRef) {
+    let hooks_path = aiki_dir.join("hooks.yml");
+    if !hooks_path.is_file() {
+        return;
+    }
+
+    let content = match fs::read_to_string(&hooks_path) {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+
+    let plugin_str = plugin.to_string();
+
+    // Filter out lines that are include references to this plugin.
+    // We operate on raw lines to preserve formatting/comments.
+    let lines: Vec<&str> = content.lines().collect();
+    let mut new_lines: Vec<&str> = Vec::with_capacity(lines.len());
+    let mut changed = false;
+
+    for line in &lines {
+        let trimmed = line.trim();
+        // Match list items like "- aiki/way" or "- aiki/way  # comment"
+        if trimmed.starts_with("- ") {
+            let value = trimmed[2..].trim();
+            // Strip trailing comment
+            let value = value.split('#').next().unwrap_or(value).trim();
+            if value == plugin_str {
+                changed = true;
+                continue; // Skip this line
+            }
+        }
+        new_lines.push(line);
+    }
+
+    if changed {
+        let new_content = new_lines.join("\n");
+        // Preserve trailing newline if original had one
+        let new_content = if content.ends_with('\n') && !new_content.ends_with('\n') {
+            format!("{}\n", new_content)
+        } else {
+            new_content
+        };
+        if let Err(e) = fs::write(&hooks_path, new_content) {
+            eprintln!("Warning: failed to update hooks.yml: {}", e);
+        }
     }
 }
 

@@ -253,6 +253,10 @@ enum HooksCommands {
         agent: String,
         #[arg(long)]
         event: String,
+        /// Hidden flag: when set, this is the background continuation of an async hook.
+        /// The original hook payload is piped via stdin.
+        #[arg(long = "_continue-async", hide = true)]
+        continue_async: bool,
         #[arg(trailing_var_arg = true)]
         payload: Vec<String>,
     },
@@ -295,6 +299,7 @@ fn run() -> Result<()> {
             HooksCommands::Stdin {
                 agent,
                 event,
+                continue_async,
                 payload,
             } => {
                 let payload_str = if payload.is_empty() {
@@ -302,7 +307,7 @@ fn run() -> Result<()> {
                 } else {
                     Some(payload.join(" "))
                 };
-                commands::hooks::run_stdin(agent, event, payload_str)
+                commands::hooks::run_stdin(agent, event, continue_async, payload_str)
             }
             HooksCommands::Acp {
                 agent,

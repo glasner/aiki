@@ -4695,13 +4695,11 @@ mod tests {
         assert!(result.success);
     }
 
-    // --- 5e: Background mode blocks the full hook condition ---
+    // --- 5e: Background mode blocks the hook for non-orchestrator tasks ---
     //
-    // Regression test: spawn_blocking agents were getting SIGTERM'd because
-    // the task.closed hook condition evaluated incorrectly for background sessions.
-    // This tests the FULL condition through evaluate_condition (the real code path).
+    // Background sessions running non-orchestrator tasks should NOT be SIGTERM'd.
     #[test]
-    fn test_task_closed_background_mode_blocks_hook_condition() {
+    fn test_task_closed_background_non_orchestrator_blocks_hook() {
         let _lock = session_test_lock();
         let (aiki_home, _guard) = setup_aiki_home();
 
@@ -4713,7 +4711,7 @@ mod tests {
         );
         std::fs::write(sessions_dir.join("sess-5e"), &content).unwrap();
 
-        // Close the task that matches the session's thread tail
+        // Close a non-orchestrator task (feature type) that matches the session's thread tail
         let event = create_task_closed_event(HEAD_ID);
         let mut state = AikiState::new(event);
 
@@ -4726,14 +4724,12 @@ mod tests {
         let info = session_info.unwrap();
         assert_eq!(info.mode, crate::session::SessionMode::Background);
 
-        // Now evaluate the actual hook condition through the engine
-        // This is the real code path that decides whether to fire session.end
-        let condition = r#"event.task.id == session.thread.tail && session.mode == "interactive""#;
+        // The hook condition now allows interactive OR orchestrator tasks
+        let condition = r#"event.task.id == session.thread.tail && (session.mode == "interactive" || event.task.type == "orchestrator")"#;
         let result = HookEngine::evaluate_condition(condition, &mut state).unwrap();
         assert!(
             !result,
-            "Hook condition must be FALSE for background sessions — \
-             this is what prevents SIGTERM on spawn_blocking agents"
+            "Hook condition must be FALSE for background sessions with non-orchestrator tasks"
         );
     }
 
@@ -4753,11 +4749,54 @@ mod tests {
         let event = create_task_closed_event(HEAD_ID);
         let mut state = AikiState::new(event);
 
-        let condition = r#"event.task.id == session.thread.tail && session.mode == "interactive""#;
+        let condition = r#"event.task.id == session.thread.tail && (session.mode == "interactive" || event.task.type == "orchestrator")"#;
         let result = HookEngine::evaluate_condition(condition, &mut state).unwrap();
         assert!(
             result,
             "Hook condition must be TRUE for interactive sessions"
+        );
+    }
+
+    // --- 5g: Background orchestrator sessions are terminated ---
+    //
+    // When an orchestrator task closes, its background session should be SIGTERM'd.
+    // This is the fix for spawn_blocking hangs in `aiki build`.
+    #[test]
+    fn test_task_closed_background_orchestrator_allows_hook() {
+        let _lock = session_test_lock();
+        let (aiki_home, _guard) = setup_aiki_home();
+
+        let sessions_dir = aiki_home.path().join("sessions");
+        let content = format!(
+            "thread={}\nparent_pid=77777\nsession_id=sess-5g\nmode=background\n",
+            HEAD_ID,
+        );
+        std::fs::write(sessions_dir.join("sess-5g"), &content).unwrap();
+
+        // Create an orchestrator task closed event
+        let event: AikiEvent = AikiTaskClosedPayload {
+            task: TaskEventPayload {
+                id: HEAD_ID.to_string(),
+                name: "Loop orchestrator".to_string(),
+                task_type: "orchestrator".to_string(),
+                status: "closed".to_string(),
+                assignee: None,
+                outcome: Some("done".to_string()),
+                source: None,
+                files: None,
+                changes: None,
+            },
+            cwd: std::path::PathBuf::from("/tmp/test"),
+            timestamp: chrono::Utc::now(),
+        }
+        .into();
+        let mut state = AikiState::new(event);
+
+        let condition = r#"event.task.id == session.thread.tail && (session.mode == "interactive" || event.task.type == "orchestrator")"#;
+        let result = HookEngine::evaluate_condition(condition, &mut state).unwrap();
+        assert!(
+            result,
+            "Hook condition must be TRUE for orchestrator tasks in background sessions"
         );
     }
 }

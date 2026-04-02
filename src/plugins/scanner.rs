@@ -9,7 +9,7 @@ use std::path::Path;
 
 use super::PluginRef;
 
-/// Scan a directory for plugin references in hooks.yaml and templates/**/*.md.
+/// Scan a directory for plugin references in hooks.yaml and tasks/**/*.md.
 ///
 /// Returns unique `PluginRef` pairs found in active template syntax.
 /// Self-references (matching `self_ref`) are excluded.
@@ -28,8 +28,8 @@ pub fn derive_plugin_refs(dir: &Path, self_ref: Option<&PluginRef>) -> Vec<Plugi
         }
     }
 
-    // Scan templates/**/*.md recursively
-    let templates_dir = dir.join("templates");
+    // Scan tasks/**/*.md recursively
+    let templates_dir = dir.join("tasks");
     if templates_dir.is_dir() {
         scan_templates_dir(&templates_dir, &mut refs);
     }
@@ -344,8 +344,8 @@ other_key: aiki/core/not-a-template
         let tmp = tempfile::TempDir::new().unwrap();
         let dir = tmp.path();
 
-        // Create templates directory with markdown
-        let tmpl_dir = dir.join("templates");
+        // Create tasks directory with markdown
+        let tmpl_dir = dir.join("tasks");
         fs::create_dir_all(&tmpl_dir).unwrap();
         fs::write(
             tmpl_dir.join("review.md"),

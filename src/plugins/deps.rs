@@ -6,6 +6,7 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use super::git::clone_plugin;
+use super::manifest::{load_manifest, PluginManifest, PLUGIN_MANIFEST_FILENAME};
 use super::scanner::derive_plugin_refs;
 use super::{check_install_status, InstallStatus, PluginRef};
 use crate::error::Result;
@@ -13,8 +14,8 @@ use crate::error::Result;
 /// Report of what happened during an install operation.
 #[derive(Debug, Default)]
 pub struct InstallReport {
-    /// Plugins that were newly cloned.
-    pub installed: Vec<PluginRef>,
+    /// Plugins that were newly cloned, with their parsed manifest.
+    pub installed: Vec<(PluginRef, PluginManifest)>,
     /// Plugins that were already installed and skipped.
     pub already_installed: Vec<PluginRef>,
     /// Plugins that failed to install, with error messages.
@@ -94,6 +95,10 @@ pub fn install_with_deps(plugin: &PluginRef, plugins_base: &Path) -> Result<Inst
 }
 
 /// Install a single plugin, updating the report.
+///
+/// After cloning, validates that `plugin.yaml` exists. If missing, the clone is
+/// removed and the plugin is recorded as failed — this is the single validation
+/// point so callers don't need to re-check.
 fn install_single(
     plugin: &PluginRef,
     plugins_base: &Path,
@@ -105,7 +110,23 @@ fn install_single(
         }
         _ => match clone_plugin(plugin, plugins_base) {
             Ok(()) => {
-                report.installed.push(plugin.clone());
+                let install_dir = plugin.install_dir(plugins_base);
+                match load_manifest(&install_dir) {
+                    Ok(manifest) => {
+                        report.installed.push((plugin.clone(), manifest));
+                    }
+                    Err(_) => {
+                        // Not a valid plugin — clean up and record as failed
+                        let _ = std::fs::remove_dir_all(&install_dir);
+                        report.failed.push((
+                            plugin.clone(),
+                            format!(
+                                "Missing {}. This may not be a valid aiki plugin.",
+                                PLUGIN_MANIFEST_FILENAME
+                            ),
+                        ));
+                    }
+                }
             }
             Err(e) => {
                 report.failed.push((plugin.clone(), e.to_string()));

@@ -164,8 +164,22 @@ struct PreCompactPayload {
 pub fn build_aiki_event_from_stdin() -> Result<AikiEvent> {
     // Parse event - serde discriminates by hook_event_name
     let event: ClaudeEvent = super::super::read_stdin_json()?;
+    Ok(claude_event_to_aiki(event))
+}
 
-    let aiki_event = match event {
+/// Build AikiEvent from a pre-read JSON payload buffer.
+///
+/// Used by the sync fallback path when stdin was already consumed
+/// (e.g. async SessionEnd spawn failed).
+pub fn build_aiki_event_from_json(payload: &[u8]) -> Result<AikiEvent> {
+    let event: ClaudeEvent =
+        serde_json::from_slice(payload).map_err(|e| anyhow::anyhow!(e))?;
+    Ok(claude_event_to_aiki(event))
+}
+
+/// Convert a parsed ClaudeEvent into an AikiEvent.
+fn claude_event_to_aiki(event: ClaudeEvent) -> AikiEvent {
+    match event {
         ClaudeEvent::SessionStart { payload } => build_session_started_event(payload),
         ClaudeEvent::UserPromptSubmit { payload } => build_turn_started_event(payload),
         ClaudeEvent::PreToolUse { payload } => build_permission_asked_event_for_tool_type(payload),
@@ -173,9 +187,7 @@ pub fn build_aiki_event_from_stdin() -> Result<AikiEvent> {
         ClaudeEvent::PreCompact { payload } => build_session_will_compact_event(payload),
         ClaudeEvent::Stop { payload } => build_turn_completed_event(payload),
         ClaudeEvent::SessionEnd { payload } => build_session_ended_event(payload),
-    };
-
-    Ok(aiki_event)
+    }
 }
 
 /// Build appropriate pre-tool event based on tool type

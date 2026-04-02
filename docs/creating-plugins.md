@@ -6,10 +6,11 @@ Plugins are how you package and share reusable Aiki behaviors — custom hooks, 
 
 A plugin is a GitHub repository containing:
 
+- `plugin.yaml` — plugin metadata (name, description) — required
 - `hooks.yaml` — flow definitions (event handlers)
-- `templates/` — markdown templates for tasks (plans, reviews, etc.)
+- `tasks/` — markdown templates for tasks (plans, reviews, etc.)
 
-At least one must exist. Both are optional individually.
+A `plugin.yaml` manifest is required. At least one of `hooks.yaml` or `tasks/` must also exist.
 
 ## Plugin Structure
 
@@ -17,14 +18,16 @@ Minimal hooks-only plugin:
 
 ```
 my-plugin/
+├── plugin.yaml
 └── hooks.yaml
 ```
 
-Minimal templates-only plugin:
+Minimal tasks-only plugin:
 
 ```
 my-plugin/
-└── templates/
+├── plugin.yaml
+└── tasks/
     └── review.md
 ```
 
@@ -32,8 +35,9 @@ Full plugin:
 
 ```
 my-plugin/
+├── plugin.yaml
 ├── hooks.yaml
-└── templates/
+└── tasks/
     ├── plan.md
     └── review.md
 ```
@@ -47,7 +51,7 @@ Plugins use a `namespace/name` format:
 
 Examples: `somecorp/security`, `myuser/style-checks`
 
-When referencing plugin templates, use three-part paths: `namespace/name/template`. For example, `somecorp/security/review` refers to the `templates/review.md` file in the `somecorp/security` plugin.
+When referencing plugin templates, use three-part paths: `namespace/name/template`. For example, `somecorp/security/review` refers to the `tasks/review.md` file in the `somecorp/security` plugin.
 
 ## The `aiki` Namespace
 
@@ -82,6 +86,32 @@ include:
   - myuser/safety-guard
 ```
 
+## The plugin.yaml Manifest
+
+Every plugin requires a `plugin.yaml` file at the root. It contains metadata used for discovery and display:
+
+```yaml
+# plugin.yaml
+name: My Plugin
+description: One-line summary of what this plugin does
+```
+
+| Field | Required | Purpose |
+|-------|----------|---------|
+| `name` | Recommended | Human-readable display name. Falls back to `{namespace}/{plugin}` path if omitted. |
+| `description` | Recommended | One-line summary of what the plugin does |
+
+### Display Name Resolution
+
+The `name` field is a **display name**, not an identifier. The machine identifier is always the `{namespace}/{plugin}` path (e.g., `eslint/standard`).
+
+Fallback chain:
+1. `plugin.yaml` `name:` field
+2. `hooks.yaml` `name:` field (standalone hook files with no `plugin.yaml`)
+3. `{namespace}/{plugin}` path as display name
+
+For plugins with both files, `plugin.yaml` takes precedence.
+
 ## Creating a Templates Plugin
 
 Templates are markdown files that define task structure. They can use `{{variable}}` interpolation and `{{> partial}}` includes.
@@ -109,13 +139,13 @@ The `{{> review/criteria/code}}` syntax includes a partial from another plugin's
 
 ## Dependencies
 
-Plugin dependencies are **auto-derived** from content — no manifest file needed.
+Plugin dependencies are **auto-derived** from content.
 
-Aiki scans your `hooks.yaml` and `templates/` for references to other plugins:
+Aiki scans your `hooks.yaml` and `tasks/` for references to other plugins:
 
 - `include:` directives in hooks.yaml
 - `hook:` actions referencing other plugins
-- `{{> namespace/plugin/template}}` partials in templates
+- `{{> namespace/plugin/template}}` partials in task templates
 - Template references in spawn configs
 
 References inside fenced code blocks (`` ``` ``) are excluded from dependency scanning.

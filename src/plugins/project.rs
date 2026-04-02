@@ -42,7 +42,7 @@ pub fn install_project_plugins(project_root: &Path) -> Result<usize> {
 
     for plugin in &refs {
         let report = super::deps::install_with_deps(plugin, &plugins_base)?;
-        for p in &report.installed {
+        for (p, _) in &report.installed {
             if refs.iter().any(|r| r == p) {
                 println!("Installed plugin: {}", p);
             } else {

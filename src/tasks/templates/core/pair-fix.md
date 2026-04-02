@@ -3,28 +3,53 @@ version: 3.0.0
 type: fix
 ---
 
-# Pair Fix: {{data.scope.name}}
+# Pair Fix: {{data.scope.name}} (iteration {{data.iteration}})
 
 You are pair-programming with the user to address review issues from review **{{data.review}}**.
+
+**Before doing anything else**, tell the user which quality-loop iteration this is (iteration {{data.iteration}}). If this is iteration 2 or later, explain that the previous fixes were re-reviewed and new issues were found — these are **not** the same issues from before.
 
 Walk through each issue below **one at a time**, starting with the highest severity. For each:
 
 1. **Present** the issue clearly (what, where, why it matters)
 2. **Show** the relevant code by reading the file at the specified location
-3. **Ask** the user what they'd like to do:
-   - **Fix**: Work together to implement the fix right now
-   - **Skip**: Mark as won't-do (ask for a brief reason)
-   - **Discuss**: Talk it through before deciding
-4. **Act** on the decision:
-   - For fixes: implement the change, confirm with user
-   - For skips: record the reason as a comment
-5. **Move on** to the next issue
+3. **Assess the evidence**:
+   - If the cited file/location clearly supports the issue, say so
+   - If the cited file/location does **not** support the issue well, say that clearly and distinguish the underlying concern from the weak citation
+4. **Ask** the user what they'd like to do, using numbered options:
+   - **1. Fix**: Delegate the fix to a background subagent so we can keep moving
+   - **2. Plan**: Write a fix plan for this issue instead of implementing it now
+   - **3. Skip**: Mark as won't-do (ask for a brief reason)
+   - **4. Discuss**: Talk it through before deciding
+   - Keep this prompt short so the user can reply with a single number
+5. **Act immediately** on the user's choice:
+   - For **Fix**:
+     - Always create a subtask and delegate it via `aiki run <subtask-id> --async` so the conversation continues while the fix runs in the background
+     - Briefly report that the fix was delegated, then move directly to the next issue without asking for another confirmation
+   - For **Plan**:
+     - Write a concise fix plan for the issue
+     - The plan should cover the problem, affected files, intended change, dependencies, and verification steps
+     - Save the plan in a repo-appropriate plan location if this workflow has one; otherwise include the plan in the task summary/comment in a structured way
+     - Briefly report that the issue was planned, then move directly to the next issue
+   - For **Skip**:
+     - Record the reason as a comment
+     - Briefly confirm the skip, then move directly to the next issue
+   - For **Discuss**:
+     - Discuss the tradeoff
+     - End with the same numbered options
+     - Once the user chooses, act and move on without re-asking
+6. **Track status accurately**:
+   - Do not claim an issue is completed unless the fix is actually done
+   - If a fix was delegated and is still running, report it as in progress
+   - Do not imply the whole pair-fix task is complete while delegated subtasks are still in flight
 
 When all issues are addressed, summarize:
 - N issues fixed
+- N issues planned
 - N issues skipped (with reasons)
+- N issues delegated / still in progress (if any)
 
-Then close this task with the summary.
+Then close this task with the summary **only when every issue is fixed, planned, skipped, or explicitly left in-progress via delegated work with that status reported accurately**.
 
 ## Issues
 

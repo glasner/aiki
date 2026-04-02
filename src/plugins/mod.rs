@@ -5,6 +5,7 @@
 
 pub mod deps;
 pub mod git;
+pub mod manifest;
 pub mod project;
 pub mod scanner;
 

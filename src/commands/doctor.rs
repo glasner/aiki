@@ -147,9 +147,10 @@ pub fn run(fix: bool) -> Result<()> {
         }
     }
 
-    // Check Codex hooks - verify config.toml contains aiki OTel + native hooks
+    // Check Codex hooks - verify config.toml has OTel + hooks.json has hook definitions
     let codex_config_path = home_dir.join(".codex/config.toml");
-    let codex_hooks_ok = check_codex_hooks(&codex_config_path);
+    let codex_hooks_path = home_dir.join(".codex/hooks.json");
+    let codex_hooks_ok = check_codex_hooks(&codex_config_path, &codex_hooks_path);
     if codex_hooks_ok {
         println!("  ✓ Codex hooks configured");
     } else {
@@ -992,71 +993,75 @@ fn check_cursor_hooks(hooks_path: &std::path::Path) -> bool {
 /// Returns true if ~/.codex/config.toml exists AND contains both:
 /// - [otel] section with aiki endpoint (127.0.0.1:19876)
 /// - [hooks] section with native hook entries (sessionStart, stop, etc.)
-fn check_codex_hooks(config_path: &std::path::Path) -> bool {
-    if !config_path.exists() {
-        return false;
-    }
+fn check_codex_hooks(config_path: &std::path::Path, hooks_path: &std::path::Path) -> bool {
+    // Check config.toml for OTel and sandbox settings
+    let config_ok = config_path
+        .exists()
+        .then(|| fs::read_to_string(config_path).ok())
+        .flatten()
+        .and_then(|content| toml::from_str::<toml::Value>(&content).ok())
+        .map(|config| {
+            let has_otel = config
+                .get("otel")
+                .and_then(|v| v.as_table())
+                .and_then(|t| t.get("exporter"))
+                .and_then(|v| v.as_table())
+                .and_then(|t| t.get("otlp-http"))
+                .and_then(|v| v.as_table())
+                .and_then(|t| t.get("endpoint"))
+                .and_then(|v| v.as_str())
+                .map(|endpoint| endpoint.contains("19876"))
+                .unwrap_or(false);
 
-    let content = match fs::read_to_string(config_path) {
-        Ok(c) => c,
-        Err(_) => return false,
-    };
+            let global_aiki = crate::global::global_aiki_dir();
+            let global_aiki = global_aiki.to_string_lossy().to_string();
 
-    let config: toml::Value = match toml::from_str(&content) {
-        Ok(v) => v,
-        Err(_) => return false,
-    };
+            let has_writable_root = config
+                .get("sandbox_workspace_write")
+                .and_then(|v| v.as_table())
+                .and_then(|t| t.get("writable_roots"))
+                .and_then(|v| v.as_array())
+                .map(|roots| {
+                    roots
+                        .iter()
+                        .any(|v| v.as_str().is_some_and(|s| s == global_aiki))
+                })
+                .unwrap_or(false);
 
-    // Check [otel.exporter.otlp-http] section has aiki endpoint
-    let has_otel = config
-        .get("otel")
-        .and_then(|v| v.as_table())
-        .and_then(|t| t.get("exporter"))
-        .and_then(|v| v.as_table())
-        .and_then(|t| t.get("otlp-http"))
-        .and_then(|v| v.as_table())
-        .and_then(|t| t.get("endpoint"))
-        .and_then(|v| v.as_str())
-        .map(|endpoint| endpoint.contains("19876"))
+            let has_hooks_enabled = config
+                .get("features")
+                .and_then(|v| v.as_table())
+                .and_then(|t| t.get("codex_hooks"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+
+            has_otel && has_writable_root && has_hooks_enabled
+        })
         .unwrap_or(false);
 
-    // Check native hooks: [hooks.sessionStart] and [hooks.stop] must have aiki commands
-    let required_hooks = ["sessionStart", "stop"];
-    let has_hooks = config
-        .get("hooks")
-        .and_then(|v| v.as_table())
-        .map(|hooks| {
-            required_hooks.iter().all(|hook_name| {
-                hooks
-                    .get(*hook_name)
-                    .and_then(|v| v.as_table())
-                    .and_then(|t| t.get("command"))
-                    .and_then(|v| v.as_array())
-                    .map(|arr| {
-                        arr.iter()
-                            .any(|v| v.as_str().map(|s| s.contains("aiki")).unwrap_or(false))
+    // Check hooks.json for required hook definitions
+    let hooks_ok = hooks_path
+        .exists()
+        .then(|| fs::read_to_string(hooks_path).ok())
+        .flatten()
+        .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok())
+        .map(|json| {
+            let hooks = json.get("hooks").and_then(|v| v.as_object());
+            let required = ["SessionStart", "Stop"];
+            hooks
+                .map(|h| {
+                    required.iter().all(|name| {
+                        h.get(*name)
+                            .and_then(|v| v.as_array())
+                            .map(|arr| !arr.is_empty())
+                            .unwrap_or(false)
                     })
-                    .unwrap_or(false)
-            })
+                })
+                .unwrap_or(false)
         })
         .unwrap_or(false);
 
-    let global_aiki = crate::global::global_aiki_dir();
-    let global_aiki = global_aiki.to_string_lossy().to_string();
-
-    let has_writable_root = config
-        .get("sandbox_workspace_write")
-        .and_then(|v| v.as_table())
-        .and_then(|t| t.get("writable_roots"))
-        .and_then(|v| v.as_array())
-        .map(|roots| {
-            roots
-                .iter()
-                .any(|v| v.as_str().is_some_and(|s| s == global_aiki))
-        })
-        .unwrap_or(false);
-
-    has_otel && has_hooks && has_writable_root
+    config_ok && hooks_ok
 }
 
 /// Check if the OTel receiver is listening on 127.0.0.1:19876
@@ -1737,14 +1742,11 @@ mod tests {
         let fake_home = "/tmp/fake-aiki-home";
         let _guard = EnvGuard::set("AIKI_HOME", fake_home, &_lock);
 
-        let mut file = NamedTempFile::new().unwrap();
+        let mut config_file = NamedTempFile::new().unwrap();
         let config = format!(
             r#"
-[hooks.sessionStart]
-command = ["/path/to/aiki", "hooks", "stdin", "--agent", "codex", "--event", "sessionStart"]
-
-[hooks.stop]
-command = ["/path/to/aiki", "hooks", "stdin", "--agent", "codex", "--event", "stop"]
+[features]
+codex_hooks = true
 
 [otel]
 log_user_prompt = true
@@ -1757,23 +1759,26 @@ protocol = "binary"
 writable_roots = ["{fake_home}"]
 "#
         );
-        write!(file, "{}", config).unwrap();
+        write!(config_file, "{}", config).unwrap();
 
-        let result = check_codex_hooks(file.path());
+        let mut hooks_file = NamedTempFile::new().unwrap();
+        let hooks = serde_json::json!({
+            "hooks": {
+                "SessionStart": [{"hooks": [{"type": "command", "command": "aiki hooks stdin --agent codex --event sessionStart"}]}],
+                "Stop": [{"hooks": [{"type": "command", "command": "aiki hooks stdin --agent codex --event stop"}]}]
+            }
+        });
+        write!(hooks_file, "{}", serde_json::to_string_pretty(&hooks).unwrap()).unwrap();
+
+        let result = check_codex_hooks(config_file.path(), hooks_file.path());
 
         assert!(result);
     }
 
     #[test]
     fn test_check_codex_hooks_missing_writable_root() {
-        let mut file = NamedTempFile::new().unwrap();
+        let mut config_file = NamedTempFile::new().unwrap();
         let config = r#"
-[hooks.sessionStart]
-command = ["/path/to/aiki", "hooks", "stdin", "--agent", "codex", "--event", "sessionStart"]
-
-[hooks.stop]
-command = ["/path/to/aiki", "hooks", "stdin", "--agent", "codex", "--event", "stop"]
-
 [otel]
 log_user_prompt = true
 
@@ -1781,9 +1786,18 @@ log_user_prompt = true
 endpoint = "http://127.0.0.1:19876/v1/logs"
 protocol = "binary"
 "#;
-        write!(file, "{}", config).unwrap();
+        write!(config_file, "{}", config).unwrap();
 
-        assert!(!check_codex_hooks(file.path()));
+        let mut hooks_file = NamedTempFile::new().unwrap();
+        let hooks = serde_json::json!({
+            "hooks": {
+                "SessionStart": [{"hooks": [{"type": "command", "command": "aiki hooks stdin --agent codex --event sessionStart"}]}],
+                "Stop": [{"hooks": [{"type": "command", "command": "aiki hooks stdin --agent codex --event stop"}]}]
+            }
+        });
+        write!(hooks_file, "{}", serde_json::to_string_pretty(&hooks).unwrap()).unwrap();
+
+        assert!(!check_codex_hooks(config_file.path(), hooks_file.path()));
     }
 
     #[test]

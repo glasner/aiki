@@ -49,7 +49,7 @@ fn test_scan_project_finds_yaml_and_markdown_refs() {
     .unwrap();
 
     // Create a template with a partial ref
-    let tpl_dir = aiki_dir.join("templates");
+    let tpl_dir = aiki_dir.join("tasks");
     fs::create_dir_all(&tpl_dir).unwrap();
     fs::write(
         tpl_dir.join("review.md"),
@@ -69,7 +69,7 @@ fn test_scan_project_finds_yaml_and_markdown_refs() {
 fn test_scan_excludes_code_blocks_and_inline_code() {
     let tmp = TempDir::new().unwrap();
     let aiki_dir = tmp.path().join(".aiki");
-    let tpl_dir = aiki_dir.join("templates");
+    let tpl_dir = aiki_dir.join("tasks");
     fs::create_dir_all(&tpl_dir).unwrap();
 
     // This template has refs in code blocks (should be excluded) and real refs
@@ -101,7 +101,7 @@ Inline code: `{{> inline/plugin/also_excluded}}`
 fn test_scan_deduplicates_across_files() {
     let tmp = TempDir::new().unwrap();
     let aiki_dir = tmp.path().join(".aiki");
-    let tpl_dir = aiki_dir.join("templates");
+    let tpl_dir = aiki_dir.join("tasks");
     fs::create_dir_all(&tpl_dir).unwrap();
 
     // Same plugin referenced from two different templates
@@ -117,7 +117,7 @@ fn test_scan_deduplicates_across_files() {
 fn test_scan_filters_self_ref() {
     let tmp = TempDir::new().unwrap();
     let aiki_dir = tmp.path().join(".aiki");
-    let tpl_dir = aiki_dir.join("templates");
+    let tpl_dir = aiki_dir.join("tasks");
     fs::create_dir_all(&tpl_dir).unwrap();
 
     fs::write(
@@ -272,7 +272,7 @@ fn test_template_resolution_three_part_ref_falls_back_to_plugin() {
     let aiki_home = TempDir::new().unwrap();
 
     // Create project .aiki/tasks/ (empty — no override)
-    let project_templates = tmp.path().join(".aiki").join("templates");
+    let project_templates = tmp.path().join(".aiki").join("tasks");
     fs::create_dir_all(&project_templates).unwrap();
 
     // Create a fake plugin with a template under the temp AIKI_HOME
@@ -280,7 +280,7 @@ fn test_template_resolution_three_part_ref_falls_back_to_plugin() {
     let plugin_tpl_dir = plugins_base
         .join("testns")
         .join("testplug")
-        .join("templates");
+        .join("tasks");
     fs::create_dir_all(&plugin_tpl_dir).unwrap();
     fs::create_dir_all(plugins_base.join("testns").join("testplug").join(".git")).unwrap();
     fs::write(
@@ -308,7 +308,7 @@ fn test_template_resolution_project_override_wins() {
     let aiki_home = TempDir::new().unwrap();
 
     // Create project templates dir
-    let project_templates = tmp.path().join(".aiki").join("templates");
+    let project_templates = tmp.path().join(".aiki").join("tasks");
 
     let plugins_base = aiki_home.path().join("plugins");
 
@@ -316,7 +316,7 @@ fn test_template_resolution_project_override_wins() {
     let plugin_tpl_dir = plugins_base
         .join("testns2")
         .join("overplug")
-        .join("templates");
+        .join("tasks");
     fs::create_dir_all(&plugin_tpl_dir).unwrap();
     fs::create_dir_all(plugins_base.join("testns2").join("overplug").join(".git")).unwrap();
     fs::write(
@@ -531,3 +531,275 @@ fn test_check_project_plugins_with_refs() {
     assert_eq!(refs.len(), 1);
     assert_eq!(refs[0].to_string(), "vendor/tool");
 }
+
+// ---------------------------------------------------------------------------
+// Scanner — tasks/ directory (not templates/)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_scan_uses_tasks_dir_not_templates() {
+    let tmp = TempDir::new().unwrap();
+    let aiki_dir = tmp.path().join(".aiki");
+
+    // Put a ref in the old templates/ dir — should NOT be found
+    let old_dir = aiki_dir.join("templates");
+    fs::create_dir_all(&old_dir).unwrap();
+    fs::write(
+        old_dir.join("review.md"),
+        "{{> old/plugin/ref}}\n",
+    )
+    .unwrap();
+
+    // Put a ref in the new tasks/ dir — should be found
+    let new_dir = aiki_dir.join("tasks");
+    fs::create_dir_all(&new_dir).unwrap();
+    fs::write(
+        new_dir.join("review.md"),
+        "{{> new/plugin/ref}}\n",
+    )
+    .unwrap();
+
+    let refs = derive_plugin_refs(&aiki_dir, None);
+    let ref_strs: Vec<String> = refs.iter().map(|r| r.to_string()).collect();
+
+    assert!(ref_strs.contains(&"new/plugin".to_string()));
+    assert!(!ref_strs.contains(&"old/plugin".to_string()));
+    assert_eq!(refs.len(), 1);
+}
+
+// ---------------------------------------------------------------------------
+// Hook resolver — installed plugin and repo-root plugin lookup
+// ---------------------------------------------------------------------------
+
+/// Installed-plugin lookup uses ~/.aiki/plugins/{ns}/{name}/hooks.yaml.
+/// This requires manipulating HOME which is unreliable in parallel tests,
+/// so we test the repo-root plugin path (step 4) as a proxy — both use
+/// the same resolution logic in resolve_namespaced_flow().
+/// The unit tests in hook_resolver.rs cover the full search order.
+
+#[test]
+fn test_hook_resolver_repo_root_plugin_lookup() {
+    use aiki::flows::hook_resolver::HookResolver;
+
+    let tmp = TempDir::new().unwrap();
+
+    // Create minimal .aiki dir
+    fs::create_dir_all(tmp.path().join(".aiki/hooks")).unwrap();
+
+    // Create repo-root plugin: {project}/plugins/myns/myplugin/hooks.yaml
+    let plugin_dir = tmp.path().join("plugins/myns/myplugin");
+    fs::create_dir_all(&plugin_dir).unwrap();
+    let hooks_path = plugin_dir.join("hooks.yaml");
+    fs::write(&hooks_path, "name: test\nversion: \"1\"\n").unwrap();
+
+    let resolver = HookResolver::with_start_dir(tmp.path()).unwrap();
+    let resolved = resolver.resolve("myns/myplugin").unwrap();
+
+    assert_eq!(
+        resolved.canonicalize().unwrap(),
+        hooks_path.canonicalize().unwrap()
+    );
+}
+
+#[test]
+fn test_hook_resolver_priority_project_over_repo_root() {
+    use aiki::flows::hook_resolver::HookResolver;
+
+    let tmp = TempDir::new().unwrap();
+
+    // Create project hook
+    fs::create_dir_all(tmp.path().join(".aiki/hooks/myns")).unwrap();
+    let project_path = tmp.path().join(".aiki/hooks/myns/myplugin.yml");
+    fs::write(&project_path, "name: project\nversion: \"1\"\n").unwrap();
+
+    // Create repo-root plugin
+    let plugin_dir = tmp.path().join("plugins/myns/myplugin");
+    fs::create_dir_all(&plugin_dir).unwrap();
+    fs::write(
+        plugin_dir.join("hooks.yaml"),
+        "name: repo-root\nversion: \"1\"\n",
+    )
+    .unwrap();
+
+    let resolver = HookResolver::with_start_dir(tmp.path()).unwrap();
+    let resolved = resolver.resolve("myns/myplugin").unwrap();
+
+    // Project should win
+    assert_eq!(
+        resolved.canonicalize().unwrap(),
+        project_path.canonicalize().unwrap()
+    );
+}
+
+#[test]
+fn test_hook_resolver_not_found_error() {
+    use aiki::flows::hook_resolver::HookResolver;
+
+    let tmp = TempDir::new().unwrap();
+    fs::create_dir_all(tmp.path().join(".aiki/hooks")).unwrap();
+
+    let resolver = HookResolver::with_start_dir(tmp.path()).unwrap();
+    let result = resolver.resolve("nonexistent/plugin");
+    assert!(result.is_err(), "Should return error for missing plugin");
+}
+
+// ---------------------------------------------------------------------------
+// Template resolver — three-part ref, TemplateNotFound
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_template_resolution_three_part_ref_uses_tasks_dir() {
+    use aiki::tasks::templates::resolver::load_template;
+
+    let tmp = TempDir::new().unwrap();
+    let aiki_home = TempDir::new().unwrap();
+
+    // Create project .aiki/tasks/ (empty)
+    let project_templates = tmp.path().join(".aiki").join("tasks");
+    fs::create_dir_all(&project_templates).unwrap();
+
+    // Create plugin with template in tasks/ dir (not templates/)
+    let plugins_base = aiki_home.path().join("plugins");
+    let plugin_tasks_dir = plugins_base.join("ns").join("plug").join("tasks");
+    fs::create_dir_all(&plugin_tasks_dir).unwrap();
+    fs::create_dir_all(plugins_base.join("ns").join("plug").join(".git")).unwrap();
+    fs::write(
+        plugin_tasks_dir.join("mytpl.md"),
+        "---\nname: Plugin Template\n---\n# From plugin tasks dir\n",
+    )
+    .unwrap();
+
+    with_temp_aiki_home(aiki_home.path(), || {
+        let result = load_template("ns/plug/mytpl", &project_templates);
+        assert!(
+            result.is_ok(),
+            "Should resolve three-part ref from plugin tasks/ dir: {:?}",
+            result
+        );
+    });
+}
+
+#[test]
+fn test_template_not_found_for_missing_plugin_template() {
+    use aiki::tasks::templates::resolver::load_template;
+
+    let tmp = TempDir::new().unwrap();
+    let aiki_home = TempDir::new().unwrap();
+
+    let project_templates = tmp.path().join(".aiki").join("tasks");
+    fs::create_dir_all(&project_templates).unwrap();
+
+    with_temp_aiki_home(aiki_home.path(), || {
+        let result = load_template("nonexist/noplugin/notemplate", &project_templates);
+        assert!(result.is_err(), "Should return TemplateNotFound");
+    });
+}
+
+#[test]
+fn test_template_short_names_and_two_part_refs_still_work() {
+    use aiki::tasks::templates::resolver::load_template;
+
+    let tmp = TempDir::new().unwrap();
+    let project_templates = tmp.path().join(".aiki").join("tasks");
+    fs::create_dir_all(&project_templates).unwrap();
+
+    // Create a simple template
+    fs::write(
+        project_templates.join("review.md"),
+        "---\nname: Review\n---\n# Review template\n",
+    )
+    .unwrap();
+
+    // Create a namespaced (two-part) template
+    let ns_dir = project_templates.join("myns");
+    fs::create_dir_all(&ns_dir).unwrap();
+    fs::write(
+        ns_dir.join("custom.md"),
+        "---\nname: Custom\n---\n# Custom template\n",
+    )
+    .unwrap();
+
+    // Short name should work
+    let result = load_template("review", &project_templates);
+    assert!(result.is_ok(), "Short name should work: {:?}", result);
+
+    // Two-part ref should work
+    let result = load_template("myns/custom", &project_templates);
+    assert!(result.is_ok(), "Two-part ref should work: {:?}", result);
+}
+
+// ---------------------------------------------------------------------------
+// Plugin manifest — integration tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_manifest_display_name_from_plugin_yaml() {
+    use aiki::plugins::manifest::load_manifest;
+
+    let tmp = TempDir::new().unwrap();
+    fs::write(
+        tmp.path().join("plugin.yaml"),
+        "name: My Awesome Plugin\n",
+    )
+    .unwrap();
+
+    let manifest = load_manifest(tmp.path()).unwrap();
+    assert_eq!(manifest.name.as_deref(), Some("My Awesome Plugin"));
+}
+
+#[test]
+fn test_manifest_missing_plugin_yaml_error() {
+    use aiki::plugins::manifest::load_manifest;
+
+    let tmp = TempDir::new().unwrap();
+    // No plugin.yaml — should error
+    let err = load_manifest(tmp.path()).unwrap_err();
+    assert!(
+        err.to_string().contains("Missing plugin.yaml"),
+        "Should report missing plugin.yaml: {}",
+        err
+    );
+}
+
+#[test]
+fn test_manifest_invalid_plugin_yaml_error() {
+    use aiki::plugins::manifest::load_manifest;
+
+    let tmp = TempDir::new().unwrap();
+    fs::write(
+        tmp.path().join("plugin.yaml"),
+        "totally: not\nthe: right\nformat: at all\n",
+    )
+    .unwrap();
+
+    let err = load_manifest(tmp.path()).unwrap_err();
+    assert!(
+        err.to_string().contains("Invalid plugin.yaml"),
+        "Should report invalid plugin.yaml: {}",
+        err
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Plugin install/remove — validates plugin.yaml
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_plugin_remove_nonexistent_fails() {
+    use assert_cmd::prelude::*;
+    use predicates::prelude::*;
+    use std::process::Command;
+
+    let aiki_home = TempDir::new().unwrap();
+    let workdir = TempDir::new().unwrap();
+
+    let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("aiki"));
+    cmd.args(["plugin", "remove", "nonexist/plugin"])
+        .current_dir(workdir.path())
+        .env("AIKI_HOME", aiki_home.path());
+
+    cmd.assert()
+        .failure()
+        .stderr(predicate::str::contains("not installed"));
+}
+

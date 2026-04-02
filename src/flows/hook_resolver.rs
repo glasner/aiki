@@ -2,7 +2,8 @@
 //!
 //! This module handles resolution of flow paths with namespacing:
 //! - `{namespace}/*` - Namespaced flows (e.g., `aiki/*`, `eslint/*`, `prettier/*`)
-//!   - Searches project `.aiki/hooks/{namespace}/` first, then `~/.aiki/hooks/{namespace}/`
+//!   - Searches project `.aiki/hooks/{namespace}/` first, then `~/.aiki/hooks/{namespace}/`,
+//!     then installed plugins at `~/.aiki/plugins/{namespace}/`, then repo-root plugins
 //!
 //! All top-level directories in `.aiki/hooks/` are treated as namespaces.
 //!
@@ -28,7 +29,7 @@ use crate::error::{AikiError, Result};
 /// - `{namespace}/{name}` - Namespaced flows (e.g., `aiki/*`, `eslint/*`, `prettier/*`)
 ///   - All top-level directories in `.aiki/hooks/` are treated as namespaces
 ///   - `aiki` is just another namespace, not a special case
-///   - Searches project `.aiki/hooks/{namespace}/` first, then `~/.aiki/hooks/{namespace}/`
+///   - Searches: project hooks, user hooks, installed plugins, repo-root plugins
 ///
 /// # Example
 ///
@@ -84,7 +85,7 @@ impl HookResolver {
     ///
     /// | Format | Search Order |
     /// |--------|--------------|
-    /// | `{namespace}/{name}` | 1. Project `.aiki/hooks/{namespace}/{name}.yml`<br>2. User `~/.aiki/hooks/{namespace}/{name}.yml` |
+    /// | `{namespace}/{name}` | 1. Project `.aiki/hooks/{namespace}/{name}.yml`<br>2. User `~/.aiki/hooks/{namespace}/{name}.yml`<br>3. Installed `~/.aiki/plugins/{namespace}/{name}/hooks.yaml`<br>4. Repo-root `{project}/plugins/{namespace}/{name}/hooks.yaml` |
     ///
     /// All top-level directories in `.aiki/hooks/` are treated as namespaces.
     /// Examples: `aiki/quick-lint`, `eslint/check-rules`, `prettier/format`, `mycompany/workflows`
@@ -137,13 +138,15 @@ impl HookResolver {
     /// Search order:
     /// 1. `{project}/.aiki/hooks/{namespace}/{name}.yml`
     /// 2. `~/.aiki/hooks/{namespace}/{name}.yml`
+    /// 3. `~/.aiki/plugins/{namespace}/{name}/hooks.yaml`
+    /// 4. `{project}/plugins/{namespace}/{name}/hooks.yaml`
     ///
     /// # Arguments
     ///
     /// * `namespace` - The namespace (e.g., "aiki", "eslint", "prettier")
     /// * `name` - The flow name within the namespace (may contain slashes for nesting)
     fn resolve_namespaced_flow(&self, namespace: &str, name: &str) -> Result<PathBuf> {
-        // Try project first
+        // 1. Try project first: {project}/.aiki/hooks/{ns}/{name}.yml
         let project_path = self
             .path_resolver
             .project_root()
@@ -156,7 +159,7 @@ impl HookResolver {
             return Ok(project_path);
         }
 
-        // Fall back to user
+        // 2. Fall back to user: ~/.aiki/hooks/{ns}/{name}.yml
         let user_path = self
             .path_resolver
             .home_dir()
@@ -165,7 +168,44 @@ impl HookResolver {
             .join(name);
         let user_path = Self::add_yml_extension(&user_path);
 
-        Ok(user_path)
+        if user_path.exists() {
+            return Ok(user_path);
+        }
+
+        // 3. Installed plugin: ~/.aiki/plugins/{ns}/{name}/hooks.yaml
+        let installed_plugin_path = self
+            .path_resolver
+            .home_dir()
+            .join(".aiki/plugins")
+            .join(namespace)
+            .join(name)
+            .join("hooks.yaml");
+
+        if installed_plugin_path.exists() {
+            return Ok(installed_plugin_path);
+        }
+
+        // 4. Repo-root plugin: {project}/plugins/{ns}/{name}/hooks.yaml
+        let repo_plugin_path = self
+            .path_resolver
+            .project_root()
+            .join("plugins")
+            .join(namespace)
+            .join(name)
+            .join("hooks.yaml");
+
+        if repo_plugin_path.exists() {
+            return Ok(repo_plugin_path);
+        }
+
+        Err(AikiError::HookNotFound {
+            path: format!("{namespace}/{name}"),
+            resolved_path: user_path.display().to_string(),
+            source: std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("no hook found for {namespace}/{name}"),
+            ),
+        })
     }
 
     /// Add .yml extension if not already present.
@@ -340,5 +380,64 @@ version: "1"
         let resolved = resolver.resolve("aiki/test.yaml").unwrap();
 
         assert!(resolved.to_string_lossy().ends_with(".yaml"));
+    }
+
+    #[test]
+    fn test_resolve_repo_root_plugin() {
+        let temp_dir = create_test_project();
+        // Create repo-root plugin: {project}/plugins/{ns}/{name}/hooks.yaml
+        let plugin_dir = temp_dir.path().join("plugins/aiki/default");
+        fs::create_dir_all(&plugin_dir).unwrap();
+        let hooks_path = plugin_dir.join("hooks.yaml");
+        create_flow_file(&hooks_path, "Default Plugin");
+
+        let resolver = HookResolver::with_start_dir(temp_dir.path()).unwrap();
+        let resolved = resolver.resolve("aiki/default").unwrap();
+
+        assert_eq!(
+            resolved.canonicalize().unwrap(),
+            hooks_path.canonicalize().unwrap()
+        );
+    }
+
+    #[test]
+    fn test_project_hooks_override_repo_root_plugin() {
+        let temp_dir = create_test_project();
+
+        // Create both project hook and repo-root plugin
+        let project_path = temp_dir.path().join(".aiki/hooks/aiki/default.yml");
+        create_flow_file(&project_path, "Project Override");
+
+        let plugin_dir = temp_dir.path().join("plugins/aiki/default");
+        fs::create_dir_all(&plugin_dir).unwrap();
+        let plugin_path = plugin_dir.join("hooks.yaml");
+        create_flow_file(&plugin_path, "Repo Plugin");
+
+        let resolver = HookResolver::with_start_dir(temp_dir.path()).unwrap();
+        let resolved = resolver.resolve("aiki/default").unwrap();
+
+        // Should resolve to project hook, not repo-root plugin
+        assert_eq!(
+            resolved.canonicalize().unwrap(),
+            project_path.canonicalize().unwrap()
+        );
+    }
+
+    #[test]
+    fn test_resolve_repo_root_plugin_third_party_namespace() {
+        let temp_dir = create_test_project();
+        // Third-party plugin in repo-root: {project}/plugins/eslint/strict/hooks.yaml
+        let plugin_dir = temp_dir.path().join("plugins/eslint/strict");
+        fs::create_dir_all(&plugin_dir).unwrap();
+        let hooks_path = plugin_dir.join("hooks.yaml");
+        create_flow_file(&hooks_path, "ESLint Strict Plugin");
+
+        let resolver = HookResolver::with_start_dir(temp_dir.path()).unwrap();
+        let resolved = resolver.resolve("eslint/strict").unwrap();
+
+        assert_eq!(
+            resolved.canonicalize().unwrap(),
+            hooks_path.canonicalize().unwrap()
+        );
     }
 }
