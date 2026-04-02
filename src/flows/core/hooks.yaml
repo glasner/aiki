@@ -4,6 +4,8 @@ version: "1"
 
 # session.started: Initialize and verify repository setup when a session begins
 session.started:
+    - context: "Aiki is active. Your session ID is {{event.session_id}}."
+
     # Ensure we're on a fresh change before starting session.
     # Uses --ignore-working-copy to avoid racing with concurrent workspace
     # absorptions that also modify @. Without this flag, jj new triggers a
@@ -43,6 +45,8 @@ session.started:
 # session.resumed: Handle actions when resuming a previous session
 # Re-injects workspace isolation and task context
 session.resumed:
+    - context: "Aiki is active. Your session ID is {{event.session_id}}."
+
     - let: ws_path = self.workspace_ensure_isolated
     - if: ws_path
       then:
@@ -66,6 +70,8 @@ session.resumed:
 # session.compacted: Re-inject critical state after context compaction
 # Workspace path, active tasks, and task count are lost during compaction
 session.compacted:
+    - context: "Aiki is active. Your session ID is {{event.session_id}}."
+
     - let: ws_path = self.workspace_ensure_isolated
     - if: ws_path
       then:
@@ -103,6 +109,8 @@ session.compacted:
 # session.cleared: Re-inject critical state after /clear
 # /clear resets conversation but keeps session
 session.cleared:
+    - context: "Aiki is active. Your session ID is {{event.session_id}}."
+
     - let: ws_path = self.workspace_ensure_isolated
     - if: ws_path
       then:
@@ -130,6 +138,8 @@ session.will_compact:
 
 # turn.started: Create workspace isolation and inject task context on every turn
 turn.started:
+    - context: "Aiki is active. Your session ID is {{event.session_id}}."
+
     # Create isolated workspace if another session is already running in this repo
     # Returns workspace path if created/exists, empty string if skipped
     # Idempotent: no-op if workspace already exists from a prior uncompleted turn
@@ -323,6 +333,8 @@ commit.message_started:
 # repo.changed: Handle transitions between JJ repos within a session
 # Creates isolated workspace in the new repo if concurrent sessions are detected
 repo.changed:
+    - context: "Aiki is active. Your session ID is {{event.session_id}}."
+
     - let: ws_path = self.workspace_ensure_isolated
     - if: ws_path
       then:
