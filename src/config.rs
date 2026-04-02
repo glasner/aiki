@@ -686,6 +686,7 @@ pub fn wait_for_otel_receiver() -> Result<()> {
     anyhow::bail!("OTel receiver did not become ready within 2 seconds")
 }
 
+#[cfg(target_os = "macos")]
 fn restart_otel_receiver_macos() -> Result<()> {
     let home_dir = dirs::home_dir().context("Could not find home directory")?;
     let plist_path = home_dir.join("Library/LaunchAgents/com.aiki.otel-receive.plist");
@@ -718,6 +719,11 @@ fn restart_otel_receiver_macos() -> Result<()> {
     Ok(())
 }
 
+#[cfg(not(target_os = "macos"))]
+fn restart_otel_receiver_macos() -> Result<()> {
+    Ok(())
+}
+
 fn restart_otel_receiver_linux() -> Result<()> {
     let output = Command::new("systemctl")
         .args(["--user", "restart", "aiki-otel-receive.socket"])
@@ -732,6 +738,7 @@ fn restart_otel_receiver_linux() -> Result<()> {
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
 fn install_otel_receiver_macos(aiki_path: &str) -> Result<()> {
     let home_dir = dirs::home_dir().context("Could not find home directory")?;
     let agents_dir = home_dir.join("Library/LaunchAgents");
@@ -769,6 +776,11 @@ fn install_otel_receiver_macos(aiki_path: &str) -> Result<()> {
         anyhow::bail!("launchctl bootstrap failed: {}", stderr.trim());
     }
 
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn install_otel_receiver_macos(_aiki_path: &str) -> Result<()> {
     Ok(())
 }
 
