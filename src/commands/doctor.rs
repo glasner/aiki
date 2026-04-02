@@ -990,12 +990,11 @@ fn check_cursor_hooks(hooks_path: &std::path::Path) -> bool {
 
 /// Check if Codex hooks are properly configured
 ///
-/// Returns true if ~/.codex/config.toml exists AND contains both:
+/// Returns true if ~/.codex/config.toml exists AND contains:
 /// - [otel] section with aiki endpoint (127.0.0.1:19876)
 /// - [hooks] section with native hook entries (sessionStart, stop, etc.)
-fn check_codex_hooks(config_path: &std::path::Path, hooks_path: &std::path::Path) -> bool {
-    // Check config.toml for OTel and sandbox settings
-    let config_ok = config_path
+fn check_codex_hooks(config_path: &std::path::Path, _hooks_path: &std::path::Path) -> bool {
+    config_path
         .exists()
         .then(|| fs::read_to_string(config_path).ok())
         .flatten()
@@ -1035,33 +1034,25 @@ fn check_codex_hooks(config_path: &std::path::Path, hooks_path: &std::path::Path
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
 
-            has_otel && has_writable_root && has_hooks_enabled
-        })
-        .unwrap_or(false);
-
-    // Check hooks.json for required hook definitions
-    let hooks_ok = hooks_path
-        .exists()
-        .then(|| fs::read_to_string(hooks_path).ok())
-        .flatten()
-        .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok())
-        .map(|json| {
-            let hooks = json.get("hooks").and_then(|v| v.as_object());
-            let required = ["SessionStart", "Stop"];
-            hooks
-                .map(|h| {
-                    required.iter().all(|name| {
-                        h.get(*name)
-                            .and_then(|v| v.as_array())
-                            .map(|arr| !arr.is_empty())
-                            .unwrap_or(false)
-                    })
+            let has_required_hooks = config
+                .get("hooks")
+                .and_then(|v| v.as_table())
+                .map(|hooks| {
+                    ["sessionStart", "userPromptSubmit", "preToolUse", "stop"]
+                        .iter()
+                        .all(|name| {
+                            hooks.get(*name)
+                                .and_then(|v| v.as_table())
+                                .and_then(|t| t.get("command"))
+                                .and_then(|v| v.as_array())
+                                .is_some_and(|cmd| !cmd.is_empty())
+                        })
                 })
-                .unwrap_or(false)
-        })
-        .unwrap_or(false);
+                .unwrap_or(false);
 
-    config_ok && hooks_ok
+            has_otel && has_writable_root && has_hooks_enabled && has_required_hooks
+        })
+        .unwrap_or(false)
 }
 
 /// Check if the OTel receiver is listening on 127.0.0.1:19876
@@ -1757,18 +1748,24 @@ protocol = "binary"
 
 [sandbox_workspace_write]
 writable_roots = ["{fake_home}"]
+
+[hooks.sessionStart]
+command = ["aiki", "hooks", "stdin", "--agent", "codex", "--event", "sessionStart"]
+
+[hooks.userPromptSubmit]
+command = ["aiki", "hooks", "stdin", "--agent", "codex", "--event", "userPromptSubmit"]
+
+[hooks.preToolUse]
+command = ["aiki", "hooks", "stdin", "--agent", "codex", "--event", "preToolUse"]
+
+[hooks.stop]
+command = ["aiki", "hooks", "stdin", "--agent", "codex", "--event", "stop"]
 "#
         );
         write!(config_file, "{}", config).unwrap();
 
         let mut hooks_file = NamedTempFile::new().unwrap();
-        let hooks = serde_json::json!({
-            "hooks": {
-                "SessionStart": [{"hooks": [{"type": "command", "command": "aiki hooks stdin --agent codex --event sessionStart"}]}],
-                "Stop": [{"hooks": [{"type": "command", "command": "aiki hooks stdin --agent codex --event stop"}]}]
-            }
-        });
-        write!(hooks_file, "{}", serde_json::to_string_pretty(&hooks).unwrap()).unwrap();
+        write!(hooks_file, "{{}}").unwrap();
 
         let result = check_codex_hooks(config_file.path(), hooks_file.path());
 
@@ -1785,17 +1782,17 @@ log_user_prompt = true
 [otel.exporter.otlp-http]
 endpoint = "http://127.0.0.1:19876/v1/logs"
 protocol = "binary"
+
+[hooks.sessionStart]
+command = ["aiki", "hooks", "stdin", "--agent", "codex", "--event", "sessionStart"]
+
+[hooks.stop]
+command = ["aiki", "hooks", "stdin", "--agent", "codex", "--event", "stop"]
 "#;
         write!(config_file, "{}", config).unwrap();
 
         let mut hooks_file = NamedTempFile::new().unwrap();
-        let hooks = serde_json::json!({
-            "hooks": {
-                "SessionStart": [{"hooks": [{"type": "command", "command": "aiki hooks stdin --agent codex --event sessionStart"}]}],
-                "Stop": [{"hooks": [{"type": "command", "command": "aiki hooks stdin --agent codex --event stop"}]}]
-            }
-        });
-        write!(hooks_file, "{}", serde_json::to_string_pretty(&hooks).unwrap()).unwrap();
+        write!(hooks_file, "{{}}").unwrap();
 
         assert!(!check_codex_hooks(config_file.path(), hooks_file.path()));
     }

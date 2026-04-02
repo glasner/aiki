@@ -957,16 +957,17 @@ fn extract_last_assistant_entry(path: &str) -> Option<TranscriptExtract> {
         }
     }
 
-    match last_response {
-        Some(response) => Some(TranscriptExtract {
-            response,
+    // Return extract if we found any assistant data (text, tokens, or model).
+    // Tool-use-only turns have no text but still have token usage to track.
+    if last_response.is_some() || total_tokens.is_some() {
+        Some(TranscriptExtract {
+            response: last_response.unwrap_or_default(),
             tokens: total_tokens,
             model: last_model,
-        }),
-        None => {
-            debug_log(|| format!("No assistant response found in transcript '{}'", path));
-            None
-        }
+        })
+    } else {
+        debug_log(|| format!("No assistant response found in transcript '{}'", path));
+        None
     }
 }
 
@@ -1232,5 +1233,115 @@ mod tests {
         assert_eq!(tokens.output, 25);
         assert_eq!(tokens.cache_read, 10);
         assert_eq!(tokens.cache_created, 5);
+    }
+
+    #[test]
+    fn test_extract_tool_use_only_turn_returns_tokens() {
+        // Tool-use turn: stop_reason=tool_use, no text blocks, only tool_use content.
+        // Should still return tokens even though there's no response text.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("transcript.jsonl");
+        let content = [
+            r#"{"type":"user","message":{"content":"Fix the bug"}}"#,
+            r#"{"type":"assistant","message":{"model":"claude-opus-4-6","stop_reason":"tool_use","content":[{"type":"tool_use","id":"toolu_01","name":"Edit","input":{"file":"src/main.rs"}}],"usage":{"input_tokens":5000,"output_tokens":150,"cache_read_input_tokens":4800,"cache_creation_input_tokens":0}}}"#,
+        ]
+        .join("\n");
+        std::fs::write(&path, content).unwrap();
+
+        let extract = extract_last_assistant_entry(path.to_str().unwrap()).unwrap();
+        assert_eq!(extract.response, "");
+        assert_eq!(extract.model.as_deref(), Some("claude-opus-4-6"));
+        let tokens = extract.tokens.unwrap();
+        assert_eq!(tokens.input, 5000);
+        assert_eq!(tokens.output, 150);
+        assert_eq!(tokens.cache_read, 4800);
+        assert_eq!(tokens.cache_created, 0);
+    }
+
+    #[test]
+    fn test_extract_streaming_plus_tool_use_pair() {
+        // Real pattern: streaming snapshot (stop_reason=None, low output) followed by
+        // tool_use (higher output). Each has independent usage — must sum both.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("transcript.jsonl");
+        let content = [
+            r#"{"type":"user","message":{"content":"Do something"}}"#,
+            r#"{"type":"assistant","message":{"model":"claude-opus-4-6","stop_reason":null,"content":[],"usage":{"input_tokens":3,"output_tokens":23,"cache_read_input_tokens":8693,"cache_creation_input_tokens":16911}}}"#,
+            r#"{"type":"assistant","message":{"model":"claude-opus-4-6","stop_reason":"tool_use","content":[{"type":"tool_use","id":"toolu_01","name":"Read","input":{}}],"usage":{"input_tokens":3,"output_tokens":196,"cache_read_input_tokens":8693,"cache_creation_input_tokens":16911}}}"#,
+        ]
+        .join("\n");
+        std::fs::write(&path, content).unwrap();
+
+        let extract = extract_last_assistant_entry(path.to_str().unwrap()).unwrap();
+        assert_eq!(extract.response, "");
+        let tokens = extract.tokens.unwrap();
+        assert_eq!(tokens.input, 6);
+        assert_eq!(tokens.output, 219);
+        assert_eq!(tokens.cache_read, 8693 + 8693);
+        assert_eq!(tokens.cache_created, 16911 + 16911);
+    }
+
+    #[test]
+    fn test_extract_streaming_plus_end_turn_pair() {
+        // Streaming snapshot followed by end_turn with text.
+        // Should sum tokens, take text from the final entry.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("transcript.jsonl");
+        let content = [
+            r#"{"type":"user","message":{"content":"Explain this"}}"#,
+            r#"{"type":"assistant","message":{"model":"claude-opus-4-6","stop_reason":null,"content":[],"usage":{"input_tokens":3,"output_tokens":28,"cache_read_input_tokens":39261,"cache_creation_input_tokens":412}}}"#,
+            r#"{"type":"assistant","message":{"model":"claude-opus-4-6","stop_reason":"end_turn","content":[{"type":"text","text":"Here is the explanation."}],"usage":{"input_tokens":3,"output_tokens":288,"cache_read_input_tokens":39261,"cache_creation_input_tokens":412}}}"#,
+        ]
+        .join("\n");
+        std::fs::write(&path, content).unwrap();
+
+        let extract = extract_last_assistant_entry(path.to_str().unwrap()).unwrap();
+        assert_eq!(extract.response, "Here is the explanation.");
+        let tokens = extract.tokens.unwrap();
+        assert_eq!(tokens.input, 6);
+        assert_eq!(tokens.output, 316);
+    }
+
+    #[test]
+    fn test_extract_multiple_tool_use_rounds() {
+        // Multiple tool calls in one turn — several assistant entries between user messages.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("transcript.jsonl");
+        let content = [
+            r#"{"type":"user","message":{"content":"Fix everything"}}"#,
+            r#"{"type":"assistant","message":{"model":"claude-opus-4-6","stop_reason":"tool_use","content":[{"type":"tool_use","id":"t1","name":"Read","input":{}}],"usage":{"input_tokens":100,"output_tokens":50,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}"#,
+            r#"{"type":"assistant","message":{"model":"claude-opus-4-6","stop_reason":"tool_use","content":[{"type":"tool_use","id":"t2","name":"Edit","input":{}}],"usage":{"input_tokens":200,"output_tokens":80,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}"#,
+            r#"{"type":"assistant","message":{"model":"claude-opus-4-6","stop_reason":"tool_use","content":[{"type":"tool_use","id":"t3","name":"Bash","input":{}}],"usage":{"input_tokens":300,"output_tokens":60,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}"#,
+            r#"{"type":"assistant","message":{"model":"claude-opus-4-6","stop_reason":"end_turn","content":[{"type":"text","text":"All fixed."}],"usage":{"input_tokens":400,"output_tokens":120,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}"#,
+        ]
+        .join("\n");
+        std::fs::write(&path, content).unwrap();
+
+        let extract = extract_last_assistant_entry(path.to_str().unwrap()).unwrap();
+        assert_eq!(extract.response, "All fixed.");
+        let tokens = extract.tokens.unwrap();
+        assert_eq!(tokens.input, 1000);
+        assert_eq!(tokens.output, 310);
+    }
+
+    #[test]
+    fn test_extract_no_content_placeholder_skipped() {
+        // Claude Code writes "(no content)" as a streaming placeholder.
+        // Should be filtered out — not counted as real text.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("transcript.jsonl");
+        let content = [
+            r#"{"type":"user","message":{"content":"Hello"}}"#,
+            r#"{"type":"assistant","message":{"model":"claude-opus-4-6","stop_reason":null,"content":[{"type":"text","text":"(no content)"}],"usage":{"input_tokens":1,"output_tokens":4,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}"#,
+            r#"{"type":"assistant","message":{"model":"claude-opus-4-6","stop_reason":"end_turn","content":[{"type":"text","text":"Hi there!"}],"usage":{"input_tokens":1,"output_tokens":10,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}"#,
+        ]
+        .join("\n");
+        std::fs::write(&path, content).unwrap();
+
+        let extract = extract_last_assistant_entry(path.to_str().unwrap()).unwrap();
+        assert_eq!(extract.response, "Hi there!");
+        let tokens = extract.tokens.unwrap();
+        assert_eq!(tokens.input, 2);
+        assert_eq!(tokens.output, 14);
     }
 }

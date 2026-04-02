@@ -3,7 +3,7 @@ use serde_json::json;
 use std::fs;
 use std::io::Write;
 use std::net::{SocketAddr, TcpStream};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
 
@@ -444,9 +444,6 @@ pub fn install_codex_hooks_global() -> Result<()> {
     // Remove legacy notify config if present
     config_table.remove("notify");
 
-    // Remove legacy hooks from config.toml (now in hooks.json)
-    config_table.remove("hooks");
-
     // Enable hooks feature (disabled by default in Codex)
     let features_table = config_table
         .entry("features")
@@ -462,37 +459,36 @@ pub fn install_codex_hooks_global() -> Result<()> {
     // handlers can write global session state under workspace-write mode.
     ensure_codex_writable_root(config_table)?;
 
+    // Install Codex native hooks directly in config.toml. This matches the
+    // documented native hook model and keeps SessionStart in the lifecycle path.
+    let hooks_table = config_table
+        .entry("hooks")
+        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()))
+        .as_table_mut()
+        .context("hooks section is not a table")?;
+
+    for event_arg in ["sessionStart", "userPromptSubmit", "preToolUse", "stop"] {
+        let mut hook_table = toml::map::Map::new();
+        hook_table.insert(
+            "command".to_string(),
+            toml::Value::Array(vec![
+                toml::Value::String("aiki".to_string()),
+                toml::Value::String("hooks".to_string()),
+                toml::Value::String("stdin".to_string()),
+                toml::Value::String("--agent".to_string()),
+                toml::Value::String("codex".to_string()),
+                toml::Value::String("--event".to_string()),
+                toml::Value::String(event_arg.to_string()),
+            ]),
+        );
+        hooks_table.insert(event_arg.to_string(), toml::Value::Table(hook_table));
+    }
+
     // Write updated config atomically to prevent corruption from concurrent
     // `aiki init` calls (e.g. multiple agent sessions starting at once).
     let content = toml::to_string_pretty(&config).context("Failed to serialize config.toml")?;
     atomic_write_file(&config_path, content.as_bytes())
         .context("Failed to write ~/.codex/config.toml")?;
-
-    // Write hooks.json (the documented Codex hooks mechanism)
-    let hooks_path = home_dir.join(".codex/hooks.json");
-    let hook_events = [
-        ("SessionStart", "sessionStart"),
-        ("UserPromptSubmit", "userPromptSubmit"),
-        ("PreToolUse", "preToolUse"),
-        ("Stop", "stop"),
-    ];
-
-    let mut hooks_map = serde_json::Map::new();
-    for (event_key, event_arg) in &hook_events {
-        let hook_entry = serde_json::json!([{
-            "hooks": [{
-                "type": "command",
-                "command": format!("aiki hooks stdin --agent codex --event {}", event_arg),
-            }]
-        }]);
-        hooks_map.insert(event_key.to_string(), hook_entry);
-    }
-
-    let hooks_json = serde_json::json!({ "hooks": hooks_map });
-    let hooks_content =
-        serde_json::to_string_pretty(&hooks_json).context("Failed to serialize hooks.json")?;
-    atomic_write_file(&hooks_path, hooks_content.as_bytes())
-        .context("Failed to write ~/.codex/hooks.json")?;
 
     println!("✓ Installed Codex config at {}", config_path.display());
     println!("  - [otel.exporter]: Log events → {}", aiki_endpoint);
@@ -500,11 +496,7 @@ pub fn install_codex_hooks_global() -> Result<()> {
     println!("  - [sandbox_workspace_write]: writable_roots includes ~/.aiki");
     println!("  - log_user_prompt: true (prompt content capture enabled)");
     println!(
-        "✓ Installed Codex hooks at {}",
-        hooks_path.display()
-    );
-    println!(
-        "  - SessionStart, UserPromptSubmit, PreToolUse, Stop"
+        "  - [hooks]: sessionStart, userPromptSubmit, preToolUse, stop"
     );
 
     Ok(())
