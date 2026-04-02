@@ -824,57 +824,34 @@ fn build_web_completed_event(payload: PostToolUsePayload, tool: ClaudeTool) -> A
     })
 }
 
-/// Data extracted from the last assistant entry in a Claude Code JSONL transcript.
-struct TranscriptExtract {
-    response: String,
-    tokens: Option<TokenUsage>,
-    model: Option<String>,
-}
+use crate::editors::transcript::{TranscriptEntry, TurnTranscript};
 
 /// Build turn.completed event (maps from Stop hook)
 fn build_turn_completed_event(payload: StopPayload) -> AikiEvent {
-    let extract = payload
+    let transcript = payload
         .transcript_path
         .as_deref()
-        .and_then(extract_last_assistant_entry)
-        .unwrap_or(TranscriptExtract {
-            response: String::new(),
-            tokens: None,
-            model: None,
-        });
+        .map(|p| TurnTranscript::parse(p, parse_transcript_lines))
+        .unwrap_or_default();
 
     AikiEvent::TurnCompleted(AikiTurnCompletedPayload {
         session: create_session(&payload.session_id, &payload.cwd),
         cwd: PathBuf::from(&payload.cwd),
         timestamp: chrono::Utc::now(),
         turn: crate::events::Turn::unknown(), // Set by handle_turn_completed
-        response: extract.response,
+        response: transcript.response,
         modified_files: vec![],
         tasks: Default::default(), // Populated by handle_turn_completed
-        tokens: extract.tokens,
-        model: extract.model,
+        tokens: transcript.tokens,
+        model: transcript.model,
     })
 }
 
-/// Extract assistant data from a Claude Code JSONL transcript file.
+/// Parse Claude Code JSONL content into transcript entries.
 ///
-/// The transcript is a JSONL file where each line is a JSON object. Assistant entries
-/// have `"type": "assistant"` with a `message.content` array containing blocks like
-/// `{"type": "text", "text": "..."}`. A single turn may contain multiple assistant
-/// entries (e.g. tool-use rounds). We sum token usage across **all** assistant entries
-/// and take the response text and model from the last one.
-fn extract_last_assistant_entry(path: &str) -> Option<TranscriptExtract> {
-    let content = match std::fs::read_to_string(path) {
-        Ok(c) => c,
-        Err(e) => {
-            debug_log(|| format!("Failed to read transcript file '{}': {}", path, e));
-            return None;
-        }
-    };
-
-    let mut last_response: Option<String> = None;
-    let mut last_model: Option<String> = None;
-    let mut total_tokens: Option<TokenUsage> = None;
+/// Resets on `"user"` entries so only the current (last) turn's entries are returned.
+fn parse_transcript_lines(content: &str) -> Vec<TranscriptEntry> {
+    let mut entries: Vec<TranscriptEntry> = Vec::new();
 
     for line in content.lines() {
         let line = line.trim();
@@ -888,11 +865,9 @@ fn extract_last_assistant_entry(path: &str) -> Option<TranscriptExtract> {
 
         let entry_type = entry.get("type").and_then(|t| t.as_str());
 
-        // Reset accumulators on user entry so we only count the current turn
+        // Reset on user entry so we only return entries from the current turn
         if entry_type == Some("user") {
-            last_response = None;
-            last_model = None;
-            total_tokens = None;
+            entries.clear();
             continue;
         }
 
@@ -903,6 +878,8 @@ fn extract_last_assistant_entry(path: &str) -> Option<TranscriptExtract> {
         let Some(message) = entry.get("message") else {
             continue;
         };
+
+        let mut transcript_entry = TranscriptEntry::default();
 
         // Extract text from message.content array
         if let Some(content_arr) = message.get("content").and_then(|c| c.as_array()) {
@@ -916,16 +893,16 @@ fn extract_last_assistant_entry(path: &str) -> Option<TranscriptExtract> {
                 .join("\n");
 
             if !text.is_empty() {
-                last_response = Some(text);
+                transcript_entry.response = Some(text);
             }
         }
 
-        // Extract model string (keep the latest)
+        // Extract model string
         if let Some(model) = message.get("model").and_then(|m| m.as_str()) {
-            last_model = Some(model.to_string());
+            transcript_entry.model = Some(model.to_string());
         }
 
-        // Accumulate token usage from message.usage
+        // Extract token usage from message.usage
         if let Some(usage) = message.get("usage") {
             let input = usage.get("input_tokens").and_then(|v| v.as_u64());
             let output = usage.get("output_tokens").and_then(|v| v.as_u64());
@@ -939,36 +916,19 @@ fn extract_last_assistant_entry(path: &str) -> Option<TranscriptExtract> {
                     .and_then(|v| v.as_u64())
                     .unwrap_or(0);
 
-                total_tokens = Some(match total_tokens {
-                    Some(prev) => TokenUsage {
-                        input: prev.input + input,
-                        output: prev.output + output,
-                        cache_read: prev.cache_read + cache_read,
-                        cache_created: prev.cache_created + cache_created,
-                    },
-                    None => TokenUsage {
-                        input,
-                        output,
-                        cache_read,
-                        cache_created,
-                    },
+                transcript_entry.tokens = Some(TokenUsage {
+                    input,
+                    output,
+                    cache_read,
+                    cache_created,
                 });
             }
         }
+
+        entries.push(transcript_entry);
     }
 
-    // Return extract if we found any assistant data (text, tokens, or model).
-    // Tool-use-only turns have no text but still have token usage to track.
-    if last_response.is_some() || total_tokens.is_some() {
-        Some(TranscriptExtract {
-            response: last_response.unwrap_or_default(),
-            tokens: total_tokens,
-            model: last_model,
-        })
-    } else {
-        debug_log(|| format!("No assistant response found in transcript '{}'", path));
-        None
-    }
+    entries
 }
 
 /// Build session.ended event (maps from SessionEnd hook)
@@ -1092,14 +1052,14 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_last_assistant_entry_with_usage_and_model() {
+    fn test_parse_transcript_with_usage_and_model() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("transcript.jsonl");
         let content = r#"{"type":"user","message":{"content":"hello"}}
 {"type":"assistant","message":{"model":"claude-sonnet-4-20250514","content":[{"type":"text","text":"Hi there!"}],"usage":{"input_tokens":100,"output_tokens":50,"cache_read_input_tokens":30,"cache_creation_input_tokens":10}}}"#;
         std::fs::write(&path, content).unwrap();
 
-        let extract = extract_last_assistant_entry(path.to_str().unwrap()).unwrap();
+        let extract = TurnTranscript::parse(path.to_str().unwrap(), parse_transcript_lines);
         assert_eq!(extract.response, "Hi there!");
         assert_eq!(extract.model.as_deref(), Some("claude-sonnet-4-20250514"));
         let tokens = extract.tokens.unwrap();
@@ -1110,27 +1070,27 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_last_assistant_entry_without_usage() {
+    fn test_parse_transcript_without_usage() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("transcript.jsonl");
         let content = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Response without usage"}]}}"#;
         std::fs::write(&path, content).unwrap();
 
-        let extract = extract_last_assistant_entry(path.to_str().unwrap()).unwrap();
+        let extract = TurnTranscript::parse(path.to_str().unwrap(), parse_transcript_lines);
         assert_eq!(extract.response, "Response without usage");
         assert!(extract.tokens.is_none());
         assert!(extract.model.is_none());
     }
 
     #[test]
-    fn test_extract_last_assistant_entry_partial_usage() {
+    fn test_parse_transcript_partial_usage() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("transcript.jsonl");
         // Has usage but missing cache fields
         let content = r#"{"type":"assistant","message":{"model":"claude-opus-4-20250514","content":[{"type":"text","text":"Hello"}],"usage":{"input_tokens":200,"output_tokens":80}}}"#;
         std::fs::write(&path, content).unwrap();
 
-        let extract = extract_last_assistant_entry(path.to_str().unwrap()).unwrap();
+        let extract = TurnTranscript::parse(path.to_str().unwrap(), parse_transcript_lines);
         assert_eq!(extract.response, "Hello");
         assert_eq!(extract.model.as_deref(), Some("claude-opus-4-20250514"));
         let tokens = extract.tokens.unwrap();
@@ -1141,19 +1101,21 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_last_assistant_entry_no_file() {
-        let result = extract_last_assistant_entry("/nonexistent/path.jsonl");
-        assert!(result.is_none());
+    fn test_parse_transcript_no_file() {
+        let t = TurnTranscript::parse("/nonexistent/path.jsonl", parse_transcript_lines);
+        assert_eq!(t.response, "");
+        assert!(t.tokens.is_none());
     }
 
     #[test]
-    fn test_extract_last_assistant_entry_empty_file() {
+    fn test_parse_transcript_empty_file() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("transcript.jsonl");
         std::fs::write(&path, "").unwrap();
 
-        let result = extract_last_assistant_entry(path.to_str().unwrap());
-        assert!(result.is_none());
+        let t = TurnTranscript::parse(path.to_str().unwrap(), parse_transcript_lines);
+        assert_eq!(t.response, "");
+        assert!(t.tokens.is_none());
     }
 
     #[test]
@@ -1197,7 +1159,7 @@ mod tests {
         .join("\n");
         std::fs::write(&path, content).unwrap();
 
-        let extract = extract_last_assistant_entry(path.to_str().unwrap()).unwrap();
+        let extract = TurnTranscript::parse(path.to_str().unwrap(), parse_transcript_lines);
         // Response text should be from the last entry with non-empty/non-placeholder text
         assert_eq!(extract.response, "Here is the result.");
         assert_eq!(extract.model.as_deref(), Some("claude-sonnet-4-20250514"));
@@ -1224,7 +1186,7 @@ mod tests {
         .join("\n");
         std::fs::write(&path, content).unwrap();
 
-        let extract = extract_last_assistant_entry(path.to_str().unwrap()).unwrap();
+        let extract = TurnTranscript::parse(path.to_str().unwrap(), parse_transcript_lines);
         assert_eq!(extract.response, "Second answer");
         assert_eq!(extract.model.as_deref(), Some("claude-opus-4-20250514"));
         // Only second turn's tokens, not accumulated from the first turn
@@ -1248,7 +1210,7 @@ mod tests {
         .join("\n");
         std::fs::write(&path, content).unwrap();
 
-        let extract = extract_last_assistant_entry(path.to_str().unwrap()).unwrap();
+        let extract = TurnTranscript::parse(path.to_str().unwrap(), parse_transcript_lines);
         assert_eq!(extract.response, "");
         assert_eq!(extract.model.as_deref(), Some("claude-opus-4-6"));
         let tokens = extract.tokens.unwrap();
@@ -1272,7 +1234,7 @@ mod tests {
         .join("\n");
         std::fs::write(&path, content).unwrap();
 
-        let extract = extract_last_assistant_entry(path.to_str().unwrap()).unwrap();
+        let extract = TurnTranscript::parse(path.to_str().unwrap(), parse_transcript_lines);
         assert_eq!(extract.response, "");
         let tokens = extract.tokens.unwrap();
         assert_eq!(tokens.input, 6);
@@ -1295,7 +1257,7 @@ mod tests {
         .join("\n");
         std::fs::write(&path, content).unwrap();
 
-        let extract = extract_last_assistant_entry(path.to_str().unwrap()).unwrap();
+        let extract = TurnTranscript::parse(path.to_str().unwrap(), parse_transcript_lines);
         assert_eq!(extract.response, "Here is the explanation.");
         let tokens = extract.tokens.unwrap();
         assert_eq!(tokens.input, 6);
@@ -1317,7 +1279,7 @@ mod tests {
         .join("\n");
         std::fs::write(&path, content).unwrap();
 
-        let extract = extract_last_assistant_entry(path.to_str().unwrap()).unwrap();
+        let extract = TurnTranscript::parse(path.to_str().unwrap(), parse_transcript_lines);
         assert_eq!(extract.response, "All fixed.");
         let tokens = extract.tokens.unwrap();
         assert_eq!(tokens.input, 1000);
@@ -1338,7 +1300,7 @@ mod tests {
         .join("\n");
         std::fs::write(&path, content).unwrap();
 
-        let extract = extract_last_assistant_entry(path.to_str().unwrap()).unwrap();
+        let extract = TurnTranscript::parse(path.to_str().unwrap(), parse_transcript_lines);
         assert_eq!(extract.response, "Hi there!");
         let tokens = extract.tokens.unwrap();
         assert_eq!(tokens.input, 2);
