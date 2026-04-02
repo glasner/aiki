@@ -6,7 +6,8 @@ use crate::events::result::HookResult;
 /// Build HookCommandOutput from HookResult for Codex
 ///
 /// Codex has a simpler hook protocol than Claude Code:
-/// - SessionStart: plain text stdout for additionalContext
+/// - SessionStart: JSON `hookSpecificOutput.additionalContext`
+/// - UserPromptSubmit: optional block decision + optional additionalContext
 /// - PreToolUse: only deny is emitted; allow is a no-op
 /// - Stop: uses `decision: "block"` to continue the session
 /// - No PostToolUse or SessionEnd events
@@ -25,58 +26,66 @@ pub fn build_command_output(response: HookResult, event_type: &str) -> HookComma
 
 /// Build SessionStart command output for Codex
 ///
-/// Codex treats plain text stdout as additionalContext, so we emit the
-/// combined output as plain text rather than wrapping it in JSON.
+/// Emit the published schema shape with `hookSpecificOutput.additionalContext`.
 fn build_session_start_output(response: &HookResult) -> HookCommandOutput {
     let combined = response.combined_output();
 
-    if let Some(ctx) = combined {
-        // Has context - emit as plain text on stdout
-        // Codex interprets plain text stdout as additionalContext
-        let json_value = json!(ctx);
-        // Use raw string output instead of JSON object
-        HookCommandOutput {
-            json_value: Some(json_value),
-            exit_code: 0,
-        }
+    let json_value = if let Some(ctx) = combined {
+        json!({
+            "hookSpecificOutput": {
+                "hookEventName": "SessionStart",
+                "additionalContext": ctx
+            }
+        })
     } else {
-        // No context - empty stdout, exit 0
-        HookCommandOutput::new(None, 0)
-    }
+        json!({})
+    };
+
+    HookCommandOutput::new(Some(json_value), 0)
 }
 
 /// Build UserPromptSubmit command output for Codex
 ///
-/// - Block: JSON `{ "decision": "block", "reason": "..." }` or exit code 2 with stderr
-/// - Allow with context: plain text stdout (treated as additionalContext)
-/// - Allow without context: empty stdout
+/// - Block: JSON `{ "decision": "block", "reason": "..." }`
+/// - Allow with context: JSON `hookSpecificOutput.additionalContext`
+/// - Allow without context: empty JSON object
 fn build_user_prompt_submit_output(response: &HookResult) -> HookCommandOutput {
     if response.decision.is_block() {
         let reason = response.format_messages();
-        let json_value = json!({
+        let mut json_value = json!({
             "decision": "block",
             "reason": reason
         });
+
+        if let Some(ref ctx) = response.context {
+            json_value["hookSpecificOutput"] = json!({
+                "hookEventName": "UserPromptSubmit",
+                "additionalContext": ctx
+            });
+        }
+
         HookCommandOutput::new(Some(json_value), 0)
     } else {
-        // Allow - emit plain text context if present
         let combined = response.combined_output();
-        if let Some(ctx) = combined {
-            HookCommandOutput {
-                json_value: Some(json!(ctx)),
-                exit_code: 0,
-            }
+        let json_value = if let Some(ctx) = combined {
+            json!({
+                "hookSpecificOutput": {
+                    "hookEventName": "UserPromptSubmit",
+                    "additionalContext": ctx
+                }
+            })
         } else {
-            HookCommandOutput::new(None, 0)
-        }
+            json!({})
+        };
+
+        HookCommandOutput::new(Some(json_value), 0)
     }
 }
 
 /// Build PreToolUse command output for Codex
 ///
-/// KEY DIFFERENCE from Claude Code: allow is a no-op (empty stdout).
-/// Only deny emits JSON. Never emit "approve" or additionalContext
-/// as these cause failures in Codex.
+/// KEY DIFFERENCE from Claude Code: allow is an empty JSON object.
+/// Only deny emits permissionDecision state. Never emit "approve".
 fn build_pre_tool_use_output(response: &HookResult) -> HookCommandOutput {
     if response.decision.is_block() {
         let reason = response.format_messages();
@@ -93,8 +102,7 @@ fn build_pre_tool_use_output(response: &HookResult) -> HookCommandOutput {
 
         HookCommandOutput::new(Some(json_value), 0)
     } else {
-        // Allow is a no-op - empty stdout, exit 0
-        HookCommandOutput::new(None, 0)
+        HookCommandOutput::new(Some(json!({})), 0)
     }
 }
 
@@ -102,7 +110,7 @@ fn build_pre_tool_use_output(response: &HookResult) -> HookCommandOutput {
 ///
 /// - Continue/block: `{ "decision": "block", "reason": "..." }` with the reason
 ///   serving as a continuation prompt
-/// - Allow stop: empty stdout
+/// - Allow stop: empty JSON object
 /// - No additionalContext support for Stop
 fn build_stop_output(response: &HookResult) -> HookCommandOutput {
     if response.context.is_some() {
@@ -114,8 +122,7 @@ fn build_stop_output(response: &HookResult) -> HookCommandOutput {
         });
         HookCommandOutput::new(Some(json_value), 0)
     } else {
-        // Allow normal stop - empty stdout
-        HookCommandOutput::new(None, 0)
+        HookCommandOutput::new(Some(json!({})), 0)
     }
 }
 
@@ -151,13 +158,20 @@ mod tests {
     // SessionStart output tests
 
     #[test]
-    fn test_session_start_with_context_emits_plain_text() {
+    fn test_session_start_with_context_emits_json_additional_context() {
         let response = make_allow_with_context("WORKSPACE ISOLATION: /tmp/test");
         let output = build_command_output(response, "SessionStart");
-        // Should emit context as a JSON string value (plain text for Codex)
         assert_eq!(output.exit_code, 0);
+        assert!(output.stdout_text.is_none());
         let value = output.json_value.unwrap();
-        assert_eq!(value.as_str().unwrap(), "WORKSPACE ISOLATION: /tmp/test");
+        assert_eq!(
+            value["hookSpecificOutput"]["additionalContext"].as_str(),
+            Some("WORKSPACE ISOLATION: /tmp/test")
+        );
+        assert_eq!(
+            value["hookSpecificOutput"]["hookEventName"].as_str(),
+            Some("SessionStart")
+        );
     }
 
     #[test]
@@ -165,7 +179,7 @@ mod tests {
         let response = make_allow_response();
         let output = build_command_output(response, "SessionStart");
         assert_eq!(output.exit_code, 0);
-        assert!(output.json_value.is_none());
+        assert_eq!(output.json_value.unwrap(), json!({}));
     }
 
     // PreToolUse output tests
@@ -175,10 +189,8 @@ mod tests {
         let response = make_allow_response();
         let output = build_command_output(response, "PreToolUse");
         assert_eq!(output.exit_code, 0);
-        assert!(
-            output.json_value.is_none(),
-            "Allow should produce no output"
-        );
+        assert_eq!(output.json_value.unwrap(), json!({}));
+        assert!(output.stdout_text.is_none());
     }
 
     #[test]
@@ -216,7 +228,8 @@ mod tests {
         let response = make_allow_response();
         let output = build_command_output(response, "Stop");
         assert_eq!(output.exit_code, 0);
-        assert!(output.json_value.is_none());
+        assert_eq!(output.json_value.unwrap(), json!({}));
+        assert!(output.stdout_text.is_none());
     }
 
     #[test]
@@ -239,7 +252,7 @@ mod tests {
         let response = make_allow_response();
         let output = build_command_output(response, "UserPromptSubmit");
         assert_eq!(output.exit_code, 0);
-        assert!(output.json_value.is_none());
+        assert_eq!(output.json_value.unwrap(), json!({}));
     }
 
     #[test]
@@ -248,7 +261,14 @@ mod tests {
         let output = build_command_output(response, "UserPromptSubmit");
         assert_eq!(output.exit_code, 0);
         let value = output.json_value.unwrap();
-        assert_eq!(value.as_str().unwrap(), "Task context: working on xyz");
+        assert_eq!(
+            value["hookSpecificOutput"]["additionalContext"].as_str(),
+            Some("Task context: working on xyz")
+        );
+        assert_eq!(
+            value["hookSpecificOutput"]["hookEventName"].as_str(),
+            Some("UserPromptSubmit")
+        );
     }
 
     #[test]

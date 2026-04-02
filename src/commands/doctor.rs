@@ -990,11 +990,26 @@ fn check_cursor_hooks(hooks_path: &std::path::Path) -> bool {
 
 /// Check if Codex hooks are properly configured
 ///
-/// Returns true if ~/.codex/config.toml exists AND contains:
+/// Returns true if ~/.codex/config.toml exists and ~/.codex/hooks.json exists,
+/// with:
 /// - [otel] section with aiki endpoint (127.0.0.1:19876)
-/// - [hooks] section with native hook entries (sessionStart, stop, etc.)
-fn check_codex_hooks(config_path: &std::path::Path, _hooks_path: &std::path::Path) -> bool {
-    config_path
+/// - [features].codex_hooks = true in config.toml
+/// - hooks.json entries for SessionStart/UserPromptSubmit/PreToolUse/Stop
+fn check_codex_hooks(config_path: &std::path::Path, hooks_path: &std::path::Path) -> bool {
+    let has_aiki_hook_with_params = |arr: &serde_json::Value, agent: &str, event: &str| -> bool {
+        arr.as_array()
+            .map(|arr| {
+                arr.iter().any(|hook| {
+                    hook.get("command")
+                        .and_then(|c| c.as_str())
+                        .map(|c| is_aiki_hooks_command_with_params(c, Some(agent), Some(event)))
+                        .unwrap_or(false)
+                })
+            })
+            .unwrap_or(false)
+    };
+
+    let config_ok = config_path
         .exists()
         .then(|| fs::read_to_string(config_path).ok())
         .flatten()
@@ -1034,25 +1049,43 @@ fn check_codex_hooks(config_path: &std::path::Path, _hooks_path: &std::path::Pat
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
 
-            let has_required_hooks = config
-                .get("hooks")
-                .and_then(|v| v.as_table())
-                .map(|hooks| {
-                    ["sessionStart", "userPromptSubmit", "preToolUse", "stop"]
-                        .iter()
-                        .all(|name| {
-                            hooks.get(*name)
-                                .and_then(|v| v.as_table())
-                                .and_then(|t| t.get("command"))
-                                .and_then(|v| v.as_array())
-                                .is_some_and(|cmd| !cmd.is_empty())
-                        })
-                })
-                .unwrap_or(false);
-
-            has_otel && has_writable_root && has_hooks_enabled && has_required_hooks
+            has_otel && has_writable_root && has_hooks_enabled
         })
-        .unwrap_or(false)
+        .unwrap_or(false);
+
+    let hooks_ok = hooks_path
+        .exists()
+        .then(|| fs::read_to_string(hooks_path).ok())
+        .flatten()
+        .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok())
+        .map(|json| {
+            let hooks = json.get("hooks").and_then(|v| v.as_object());
+            hooks
+                .map(|h| {
+                    [
+                        ("SessionStart", "sessionStart"),
+                        ("UserPromptSubmit", "userPromptSubmit"),
+                        ("PreToolUse", "preToolUse"),
+                        ("Stop", "stop"),
+                    ]
+                    .iter()
+                    .all(|(name, event)| {
+                        h.get(*name)
+                            .and_then(|v| v.as_array())
+                            .is_some_and(|arr| {
+                                arr.iter().any(|group| {
+                                    group.get("hooks").is_some_and(|nested| {
+                                        has_aiki_hook_with_params(nested, "codex", event)
+                                    })
+                                })
+                            })
+                    })
+                })
+                .unwrap_or(false)
+        })
+        .unwrap_or(false);
+
+    config_ok && hooks_ok
 }
 
 /// Check if the OTel receiver is listening on 127.0.0.1:19876
@@ -1748,24 +1781,20 @@ protocol = "binary"
 
 [sandbox_workspace_write]
 writable_roots = ["{fake_home}"]
-
-[hooks.sessionStart]
-command = ["aiki", "hooks", "stdin", "--agent", "codex", "--event", "sessionStart"]
-
-[hooks.userPromptSubmit]
-command = ["aiki", "hooks", "stdin", "--agent", "codex", "--event", "userPromptSubmit"]
-
-[hooks.preToolUse]
-command = ["aiki", "hooks", "stdin", "--agent", "codex", "--event", "preToolUse"]
-
-[hooks.stop]
-command = ["aiki", "hooks", "stdin", "--agent", "codex", "--event", "stop"]
 "#
         );
         write!(config_file, "{}", config).unwrap();
 
         let mut hooks_file = NamedTempFile::new().unwrap();
-        write!(hooks_file, "{{}}").unwrap();
+        let hooks = serde_json::json!({
+            "hooks": {
+                "SessionStart": [{"hooks": [{"type": "command", "command": "aiki hooks stdin --agent codex --event sessionStart"}]}],
+                "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "aiki hooks stdin --agent codex --event userPromptSubmit"}]}],
+                "PreToolUse": [{"hooks": [{"type": "command", "command": "aiki hooks stdin --agent codex --event preToolUse"}]}],
+                "Stop": [{"hooks": [{"type": "command", "command": "aiki hooks stdin --agent codex --event stop"}]}]
+            }
+        });
+        write!(hooks_file, "{}", serde_json::to_string_pretty(&hooks).unwrap()).unwrap();
 
         let result = check_codex_hooks(config_file.path(), hooks_file.path());
 
@@ -1782,17 +1811,17 @@ log_user_prompt = true
 [otel.exporter.otlp-http]
 endpoint = "http://127.0.0.1:19876/v1/logs"
 protocol = "binary"
-
-[hooks.sessionStart]
-command = ["aiki", "hooks", "stdin", "--agent", "codex", "--event", "sessionStart"]
-
-[hooks.stop]
-command = ["aiki", "hooks", "stdin", "--agent", "codex", "--event", "stop"]
 "#;
         write!(config_file, "{}", config).unwrap();
 
         let mut hooks_file = NamedTempFile::new().unwrap();
-        write!(hooks_file, "{{}}").unwrap();
+        let hooks = serde_json::json!({
+            "hooks": {
+                "SessionStart": [{"hooks": [{"type": "command", "command": "aiki hooks stdin --agent codex --event sessionStart"}]}],
+                "Stop": [{"hooks": [{"type": "command", "command": "aiki hooks stdin --agent codex --event stop"}]}]
+            }
+        });
+        write!(hooks_file, "{}", serde_json::to_string_pretty(&hooks).unwrap()).unwrap();
 
         assert!(!check_codex_hooks(config_file.path(), hooks_file.path()));
     }

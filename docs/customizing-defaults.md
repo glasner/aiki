@@ -143,7 +143,7 @@ Access event data with `{{event.*}}`:
 
 ```yaml
 session.started:
-  - log: "Session {{event.session_id}} started by {{event.agent}}"
+  - log: "Session {{event.session.uuid}} started by {{event.agent}}"
 ```
 
 ### Let Bindings

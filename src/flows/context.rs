@@ -24,7 +24,7 @@
 //! assembler.add_chunk(chunk1);
 //!
 //! // Build final message
-//! let result = assembler.build();
+//! let result = assembler.build_with_original();
 //! // Result: "First line\noriginal content\nLast line"
 //! ```
 
@@ -296,7 +296,7 @@ impl Default for ContextChunk {
 ///
 /// 1. Create assembler with optional original content
 /// 2. Add chunks from different flows
-/// 3. Call `build()` to produce final message
+/// 3. Call `build_with_original()` to produce final message
 ///
 /// # Example
 ///
@@ -317,7 +317,7 @@ impl Default for ContextChunk {
 /// };
 /// assembler.add_chunk(chunk2);
 ///
-/// assert_eq!(assembler.build(), "Top\nMiddle\nBottom");
+/// assert_eq!(assembler.build_with_original(), "Top\nMiddle\nBottom");
 /// ```
 #[derive(Debug, Clone)]
 pub struct ContextAssembler {
@@ -366,7 +366,20 @@ impl ContextAssembler {
     ///
     /// The assembled message as a single string.
     #[must_use]
-    pub fn build(&self) -> String {
+    pub fn build_with_original(&self) -> String {
+        self.build_inner(true)
+    }
+
+    /// Build the final message from accumulated chunks without including original content.
+    ///
+    /// This is useful for hook protocols that already carry the user's original
+    /// prompt separately and only need Aiki-injected context.
+    #[must_use]
+    pub fn build_without_original(&self) -> String {
+        self.build_inner(false)
+    }
+
+    fn build_inner(&self, include_original: bool) -> String {
         let mut prepends = Vec::new();
         let mut appends = Vec::new();
 
@@ -383,9 +396,11 @@ impl ContextAssembler {
             parts.push(prepends.join("\n"));
         }
 
-        if let Some(ref orig) = self.original {
-            if !orig.is_empty() {
-                parts.push(orig.clone());
+        if include_original {
+            if let Some(ref orig) = self.original {
+                if !orig.is_empty() {
+                    parts.push(orig.clone());
+                }
             }
         }
 
@@ -440,7 +455,7 @@ mod tests {
         let mut assembler = ContextAssembler::new(Some("original".to_string()), "\n");
         assembler.add_chunk(chunk);
 
-        assert_eq!(assembler.build(), "prepended\noriginal");
+        assert_eq!(assembler.build_with_original(), "prepended\noriginal");
     }
 
     #[test]
@@ -453,7 +468,7 @@ mod tests {
         let mut assembler = ContextAssembler::new(Some("original".to_string()), "\n");
         assembler.add_chunk(chunk);
 
-        assert_eq!(assembler.build(), "original\nappended");
+        assert_eq!(assembler.build_with_original(), "original\nappended");
     }
 
     #[test]
@@ -466,7 +481,7 @@ mod tests {
         let mut assembler = ContextAssembler::new(Some("middle".to_string()), "\n");
         assembler.add_chunk(chunk);
 
-        assert_eq!(assembler.build(), "before\nmiddle\nafter");
+        assert_eq!(assembler.build_with_original(), "before\nmiddle\nafter");
     }
 
     #[test]
@@ -482,7 +497,7 @@ mod tests {
         let mut assembler = ContextAssembler::new(Some("original".to_string()), "\n");
         assembler.add_chunk(chunk);
 
-        assert_eq!(assembler.build(), "line1\nline2\noriginal\nline3");
+        assert_eq!(assembler.build_with_original(), "line1\nline2\noriginal\nline3");
     }
 
     #[test]
@@ -499,7 +514,7 @@ prepend: |
         let mut assembler = ContextAssembler::new(Some("original".to_string()), "\n");
         assembler.add_chunk(chunk);
 
-        let result = assembler.build();
+        let result = assembler.build_with_original();
         // The block scalar preserves the trailing newline in the string
         assert!(result.starts_with("Line 1\nLine 2"));
     }
@@ -518,7 +533,7 @@ append:
         let mut assembler = ContextAssembler::new(Some("original".to_string()), "\n");
         assembler.add_chunk(chunk);
 
-        assert_eq!(assembler.build(), "Line 1\nLine 2\noriginal\nLine 3");
+        assert_eq!(assembler.build_with_original(), "Line 1\nLine 2\noriginal\nLine 3");
     }
 
     #[test]
@@ -546,7 +561,10 @@ append:
         let mut assembler2 = ContextAssembler::new(Some("Body".to_string()), "\n");
         assembler2.add_chunk(chunk2);
 
-        assert_eq!(assembler1.build(), assembler2.build());
+        assert_eq!(
+            assembler1.build_with_original(),
+            assembler2.build_with_original()
+        );
     }
 
     #[test]
@@ -607,7 +625,7 @@ mod assembler_tests {
         };
         assembler.add_chunk(chunk);
 
-        assert_eq!(assembler.build(), "before\noriginal\nafter");
+        assert_eq!(assembler.build_with_original(), "before\noriginal\nafter");
     }
 
     #[test]
@@ -627,7 +645,19 @@ mod assembler_tests {
         assembler.add_chunk(chunk2);
 
         // Order: all prepends, original, all appends
-        assert_eq!(assembler.build(), "first\nsecond\noriginal\nend");
+        assert_eq!(assembler.build_with_original(), "first\nsecond\noriginal\nend");
+    }
+
+    #[test]
+    fn test_build_without_original_when_original_exists() {
+        let mut assembler = ContextAssembler::new(Some("original".to_string()), "\n\n");
+
+        assembler.add_chunk(ContextChunk {
+            prepend: Some(TextLines::Single("before".to_string())),
+            append: Some(TextLines::Single("after".to_string())),
+        });
+
+        assert_eq!(assembler.build_without_original(), "before\n\nafter");
     }
 
     #[test]
@@ -640,7 +670,7 @@ mod assembler_tests {
         };
         assembler.add_chunk(chunk);
 
-        assert_eq!(assembler.build(), "start\nend");
+        assert_eq!(assembler.build_with_original(), "start\nend");
     }
 
     #[test]
@@ -653,14 +683,14 @@ mod assembler_tests {
         };
         assembler.add_chunk(chunk);
 
-        assert_eq!(assembler.build(), "A | middle | B");
+        assert_eq!(assembler.build_with_original(), "A | middle | B");
     }
 
     #[test]
     fn test_build_empty_chunks() {
         let assembler = ContextAssembler::new(Some("only original".to_string()), "\n");
 
-        assert_eq!(assembler.build(), "only original");
+        assert_eq!(assembler.build_with_original(), "only original");
     }
 
     #[test]
@@ -674,7 +704,7 @@ mod assembler_tests {
         assembler.add_chunk(chunk);
 
         // Empty original should be skipped
-        assert_eq!(assembler.build(), "before\nafter");
+        assert_eq!(assembler.build_with_original(), "before\nafter");
     }
 
     #[test]
@@ -698,7 +728,7 @@ mod assembler_tests {
         assembler.add_chunk(chunk);
 
         // Should have double newlines between sections
-        assert_eq!(assembler.build(), "before\n\nmiddle\n\nafter");
+        assert_eq!(assembler.build_with_original(), "before\n\nmiddle\n\nafter");
     }
 
     #[test]
@@ -725,7 +755,7 @@ mod assembler_tests {
             append: Some(TextLines::Single("Confirm you understand".to_string())),
         });
 
-        let result = assembler.build();
+        let result = assembler.build_with_original();
 
         // Verify structure: prepends (joined with \n), original, appends
         // with \n\n between major sections
@@ -748,7 +778,7 @@ mod assembler_tests {
             ])),
         });
 
-        let result = assembler.build();
+        let result = assembler.build_with_original();
 
         // Trailers should be joined with single newline (not double)
         assert_eq!(
@@ -769,7 +799,7 @@ mod assembler_tests {
             append: Some(TextLines::Single("Café ☕ — Naïve résumé".to_string())),
         });
 
-        let result = assembler.build();
+        let result = assembler.build_with_original();
 
         // Verify Unicode is preserved correctly
         assert!(result.contains("🎯 Priority: مرتفع"));
@@ -797,7 +827,7 @@ mod assembler_tests {
             append: Some(TextLines::Single(long_append.clone())),
         });
 
-        let result = assembler.build();
+        let result = assembler.build_with_original();
 
         // Verify all content is present
         assert!(result.starts_with(&long_prepend));
@@ -830,7 +860,7 @@ mod assembler_tests {
             append: Some(TextLines::Single("THIRD_APP".to_string())),
         });
 
-        let result = assembler.build();
+        let result = assembler.build_with_original();
 
         // Expected: all prepends joined with \n, then separator, then original, then separator, then all appends joined with \n
         // Note: prepends/appends are ALWAYS joined with \n internally, separator is only between major sections
@@ -884,7 +914,7 @@ mod assembler_tests {
             append: None,
         });
 
-        let result = assembler.build();
+        let result = assembler.build_with_original();
 
         // All prepends should come first in order (P1, P2, P3) joined with \n
         // Then separator (-)

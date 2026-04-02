@@ -66,6 +66,7 @@ predicates = "3.0"
 tempfile = "3.0"
 criterion = "0.5"
 uuid = { version = "1.0", features = ["v4"] }
+jsonschema = "0.18"
 
 # The profile that 'dist' will build with
 [profile.dist]

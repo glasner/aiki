@@ -73,6 +73,8 @@ Do not use `--confidence` with `--wont-do`.
 - All file reads, writes, and edits must use paths within the workspace
 - Do NOT switch back to the repo root — stay in the workspace
 
+**Git:** The workspace is NOT a git repo. When the user says "commit", they mean git. Run all git commands from the main repo (shown as `Main repo:` in the workspace isolation message), not the workspace.
+
 **IMPORTANT: Use `aiki task` for ALL task management.** Do not use built-in todo tools (TodoWrite, task lists, etc.). Aiki tasks:
 - Persist in JJ history across sessions
 - Are visible to other agents and humans
@@ -189,14 +191,9 @@ This opens the conflicted change, lets you resolve the JJ conflict markers, and 
 
 ### Delegating Work to Subagents
 
-**Do NOT use native subagent tools to spawn agents.** Use `aiki run` instead — it spawns a separate agent session with full aiki context (task tracking, provenance, hooks).
+**Prefer `aiki run` over native subagent tools.** `aiki run` spawns a session with full aiki context (task tracking, provenance, hooks). Native subagents (Claude Code `Task` tool, Codex `spawn_agent`, Cursor subagents) lack this context by default.
 
-Native subagent tools include:
-- **Claude Code**: `Task` tool (subagent spawning)
-- **Codex**: `spawn_agent`, `spawn_agents_parallel`
-- **Cursor**: Subagents (`/explore`, `/bash`, etc.) and Background Agents
-
-**Why:** Native subagents run without aiki context. Their work isn't tracked, isn't visible to other agents/humans, and doesn't persist. `aiki run` gives the spawned agent the same aiki integration you have.
+**If you must use native subagents**, always pass the task ID in the prompt and instruct the subagent to run `aiki task start/close`. See "If you must use native subagents" below.
 
 **Scenario 1: User asks you to delegate an existing task**
 ```bash
@@ -268,19 +265,29 @@ EOF
 aiki run <task-id>
 ```
 
-### ❌ WRONG: Using native subagents
+### If you must use native subagents
+
+`aiki run` is always preferred, but if it fails or you need a native subagent for
+read-only work, **always pass the task ID** so the subagent can track its work:
+
 ```
-# Claude Code - Don't use the Task tool
+# ❌ WRONG: No task context
 Task(prompt="Go fix the tests", subagent_type="general-purpose")
 
-# Codex - Don't use spawn_agent
-spawn_agent(role="fixer", prompt="Go fix the tests")
-
-# Cursor - Don't use subagents or background agents directly
-/bash fix the failing tests
+# ✅ CORRECT: Pass task ID and instruct the subagent to use aiki
+Task(prompt="You are working on aiki task <task-id>.
+Run `aiki task start <task-id>` first, then do the work,
+then `aiki task close <task-id> --confidence 3 --summary '...'`.
+Fix the failing tests in cli/tests/auth_tests.rs.",
+subagent_type="general-purpose")
 ```
 
-### ✅ CORRECT: Using aiki run
+This ensures the subagent's work is tracked even without full hook integration.
+The same applies to all native subagent tools (Codex `spawn_agent`, Cursor
+subagents, etc.) — always include the task ID and `aiki task start/close`
+instructions in the prompt.
+
+### Preferred: Using aiki run
 ```bash
 aiki task add "Fix failing tests in auth module"
 aiki task set <task-id> --instructions <<'EOF'

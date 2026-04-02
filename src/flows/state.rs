@@ -184,8 +184,10 @@ impl AikiState {
         })
     }
 
-    /// Build the final context from accumulated chunks
-    /// Works for session.started, turn.started (builds prompt), and turn.completed (builds autoreply)
+    /// Build the final context from accumulated chunks without the original prompt/body.
+    ///
+    /// This is the right default for hook adapters that already receive the
+    /// original user prompt separately and only need injected context.
     /// Returns None if:
     /// - This event doesn't have a context assembler, OR
     /// - The assembler is empty (no Context actions were executed)
@@ -195,7 +197,21 @@ impl AikiState {
             if assembler.is_empty() {
                 None
             } else {
-                Some(assembler.build())
+                Some(assembler.build_without_original())
+            }
+        })
+    }
+
+    /// Build the final context from accumulated chunks including original prompt/body.
+    ///
+    /// This preserves the legacy prompt-rewrite behavior for callers that need it.
+    #[must_use]
+    pub fn build_context_with_original_prompt(&self) -> Option<String> {
+        self.context_assembler.as_ref().and_then(|assembler| {
+            if assembler.is_empty() {
+                None
+            } else {
+                Some(assembler.build_with_original())
             }
         })
     }

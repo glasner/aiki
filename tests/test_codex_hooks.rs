@@ -163,17 +163,18 @@ fn test_otel_deferred_events_not_mapped() {
     assert_eq!(events.len(), 3);
 
     // All should be Unknown (acknowledged but not mapped)
-    for (event, _) in &events {
-        assert!(matches!(event, CodexOtelEvent::Unknown { .. }));
-    }
+    assert!(matches!(&events[0].0, CodexOtelEvent::Unknown { .. }));
+    assert!(matches!(&events[1].0, CodexOtelEvent::Unknown { .. }));
+    assert!(matches!(&events[2].0, CodexOtelEvent::ToolDecision { .. }));
 }
 
 #[test]
-fn test_codex_config_toml_generation() {
+fn test_codex_config_generation() {
     let tmp = tempfile::TempDir::new().unwrap();
     let config_path = tmp.path().join("config.toml");
+    let hooks_path = tmp.path().join("hooks.json");
 
-    // Simulate what install_codex_hooks_global does
+    // Simulate what install_codex_hooks_global does.
     // exporter is a tagged enum struct variant: { "otlp-http": { endpoint, protocol } }
     let mut config = toml::map::Map::new();
 
@@ -194,29 +195,24 @@ fn test_codex_config_toml_generation() {
     otel_table.insert("exporter".to_string(), toml::Value::Table(exporter));
     otel_table.insert("log_user_prompt".to_string(), toml::Value::Boolean(true));
     config.insert("otel".to_string(), toml::Value::Table(otel_table));
-
-    let hook_events = ["sessionStart", "userPromptSubmit", "preToolUse", "stop"];
-    let mut hooks = toml::map::Map::new();
-    for event_name in hook_events {
-        let cmd = vec![
-            toml::Value::String("/usr/local/bin/aiki".to_string()),
-            toml::Value::String("hooks".to_string()),
-            toml::Value::String("stdin".to_string()),
-            toml::Value::String("--agent".to_string()),
-            toml::Value::String("codex".to_string()),
-            toml::Value::String("--event".to_string()),
-            toml::Value::String(event_name.to_string()),
-        ];
-        let mut hook_entry = toml::map::Map::new();
-        hook_entry.insert("command".to_string(), toml::Value::Array(cmd));
-        hooks.insert(event_name.to_string(), toml::Value::Table(hook_entry));
-    }
-    config.insert("hooks".to_string(), toml::Value::Table(hooks));
+    let mut features = toml::map::Map::new();
+    features.insert("codex_hooks".to_string(), toml::Value::Boolean(true));
+    config.insert("features".to_string(), toml::Value::Table(features));
 
     let content = toml::to_string_pretty(&toml::Value::Table(config)).unwrap();
     fs::write(&config_path, &content).unwrap();
 
-    // Parse back and verify
+    let hooks_json = serde_json::json!({
+        "hooks": {
+            "SessionStart": [{"hooks": [{"type": "command", "command": "/usr/local/bin/aiki hooks stdin --agent codex --event sessionStart"}]}],
+            "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "/usr/local/bin/aiki hooks stdin --agent codex --event userPromptSubmit"}]}],
+            "PreToolUse": [{"hooks": [{"type": "command", "command": "/usr/local/bin/aiki hooks stdin --agent codex --event preToolUse"}]}],
+            "Stop": [{"hooks": [{"type": "command", "command": "/usr/local/bin/aiki hooks stdin --agent codex --event stop"}]}]
+        }
+    });
+    fs::write(&hooks_path, serde_json::to_string_pretty(&hooks_json).unwrap()).unwrap();
+
+    // Parse back and verify config.toml.
     let parsed: toml::Value = toml::from_str(&content).unwrap();
 
     let otel = parsed.get("otel").unwrap().as_table().unwrap();
@@ -238,16 +234,26 @@ fn test_codex_config_toml_generation() {
     );
 
     assert!(parsed.get("notify").is_none());
+    assert_eq!(
+        parsed["features"]["codex_hooks"].as_bool(),
+        Some(true)
+    );
 
-    let hooks = parsed.get("hooks").unwrap().as_table().unwrap();
-    for event_name in ["sessionStart", "userPromptSubmit", "preToolUse", "stop"] {
-        let hook = hooks.get(event_name).unwrap().as_table().unwrap();
-        let command = hook.get("command").unwrap().as_array().unwrap();
-        assert!(command
-            .iter()
-            .any(|v| v.as_str().is_some_and(|s| s.contains("aiki"))));
-        assert!(command.iter().any(|v| v.as_str() == Some("stdin")));
-        assert!(command.iter().any(|v| v.as_str() == Some(event_name)));
+    // Parse back and verify hooks.json.
+    let hooks_value: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&hooks_path).unwrap()).unwrap();
+    let hooks = hooks_value["hooks"].as_object().unwrap();
+    for (event_name, event_arg) in [
+        ("SessionStart", "sessionStart"),
+        ("UserPromptSubmit", "userPromptSubmit"),
+        ("PreToolUse", "preToolUse"),
+        ("Stop", "stop"),
+    ] {
+        let groups = hooks[event_name].as_array().unwrap();
+        let command = groups[0]["hooks"][0]["command"].as_str().unwrap();
+        assert!(command.contains("aiki"));
+        assert!(command.contains("stdin"));
+        assert!(command.contains(event_arg));
     }
 }
 

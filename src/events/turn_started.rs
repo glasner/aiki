@@ -120,7 +120,7 @@ pub fn handle_turn_started(mut payload: AikiTurnStartedPayload) -> Result<HookRe
             // Hook execution failed - log warning and use original prompt
             eprintln!("turn.started flow failed: {}", e);
             eprintln!("Continuing with original prompt...\n");
-            // Return built context (already initialized with original prompt)
+            // Return only injected context; the editor already has the original prompt.
             return Ok(HookResult {
                 context: state.build_context(),
                 decision: Decision::Allow,

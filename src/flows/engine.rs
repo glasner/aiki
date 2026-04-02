@@ -58,7 +58,11 @@ impl HookEngine {
                 resolver.add_var("event.turn".to_string(), e.turn.number.to_string());
                 resolver.add_var("event.turn_id".to_string(), e.turn.id.clone());
                 resolver.add_var(
-                    "event.session_id".to_string(),
+                    "event.session.uuid".to_string(),
+                    e.session.uuid().to_string(),
+                );
+                resolver.add_var(
+                    "event.session.external_id".to_string(),
                     e.session.external_id().to_string(),
                 );
             }
@@ -66,7 +70,11 @@ impl HookEngine {
             // Read operations
             crate::events::AikiEvent::ReadPermissionAsked(e) => {
                 resolver.add_var(
-                    "event.session_id".to_string(),
+                    "event.session.uuid".to_string(),
+                    e.session.uuid().to_string(),
+                );
+                resolver.add_var(
+                    "event.session.external_id".to_string(),
                     e.session.external_id().to_string(),
                 );
                 resolver.add_var("event.tool_name".to_string(), e.tool_name.clone());
@@ -77,7 +85,11 @@ impl HookEngine {
             }
             crate::events::AikiEvent::ReadCompleted(e) => {
                 resolver.add_var(
-                    "event.session_id".to_string(),
+                    "event.session.uuid".to_string(),
+                    e.session.uuid().to_string(),
+                );
+                resolver.add_var(
+                    "event.session.external_id".to_string(),
                     e.session.external_id().to_string(),
                 );
                 resolver.add_var("event.tool_name".to_string(), e.tool_name.clone());
@@ -90,7 +102,11 @@ impl HookEngine {
             }
             crate::events::AikiEvent::SessionStarted(e) => {
                 resolver.add_var(
-                    "event.session_id".to_string(),
+                    "event.session.uuid".to_string(),
+                    e.session.uuid().to_string(),
+                );
+                resolver.add_var(
+                    "event.session.external_id".to_string(),
                     e.session.external_id().to_string(),
                 );
             }
@@ -100,7 +116,11 @@ impl HookEngine {
                 resolver.add_var("event.turn".to_string(), e.turn.number.to_string());
                 resolver.add_var("event.turn_id".to_string(), e.turn.id.clone());
                 resolver.add_var(
-                    "event.session_id".to_string(),
+                    "event.session.uuid".to_string(),
+                    e.session.uuid().to_string(),
+                );
+                resolver.add_var(
+                    "event.session.external_id".to_string(),
                     e.session.external_id().to_string(),
                 );
                 resolver.add_var(
@@ -114,44 +134,72 @@ impl HookEngine {
             }
             crate::events::AikiEvent::SessionEnded(e) => {
                 resolver.add_var(
-                    "event.session_id".to_string(),
+                    "event.session.uuid".to_string(),
+                    e.session.uuid().to_string(),
+                );
+                resolver.add_var(
+                    "event.session.external_id".to_string(),
                     e.session.external_id().to_string(),
                 );
             }
             crate::events::AikiEvent::SessionResumed(e) => {
                 resolver.add_var(
-                    "event.session_id".to_string(),
+                    "event.session.uuid".to_string(),
+                    e.session.uuid().to_string(),
+                );
+                resolver.add_var(
+                    "event.session.external_id".to_string(),
                     e.session.external_id().to_string(),
                 );
             }
             crate::events::AikiEvent::SessionWillCompact(e) => {
                 resolver.add_var(
-                    "event.session_id".to_string(),
+                    "event.session.uuid".to_string(),
+                    e.session.uuid().to_string(),
+                );
+                resolver.add_var(
+                    "event.session.external_id".to_string(),
                     e.session.external_id().to_string(),
                 );
             }
             crate::events::AikiEvent::SessionCompacted(e) => {
                 resolver.add_var(
-                    "event.session_id".to_string(),
+                    "event.session.uuid".to_string(),
+                    e.session.uuid().to_string(),
+                );
+                resolver.add_var(
+                    "event.session.external_id".to_string(),
                     e.session.external_id().to_string(),
                 );
             }
             crate::events::AikiEvent::SessionCleared(e) => {
                 resolver.add_var(
-                    "event.session_id".to_string(),
+                    "event.session.uuid".to_string(),
+                    e.session.uuid().to_string(),
+                );
+                resolver.add_var(
+                    "event.session.external_id".to_string(),
                     e.session.external_id().to_string(),
                 );
             }
             crate::events::AikiEvent::ShellPermissionAsked(e) => {
                 resolver.add_var(
-                    "event.session_id".to_string(),
+                    "event.session.uuid".to_string(),
+                    e.session.uuid().to_string(),
+                );
+                resolver.add_var(
+                    "event.session.external_id".to_string(),
                     e.session.external_id().to_string(),
                 );
                 resolver.add_var("event.command".to_string(), e.command.clone());
             }
             crate::events::AikiEvent::ShellCompleted(e) => {
                 resolver.add_var(
-                    "event.session_id".to_string(),
+                    "event.session.uuid".to_string(),
+                    e.session.uuid().to_string(),
+                );
+                resolver.add_var(
+                    "event.session.external_id".to_string(),
                     e.session.external_id().to_string(),
                 );
                 resolver.add_var("event.command".to_string(), e.command.clone());
@@ -169,7 +217,11 @@ impl HookEngine {
             }
             crate::events::AikiEvent::McpPermissionAsked(e) => {
                 resolver.add_var(
-                    "event.session_id".to_string(),
+                    "event.session.uuid".to_string(),
+                    e.session.uuid().to_string(),
+                );
+                resolver.add_var(
+                    "event.session.external_id".to_string(),
                     e.session.external_id().to_string(),
                 );
                 resolver.add_var("event.tool_name".to_string(), e.tool_name.clone());
@@ -177,7 +229,11 @@ impl HookEngine {
             }
             crate::events::AikiEvent::McpCompleted(e) => {
                 resolver.add_var(
-                    "event.session_id".to_string(),
+                    "event.session.uuid".to_string(),
+                    e.session.uuid().to_string(),
+                );
+                resolver.add_var(
+                    "event.session.external_id".to_string(),
                     e.session.external_id().to_string(),
                 );
                 resolver.add_var("event.tool_name".to_string(), e.tool_name.clone());
@@ -188,7 +244,11 @@ impl HookEngine {
             }
             crate::events::AikiEvent::WebPermissionAsked(e) => {
                 resolver.add_var(
-                    "event.session_id".to_string(),
+                    "event.session.uuid".to_string(),
+                    e.session.uuid().to_string(),
+                );
+                resolver.add_var(
+                    "event.session.external_id".to_string(),
                     e.session.external_id().to_string(),
                 );
                 resolver.add_var("event.operation".to_string(), e.operation.to_string());
@@ -201,7 +261,11 @@ impl HookEngine {
             }
             crate::events::AikiEvent::WebCompleted(e) => {
                 resolver.add_var(
-                    "event.session_id".to_string(),
+                    "event.session.uuid".to_string(),
+                    e.session.uuid().to_string(),
+                );
+                resolver.add_var(
+                    "event.session.external_id".to_string(),
                     e.session.external_id().to_string(),
                 );
                 resolver.add_var("event.operation".to_string(), e.operation.to_string());
@@ -226,7 +290,11 @@ impl HookEngine {
             // Change operations (unified mutations: write, delete, move)
             crate::events::AikiEvent::ChangePermissionAsked(e) => {
                 resolver.add_var(
-                    "event.session_id".to_string(),
+                    "event.session.uuid".to_string(),
+                    e.session.uuid().to_string(),
+                );
+                resolver.add_var(
+                    "event.session.external_id".to_string(),
                     e.session.external_id().to_string(),
                 );
                 resolver.add_var(
@@ -288,7 +356,11 @@ impl HookEngine {
             }
             crate::events::AikiEvent::ChangeCompleted(e) => {
                 resolver.add_var(
-                    "event.session_id".to_string(),
+                    "event.session.uuid".to_string(),
+                    e.session.uuid().to_string(),
+                );
+                resolver.add_var(
+                    "event.session.external_id".to_string(),
                     e.session.external_id().to_string(),
                 );
                 resolver.add_var(
@@ -357,7 +429,11 @@ impl HookEngine {
             // Model transition events
             crate::events::AikiEvent::ModelChanged(e) => {
                 resolver.add_var(
-                    "event.session_id".to_string(),
+                    "event.session.uuid".to_string(),
+                    e.session.uuid().to_string(),
+                );
+                resolver.add_var(
+                    "event.session.external_id".to_string(),
                     e.session.external_id().to_string(),
                 );
                 resolver.add_var("event.new_model".to_string(), e.new_model.clone());
@@ -369,7 +445,11 @@ impl HookEngine {
             // Task lifecycle events
             crate::events::AikiEvent::RepoChanged(e) => {
                 resolver.add_var(
-                    "event.session_id".to_string(),
+                    "event.session.uuid".to_string(),
+                    e.session.uuid().to_string(),
+                );
+                resolver.add_var(
+                    "event.session.external_id".to_string(),
                     e.session.external_id().to_string(),
                 );
                 resolver.add_var("event.repo.root".to_string(), e.repo.root.clone());
@@ -1255,17 +1335,21 @@ impl HookEngine {
     /// Execute a context action
     ///
     /// This action accumulates context that will be prepended to prompts/autoreplies.
-    /// Works for session.started, turn.started, and turn.completed events.
+    /// Works for session lifecycle events plus turn.started and turn.completed.
     fn execute_context(action: &ContextAction, state: &mut AikiState) -> Result<ActionResult> {
         use crate::events::AikiEvent;
 
         // Verify this is an event type that supports context injection
         if !matches!(
             &state.event,
-            AikiEvent::SessionStarted(_) | AikiEvent::TurnStarted(_) | AikiEvent::TurnCompleted(_)
+            AikiEvent::SessionStarted(_)
+                | AikiEvent::SessionResumed(_)
+                | AikiEvent::SessionCleared(_)
+                | AikiEvent::TurnStarted(_)
+                | AikiEvent::TurnCompleted(_)
         ) {
             return Err(AikiError::Other(anyhow::anyhow!(
-                "context action can only be used in session.started, turn.started, or turn.completed events"
+                "context action can only be used in session.started, session.resumed, session.cleared, turn.started, or turn.completed events"
             )));
         }
 
@@ -2494,6 +2578,36 @@ mod tests {
         })
     }
 
+    fn create_session_resumed_event() -> AikiEvent {
+        let session = AikiSession::new(
+            AgentType::ClaudeCode,
+            "test-session".to_string(),
+            None::<&str>,
+            crate::provenance::DetectionMethod::Hook,
+            SessionMode::Interactive,
+        );
+        AikiEvent::SessionResumed(crate::events::AikiSessionResumedPayload {
+            session,
+            cwd: std::path::PathBuf::from("/tmp"),
+            timestamp: chrono::Utc::now(),
+        })
+    }
+
+    fn create_session_cleared_event() -> AikiEvent {
+        let session = AikiSession::new(
+            AgentType::ClaudeCode,
+            "test-session".to_string(),
+            None::<&str>,
+            crate::provenance::DetectionMethod::Hook,
+            SessionMode::Interactive,
+        );
+        AikiEvent::SessionCleared(crate::events::AikiSessionClearedPayload {
+            session,
+            cwd: std::path::PathBuf::from("/tmp"),
+            timestamp: chrono::Utc::now(),
+        })
+    }
+
     // Helper function for tests that still use Action lists (wraps them in HookStatements)
     fn execute_actions(actions: &[Action], state: &mut AikiState) -> Result<HookOutcome> {
         let statements: Vec<HookStatement> = actions
@@ -2916,12 +3030,11 @@ mod tests {
                 on_failure: OnFailure::default(),
             }),
             Action::Let(LetAction {
-                let_: "x = {{event.session_id}}".to_string(),
+                let_: "x = {{event.session.external_id}}".to_string(),
                 on_failure: OnFailure::default(),
             }),
         ];
 
-        // PostFileChange event has tool_name and session_id fields
         let mut state = AikiState::new(create_test_event());
 
         let _result = execute_actions(&actions, &mut state).unwrap();
@@ -3687,6 +3800,40 @@ mod tests {
 
         // Should fail
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_context_action_allowed_for_session_resumed() {
+        let action = Action::Context(ContextAction {
+            context: crate::flows::types::ContextContent::Simple("resumed context".to_string()),
+            on_failure: OnFailure::default(),
+        });
+
+        let mut state = AikiState::new(create_session_resumed_event());
+        let result = execute_actions(&[action], &mut state).unwrap();
+
+        assert!(matches!(result, HookOutcome::Success));
+        assert_eq!(
+            state.build_context_with_original_prompt().as_deref(),
+            Some("resumed context")
+        );
+    }
+
+    #[test]
+    fn test_context_action_allowed_for_session_cleared() {
+        let action = Action::Context(ContextAction {
+            context: crate::flows::types::ContextContent::Simple("cleared context".to_string()),
+            on_failure: OnFailure::default(),
+        });
+
+        let mut state = AikiState::new(create_session_cleared_event());
+        let result = execute_actions(&[action], &mut state).unwrap();
+
+        assert!(matches!(result, HookOutcome::Success));
+        assert_eq!(
+            state.build_context_with_original_prompt().as_deref(),
+            Some("cleared context")
+        );
     }
 
     #[test]

@@ -828,6 +828,22 @@ use crate::editors::transcript::{TranscriptEntry, TurnTranscript};
 
 /// Build turn.completed event (maps from Stop hook)
 fn build_turn_completed_event(payload: StopPayload) -> AikiEvent {
+    // Temporary: always log to file for debugging transcript_path availability
+    let _ = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("/tmp/aiki-stop-debug.log")
+        .and_then(|mut f| {
+            use std::io::Write;
+            writeln!(
+                f,
+                "{} session_id={} transcript_path={:?}",
+                chrono::Utc::now(),
+                payload.session_id,
+                payload.transcript_path
+            )
+        });
+
     let transcript = payload
         .transcript_path
         .as_deref()

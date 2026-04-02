@@ -2,21 +2,12 @@ use serde::Deserialize;
 use std::path::PathBuf;
 
 use super::session::create_session;
-use crate::agents::AgentType;
-use crate::cache::debug_log;
 use crate::error::Result;
 use crate::events::{
-    AikiChangeCompletedPayload, AikiEvent, AikiSessionClearedPayload, AikiSessionResumedPayload,
-    AikiSessionStartPayload, AikiShellPermissionAskedPayload, AikiTurnCompletedPayload,
-    AikiTurnStartedPayload, ChangeOperation, DeleteOperation, MoveOperation, TokenUsage, Turn,
-    WriteOperation,
+    AikiEvent, AikiSessionClearedPayload, AikiSessionResumedPayload, AikiSessionStartPayload,
+    AikiShellPermissionAskedPayload, AikiTurnCompletedPayload, AikiTurnStartedPayload, TokenUsage,
 };
 use crate::editors::transcript::{TranscriptEntry, TurnTranscript};
-use crate::history;
-use crate::error::AikiError;
-use crate::jj::{jj_cmd, JJ_READONLY_ARGS};
-use crate::provenance::record::ProvenanceRecord;
-use crate::session::turn_state::generate_turn_id;
 
 // ============================================================================
 // Hook Payload Structures (matches Codex native hooks API)
@@ -278,195 +269,10 @@ fn build_turn_completed_event(payload: StopPayload) -> AikiEvent {
 }
 
 fn build_stop_events(payload: StopPayload) -> BuiltCodexEvents {
-    let supplemental_events = build_change_completed_fallback_events(&payload);
-    let primary_event = build_turn_completed_event(payload);
-
     BuiltCodexEvents {
-        supplemental_events,
-        primary_event,
+        supplemental_events: vec![],
+        primary_event: build_turn_completed_event(payload),
     }
-}
-
-fn build_change_completed_fallback_events(payload: &StopPayload) -> Vec<AikiEvent> {
-    let session = create_session(&payload.session_id, &payload.cwd);
-    let cwd = PathBuf::from(&payload.cwd);
-    let turn = current_turn_for_session(session.uuid());
-
-    if turn.is_known() && current_change_already_attributed(&cwd, session.uuid(), &turn) {
-        return vec![];
-    }
-
-    let operations = match current_change_operations(&cwd) {
-        Ok(ops) => ops,
-        Err(err) => {
-            debug_log(|| format!("Codex stop fallback skipped (diff failed): {}", err));
-            return vec![];
-        }
-    };
-
-    if operations.is_empty() {
-        return vec![];
-    }
-
-    let timestamp = chrono::Utc::now();
-
-    operations
-        .into_iter()
-        .map(|operation| {
-            AikiEvent::ChangeCompleted(AikiChangeCompletedPayload {
-                session: session.clone(),
-                cwd: cwd.clone(),
-                timestamp,
-                tool_name: "codex-stop-fallback".to_string(),
-                success: true,
-                turn: turn.clone(),
-                operation,
-            })
-        })
-        .collect()
-}
-
-fn current_turn_for_session(session_uuid: &str) -> Turn {
-    match history::get_current_turn_info(&crate::global::global_aiki_dir(), session_uuid) {
-        Ok((turn_number, source)) if turn_number > 0 => Turn::new(
-            turn_number,
-            generate_turn_id(session_uuid, turn_number),
-            source.to_string(),
-        ),
-        Ok(_) => Turn::unknown(),
-        Err(err) => {
-            debug_log(|| {
-                format!(
-                    "Codex stop fallback turn lookup failed for {}: {}",
-                    session_uuid, err
-                )
-            });
-            Turn::unknown()
-        }
-    }
-}
-
-fn current_change_already_attributed(cwd: &std::path::Path, session_uuid: &str, turn: &Turn) -> bool {
-    if !turn.is_known() {
-        return false;
-    }
-
-    let description = match current_change_description(cwd) {
-        Ok(description) => description,
-        Err(err) => {
-            debug_log(|| format!("Codex stop fallback description read failed: {}", err));
-            return false;
-        }
-    };
-
-    description_has_codex_turn_metadata(&description, session_uuid, &turn.id)
-}
-
-fn current_change_description(cwd: &std::path::Path) -> Result<String> {
-    let output = jj_cmd()
-        .current_dir(cwd)
-        .args(["log", "-r", "@", "-T", "description"])
-        .args(JJ_READONLY_ARGS)
-        .output()
-        .map_err(|e| AikiError::JjCommandFailed(format!("Failed to execute jj log: {}", e)))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(AikiError::JjCommandFailed(format!(
-            "jj log failed: {}",
-            stderr
-        )));
-    }
-
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
-}
-
-fn description_has_codex_turn_metadata(description: &str, session_uuid: &str, turn_id: &str) -> bool {
-    match ProvenanceRecord::from_description(description) {
-        Ok(Some(record)) => {
-            record.agent.agent_type == AgentType::Codex
-                && record.session_id == session_uuid
-                && record.turn_id == turn_id
-        }
-        _ => false,
-    }
-}
-
-fn current_change_operations(cwd: &std::path::Path) -> Result<Vec<ChangeOperation>> {
-    let workspace = crate::jj::JJWorkspace::find(cwd)?;
-    let output = jj_cmd()
-        .arg("diff")
-        .arg("-r")
-        .arg("@")
-        .arg("--summary")
-        .current_dir(workspace.workspace_root())
-        .output()
-        .map_err(|e| AikiError::JjCommandFailed(format!("Failed to execute jj diff: {}", e)))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(AikiError::JjCommandFailed(format!(
-            "jj diff failed: {}",
-            stderr
-        )));
-    }
-
-    Ok(parse_summary_operations(&String::from_utf8_lossy(&output.stdout)))
-}
-
-fn parse_summary_operations(summary: &str) -> Vec<ChangeOperation> {
-    let mut operations = Vec::new();
-
-    for line in summary.lines() {
-        let line = line.trim();
-        if line.len() < 3 {
-            continue;
-        }
-
-        if let Some(path) = line.strip_prefix("A ").or_else(|| line.strip_prefix("M ")) {
-            let path = path.trim();
-            if !path.is_empty() {
-                operations.push(ChangeOperation::Write(WriteOperation {
-                    file_paths: vec![path.to_string()],
-                    edit_details: vec![],
-                }));
-            }
-            continue;
-        }
-
-        if let Some(path) = line.strip_prefix("D ") {
-            let path = path.trim();
-            if !path.is_empty() {
-                operations.push(ChangeOperation::Delete(DeleteOperation {
-                    file_paths: vec![path.to_string()],
-                }));
-            }
-            continue;
-        }
-
-        if let Some((source, destination)) =
-            line.strip_prefix("R ").and_then(parse_move_summary_line)
-        {
-            operations.push(ChangeOperation::Move(MoveOperation {
-                file_paths: vec![destination.clone()],
-                source_paths: vec![source],
-                destination_paths: vec![destination],
-            }));
-        }
-    }
-
-    operations
-}
-
-fn parse_move_summary_line(content: &str) -> Option<(String, String)> {
-    let inner = content.trim().strip_prefix('{')?.strip_suffix('}')?;
-    let mut parts = inner.split(" => ");
-    let source = parts.next()?.trim();
-    let destination = parts.next()?.trim();
-    if source.is_empty() || destination.is_empty() {
-        return None;
-    }
-    Some((source.to_string(), destination.to_string()))
 }
 
 // ============================================================================
@@ -488,7 +294,9 @@ struct CodexTokenUsageDetail {
 /// The `info` object inside a `token_count` payload.
 #[derive(Deserialize, Debug, Clone)]
 struct CodexTokenCountInfo {
+    #[allow(dead_code)]
     last_token_usage: CodexTokenUsageDetail,
+    total_token_usage: CodexTokenUsageDetail,
 }
 
 /// Payload of a `token_count` event_msg.
@@ -504,18 +312,28 @@ struct CodexEventMsg {
     payload: CodexTokenCountPayload,
 }
 
-/// Parse Codex JSONL content into transcript entries.
+/// Parse Codex JSONL content into transcript entries for the current turn.
 ///
-/// Extracts `token_count` events, each representing one API call's usage.
+/// Codex emits `token_count` events with cumulative `total_token_usage`.
+/// To get per-turn usage, we find the last `turn_context` boundary and
+/// compute: (last total in file) - (last total before that boundary).
+/// For turn 1, the baseline is zero.
 fn parse_transcript_lines(content: &str) -> Vec<TranscriptEntry> {
-    let mut entries = Vec::new();
+    // Track the cumulative total at each token_count event, and where turn
+    // boundaries fall, so we can compute the delta for the current turn.
+    let mut all_totals: Vec<CodexTokenUsageDetail> = Vec::new();
+    let mut last_turn_boundary_idx: usize = 0; // index into all_totals
 
     for line in content.lines() {
         let line = line.trim();
         if line.is_empty() {
             continue;
         }
-        // Quick check before full parse
+        if line.contains("\"turn_context\"") {
+            // Mark boundary: baseline for next turn is whatever total we've seen so far
+            last_turn_boundary_idx = all_totals.len();
+            continue;
+        }
         if !line.contains("\"token_count\"") {
             continue;
         }
@@ -528,24 +346,39 @@ fn parse_transcript_lines(content: &str) -> Vec<TranscriptEntry> {
             if is_token_count {
                 if let Ok(msg) = serde_json::from_value::<CodexEventMsg>(val) {
                     if let Some(info) = msg.payload.info {
-                        let u = info.last_token_usage;
-                        entries.push(TranscriptEntry {
-                            response: None,
-                            model: None,
-                            tokens: Some(TokenUsage {
-                                input: u.input_tokens,
-                                output: u.output_tokens,
-                                cache_read: u.cached_input_tokens,
-                                cache_created: 0,
-                            }),
-                        });
+                        all_totals.push(info.total_token_usage);
                     }
                 }
             }
         }
     }
 
-    entries
+    let last = match all_totals.last() {
+        Some(t) => t,
+        None => return vec![],
+    };
+
+    // Baseline: last total before the current turn boundary (zero for turn 1)
+    let baseline = if last_turn_boundary_idx > 0 {
+        &all_totals[last_turn_boundary_idx - 1]
+    } else {
+        &CodexTokenUsageDetail {
+            input_tokens: 0,
+            output_tokens: 0,
+            cached_input_tokens: 0,
+        }
+    };
+
+    vec![TranscriptEntry {
+        response: None,
+        model: None,
+        tokens: Some(TokenUsage {
+            input: last.input_tokens.saturating_sub(baseline.input_tokens),
+            output: last.output_tokens.saturating_sub(baseline.output_tokens),
+            cache_read: last.cached_input_tokens.saturating_sub(baseline.cached_input_tokens),
+            cache_created: 0,
+        }),
+    }]
 }
 
 #[cfg(test)]
@@ -799,19 +632,38 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_token_usage_sums_all_events() {
-        // Multiple API calls in one turn (tool-use loop) — sum all last_token_usage entries
+    fn test_parse_token_usage_uses_last_total() {
+        // Multiple API calls in one turn — use last total_token_usage (no turn boundary = baseline zero)
         let content = r#"{"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":1000,"output_tokens":500,"cached_input_tokens":200,"reasoning_output_tokens":50,"total_tokens":1750},"total_token_usage":{"input_tokens":1000,"output_tokens":500,"cached_input_tokens":200,"reasoning_output_tokens":50,"total_tokens":1750},"model_context_window":258400},"rate_limits":null}}
 {"type":"event_msg","payload":{"type":"agent_message","message":"working..."}}
 {"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":24014,"output_tokens":98,"cached_input_tokens":23808,"reasoning_output_tokens":13,"total_tokens":24112},"total_token_usage":{"input_tokens":47759,"output_tokens":249,"cached_input_tokens":27264,"reasoning_output_tokens":79,"total_tokens":48008},"model_context_window":258400},"rate_limits":null}}
 "#;
         let extract = parse_and_aggregate(content);
         let usage = extract.tokens.unwrap();
-        // Sum of both last_token_usage entries
-        assert_eq!(usage.input, 1000 + 24014);
-        assert_eq!(usage.output, 500 + 98);
-        assert_eq!(usage.cache_read, 200 + 23808);
+        // Last total_token_usage, baseline is zero (no turn_context)
+        assert_eq!(usage.input, 47759);
+        assert_eq!(usage.output, 249);
+        assert_eq!(usage.cache_read, 27264);
         assert_eq!(usage.cache_created, 0);
+    }
+
+    #[test]
+    fn test_parse_token_usage_multi_turn_uses_delta() {
+        // Turn 1: one API call. Turn 2: stale duplicate + two API calls.
+        // At Stop for turn 2, file has all events. Baseline = last total before turn_context.
+        let content = r#"{"type":"turn_context","payload":{"turn_id":"turn-1"}}
+{"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":1000,"output_tokens":50,"cached_input_tokens":500},"total_token_usage":{"input_tokens":1000,"output_tokens":50,"cached_input_tokens":500}}}}
+{"type":"turn_context","payload":{"turn_id":"turn-2"}}
+{"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":1000,"output_tokens":50,"cached_input_tokens":500},"total_token_usage":{"input_tokens":1000,"output_tokens":50,"cached_input_tokens":500}}}}
+{"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":2000,"output_tokens":100,"cached_input_tokens":1800},"total_token_usage":{"input_tokens":3000,"output_tokens":150,"cached_input_tokens":2300}}}}
+{"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":2100,"output_tokens":80,"cached_input_tokens":1900},"total_token_usage":{"input_tokens":5100,"output_tokens":230,"cached_input_tokens":4200}}}}
+"#;
+        let extract = parse_and_aggregate(content);
+        let usage = extract.tokens.unwrap();
+        // Delta: last total (5100/230/4200) - baseline before turn-2 (1000/50/500)
+        assert_eq!(usage.input, 4100);
+        assert_eq!(usage.output, 180);
+        assert_eq!(usage.cache_read, 3700);
     }
 
     #[test]
@@ -848,67 +700,4 @@ mod tests {
         assert!(parse_and_aggregate(content).tokens.is_none());
     }
 
-    #[test]
-    fn test_parse_summary_operations_maps_write_delete_and_move() {
-        let summary = "\
-M src/main.rs
-A src/new.rs
-D src/old.rs
-R {src/from.rs => src/to.rs}
-";
-
-        let operations = parse_summary_operations(summary);
-        assert_eq!(operations.len(), 4);
-
-        match &operations[0] {
-            ChangeOperation::Write(op) => assert_eq!(op.file_paths, vec!["src/main.rs"]),
-            _ => panic!("Expected write operation for modified file"),
-        }
-
-        match &operations[1] {
-            ChangeOperation::Write(op) => assert_eq!(op.file_paths, vec!["src/new.rs"]),
-            _ => panic!("Expected write operation for added file"),
-        }
-
-        match &operations[2] {
-            ChangeOperation::Delete(op) => assert_eq!(op.file_paths, vec!["src/old.rs"]),
-            _ => panic!("Expected delete operation"),
-        }
-
-        match &operations[3] {
-            ChangeOperation::Move(op) => {
-                assert_eq!(op.source_paths, vec!["src/from.rs"]);
-                assert_eq!(op.destination_paths, vec!["src/to.rs"]);
-            }
-            _ => panic!("Expected move operation"),
-        }
-    }
-
-    #[test]
-    fn test_description_has_codex_turn_metadata_matches_current_turn() {
-        let description = "\
-[aiki]
-author=codex
-author_type=agent
-session=550e8400-e29b-41d4-a716-446655440000
-tool=apply_patch
-confidence=High
-method=Hook
-turn=2
-turn_id=turn-2
-turn_source=user
-[/aiki]
-";
-
-        assert!(description_has_codex_turn_metadata(
-            description,
-            "550e8400-e29b-41d4-a716-446655440000",
-            "turn-2"
-        ));
-        assert!(!description_has_codex_turn_metadata(
-            description,
-            "550e8400-e29b-41d4-a716-446655440000",
-            "turn-3"
-        ));
-    }
 }

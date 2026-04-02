@@ -198,9 +198,9 @@ pub struct SpanEvent {
 /// Parsed Codex OTel event
 ///
 /// Note: `ConversationStarts` and `UserPrompt` are now superseded by native
-/// Codex hooks (`sessionStart` and `userPromptSubmit`). The OTLP path retains
-/// these variants as a fallback but the native hooks are authoritative.
-/// The `ToolResult` variant remains required — no native hook covers post-tool events.
+/// Codex hooks (`sessionStart` and `userPromptSubmit`) and are ignored by the
+/// receiver. OTEL remains authoritative for Codex tool-derived file events that
+/// do not have native hook equivalents.
 #[derive(Debug, Clone)]
 pub enum CodexOtelEvent {
     /// `codex.conversation_starts` - Session started (superseded by native `sessionStart` hook)
@@ -215,6 +215,13 @@ pub enum CodexOtelEvent {
         conversation_id: String,
         tool_name: Option<String>,
         arguments: Option<String>,
+    },
+    /// `codex.tool_decision` - Tool approval/denial before execution
+    ToolDecision {
+        conversation_id: String,
+        tool_name: Option<String>,
+        arguments: Option<String>,
+        decision: Option<String>,
     },
     /// Unrecognized event (acknowledged but not processed)
     Unknown { event_name: String },
@@ -342,7 +349,16 @@ pub fn extract_read_path(arguments: &str) -> Option<String> {
 
 /// Extract patch content from apply_patch arguments JSON.
 pub fn extract_patch_content(arguments: &str) -> Option<String> {
-    let json: serde_json::Value = serde_json::from_str(arguments).ok()?;
+    let trimmed = arguments.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    if trimmed.starts_with("*** Begin Patch") {
+        return Some(trimmed.to_string());
+    }
+
+    let json: serde_json::Value = serde_json::from_str(trimmed).ok()?;
     json.get("patch")
         .or_else(|| json.get("content"))
         .and_then(|v| v.as_str())
@@ -507,8 +523,21 @@ fn parse_span_event(event: &SpanEvent) -> Option<CodexOtelEvent> {
                 arguments,
             })
         }
+        "codex.tool_decision" => {
+            let tool_name = get_string_attribute(&event.attributes, "tool_name")
+                .or_else(|| get_string_attribute(&event.attributes, "tool"));
+            let arguments = get_string_attribute(&event.attributes, "arguments")
+                .or_else(|| get_string_attribute(&event.attributes, "args"));
+            let decision = get_string_attribute(&event.attributes, "decision");
+            Some(CodexOtelEvent::ToolDecision {
+                conversation_id,
+                tool_name,
+                arguments,
+                decision,
+            })
+        }
         // Deferred events: acknowledged but not mapped
-        "codex.api_request" | "codex.sse_event" | "codex.tool_decision" => {
+        "codex.api_request" | "codex.sse_event" => {
             Some(CodexOtelEvent::Unknown {
                 event_name: event_name.clone(),
             })
@@ -551,8 +580,21 @@ fn parse_log_record(record: &LogRecord) -> Option<CodexOtelEvent> {
                 arguments,
             })
         }
+        "codex.tool_decision" => {
+            let tool_name = get_string_attribute(&record.attributes, "tool_name")
+                .or_else(|| get_string_attribute(&record.attributes, "tool"));
+            let arguments = get_string_attribute(&record.attributes, "arguments")
+                .or_else(|| get_string_attribute(&record.attributes, "args"));
+            let decision = get_string_attribute(&record.attributes, "decision");
+            Some(CodexOtelEvent::ToolDecision {
+                conversation_id,
+                tool_name,
+                arguments,
+                decision,
+            })
+        }
         // Deferred events: acknowledged but not mapped
-        "codex.api_request" | "codex.sse_event" | "codex.tool_decision" => {
+        "codex.api_request" | "codex.sse_event" => {
             Some(CodexOtelEvent::Unknown {
                 event_name: event_name.clone(),
             })
@@ -608,7 +650,8 @@ fn build_context_from_resource(resource: Option<&Resource>) -> CodexOtelContext 
         return context;
     };
 
-    context.agent_version = get_string_attribute(&resource.attributes, "service.version");
+    context.agent_version = get_string_attribute(&resource.attributes, "service.version")
+        .or_else(|| get_string_attribute(&resource.attributes, "app.version"));
     context.agent_pid = get_pid_from_attributes(&resource.attributes);
     context.cwd = extract_cwd_from_attributes(&resource.attributes);
 
@@ -617,7 +660,8 @@ fn build_context_from_resource(resource: Option<&Resource>) -> CodexOtelContext 
 
 fn merge_context_from_attributes(context: &mut CodexOtelContext, attributes: &[KeyValue]) {
     if context.agent_version.is_none() {
-        context.agent_version = get_string_attribute(attributes, "service.version");
+        context.agent_version = get_string_attribute(attributes, "service.version")
+            .or_else(|| get_string_attribute(attributes, "app.version"));
     }
     if context.agent_pid.is_none() {
         context.agent_pid = get_pid_from_attributes(attributes);
@@ -1150,7 +1194,7 @@ mod tests {
 
     #[test]
     fn test_parse_traces_tool_decision() {
-        // Tool decision events should be parsed as Unknown (deferred)
+        // Tool decision events should preserve tool metadata for selective OTEL routing.
         let request = ExportTraceServiceRequest {
             resource_spans: vec![ResourceSpans {
                 resource: None,
@@ -1178,6 +1222,30 @@ mod tests {
                                         )),
                                     }),
                                 },
+                                KeyValue {
+                                    key: "tool_name".to_string(),
+                                    value: Some(AnyValue {
+                                        value: Some(any_value::Value::StringValue(
+                                            "apply_patch".to_string(),
+                                        )),
+                                    }),
+                                },
+                                KeyValue {
+                                    key: "arguments".to_string(),
+                                    value: Some(AnyValue {
+                                        value: Some(any_value::Value::StringValue(
+                                            "{\"patch\":\"*** Update File: src/main.rs\\n@@\\n-old\\n+new\\n\"}".to_string(),
+                                        )),
+                                    }),
+                                },
+                                KeyValue {
+                                    key: "decision".to_string(),
+                                    value: Some(AnyValue {
+                                        value: Some(any_value::Value::StringValue(
+                                            "approved".to_string(),
+                                        )),
+                                    }),
+                                },
                             ],
                         }],
                     }],
@@ -1190,10 +1258,18 @@ mod tests {
 
         assert_eq!(events.len(), 1);
         match &events[0].0 {
-            CodexOtelEvent::Unknown { event_name } => {
-                assert_eq!(event_name, "codex.tool_decision");
+            CodexOtelEvent::ToolDecision {
+                conversation_id,
+                tool_name,
+                arguments,
+                decision,
+            } => {
+                assert_eq!(conversation_id, "conv-123");
+                assert_eq!(tool_name.as_deref(), Some("apply_patch"));
+                assert!(arguments.as_deref().unwrap_or_default().contains("\"patch\""));
+                assert_eq!(decision.as_deref(), Some("approved"));
             }
-            _ => panic!("Expected Unknown event for tool_decision"),
+            _ => panic!("Expected ToolDecision event"),
         }
     }
 
@@ -1347,6 +1423,13 @@ mod tests {
     }
 
     #[test]
+    fn test_extract_patch_content_raw_patch_string() {
+        let args = "*** Begin Patch\n*** Add File: foo.txt\n+hello\n*** End Patch\n";
+        let content = extract_patch_content(args);
+        assert_eq!(content.as_deref(), Some(args.trim()));
+    }
+
+    #[test]
     fn test_extract_patch_content_missing() {
         let args = r#"{"other": "value"}"#;
         assert!(extract_patch_content(args).is_none());
@@ -1363,5 +1446,53 @@ mod tests {
             Some("README.md".to_string())
         );
         assert!(extract_read_path(r#"{"other": "value"}"#).is_none());
+    }
+
+    #[test]
+    fn test_parse_context_app_version_from_resource() {
+        let request = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                resource: Some(Resource {
+                    attributes: vec![KeyValue {
+                        key: "app.version".to_string(),
+                        value: Some(AnyValue {
+                            value: Some(any_value::Value::StringValue("0.118.0".to_string())),
+                        }),
+                    }],
+                }),
+                scope_logs: vec![ScopeLogs {
+                    scope: None,
+                    log_records: vec![LogRecord {
+                        time_unix_nano: 1000000000,
+                        observed_time_unix_nano: 0,
+                        severity_number: 0,
+                        severity_text: String::new(),
+                        body: Some(AnyValue {
+                            value: Some(any_value::Value::StringValue(
+                                "codex.conversation_starts".to_string(),
+                            )),
+                        }),
+                        attributes: vec![KeyValue {
+                            key: "conversation.id".to_string(),
+                            value: Some(AnyValue {
+                                value: Some(any_value::Value::StringValue(
+                                    "conv_app_version".to_string(),
+                                )),
+                            }),
+                        }],
+                        flags: 0,
+                        trace_id: Vec::new(),
+                        span_id: Vec::new(),
+                    }],
+                }],
+            }],
+        };
+
+        let encoded = request.encode_to_vec();
+        let events = parse_otlp_logs(&encoded);
+        assert_eq!(events.len(), 1);
+
+        let (_, context) = &events[0];
+        assert_eq!(context.agent_version.as_deref(), Some("0.118.0"));
     }
 }

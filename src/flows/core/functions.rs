@@ -337,7 +337,7 @@ pub fn build_move_metadata(
 /// during an AI editing session (AdditiveUserEdits case).
 ///
 /// # Required Event Variables
-/// - `event.session_id` - Session identifier
+/// - `event.session.uuid` - Session UUID
 ///
 /// # Returns
 /// An ActionResult with JSON output: `{"author": "...", "message": "..."}`
@@ -375,7 +375,7 @@ fn build_human_metadata_impl(session: &crate::session::AikiSession) -> Result<Ac
         "[aiki]".to_string(),
         format!("author={}", git_user),
         "author_type=human".to_string(),
-        format!("session={}", session.external_id()),
+        format!("session={}", session.uuid()),
     ];
 
     let message = format!("{}\n[/aiki]", lines.join("\n"));

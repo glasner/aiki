@@ -111,6 +111,14 @@ mod tests {
     }
 
     #[test]
+    fn test_create_session_captures_parent_pid() {
+        let session = create_session("test-codex-parent-pid", "/tmp");
+        assert_eq!(session.agent_type(), AgentType::Codex);
+        assert_eq!(session.detection_method(), &DetectionMethod::Hook);
+        assert!(session.parent_pid().is_some());
+    }
+
+    #[test]
     fn test_detect_codex_version_format() {
         // If codex is installed, verify version format
         if let Some(version) = detect_codex_version() {

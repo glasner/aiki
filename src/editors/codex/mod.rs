@@ -3,7 +3,10 @@ pub mod otel;
 mod output;
 pub mod session;
 
+use crate::cache::debug_log;
 use crate::error::Result;
+use crate::events::result::HookResult;
+use crate::editors::HookCommandOutput;
 
 use events::build_aiki_event_from_stdin;
 use output::build_command_output;
@@ -28,12 +31,27 @@ pub fn handle_stdin(codex_event_name: &str) -> Result<()> {
     };
 
     // Build Aiki event from stdin JSON
-    let aiki_event = build_aiki_event_from_stdin()?;
+    let built_events = build_aiki_event_from_stdin()?;
+
+    for event in built_events.supplemental_events {
+        if let Err(err) = crate::event_bus::dispatch(event) {
+            debug_log(|| format!("Codex supplemental event dispatch failed: {}", err));
+        }
+    }
 
     // Dispatch the primary event
-    let aiki_response = crate::event_bus::dispatch(aiki_event)?;
+    let aiki_response = crate::event_bus::dispatch(built_events.primary_event)?;
 
     let hook_output = build_command_output(aiki_response, normalized_event);
 
     hook_output.print_and_exit();
+}
+
+pub fn parse_hook_payload_json(json: &str) -> Result<()> {
+    let _ = events::build_aiki_event_from_json_str(json)?;
+    Ok(())
+}
+
+pub fn render_hook_output(event_name: &str, response: HookResult) -> HookCommandOutput {
+    build_command_output(response, event_name)
 }
