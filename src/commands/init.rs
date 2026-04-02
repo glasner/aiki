@@ -176,10 +176,16 @@ pub fn run(quiet: bool, instructions_file: Option<String>) -> Result<()> {
             if !quiet {
                 println!("✓ Found existing JJ repository");
             }
-        } else if !quiet {
-            println!("⚠ JJ workspace exists but is not non-colocated");
-            println!("  Warning: if you use jj for version control, removing .jj will delete your jj history");
-            println!("  Run: rm -rf .jj && aiki init");
+        } else {
+            if !quiet {
+                println!("⚠ JJ workspace exists but is not non-colocated");
+                println!("  Warning: if you use jj for version control, removing .jj will delete your jj history");
+                println!("  Run: rm -rf .jj && aiki init");
+            } else {
+                eprintln!(
+                    "Warning: JJ workspace is not non-colocated. Run: rm -rf .jj && aiki init"
+                );
+            }
         }
     } else {
         if !quiet {
