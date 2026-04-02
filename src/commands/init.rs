@@ -176,21 +176,10 @@ pub fn run(quiet: bool, instructions_file: Option<String>) -> Result<()> {
             if !quiet {
                 println!("✓ Found existing JJ repository");
             }
-        } else {
-            // .jj/ exists but is broken or was initialized colocated (e.g. by
-            // a newer jj that defaults to --colocate). Re-initialize properly.
-            if !quiet {
-                println!("⚠ JJ workspace is broken or colocated, re-initializing...");
-            }
-            let jj_dir = repo_root.join(".jj");
-            fs::remove_dir_all(&jj_dir)
-                .context("Failed to remove broken .jj directory")?;
-            workspace
-                .init()
-                .context("Failed to re-initialize JJ repository")?;
-            if !quiet {
-                println!("✓ Re-initialized JJ repository (non-colocated)");
-            }
+        } else if !quiet {
+            println!("⚠ JJ workspace exists but is not non-colocated");
+            println!("  Warning: if you use jj for version control, removing .jj will delete your jj history");
+            println!("  Run: rm -rf .jj && aiki init");
         }
     } else {
         if !quiet {
