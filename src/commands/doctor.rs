@@ -53,20 +53,61 @@ pub fn run(fix: bool) -> Result<()> {
         .find_repo_root()
         .unwrap_or_else(|_| current_dir.clone());
 
+    // Check Git (before JJ, since colocated check depends on it)
+    let has_git = project_root.join(".git").exists();
+    if has_git {
+        println!("  ✓ Git repository detected");
+    } else {
+        println!("  ⚠ No Git repository (optional)");
+    }
+
     // Check JJ
     if RepoDetector::has_jj(&project_root) {
-        println!("  ✓ JJ workspace initialized");
+        let jj_ws = crate::jj::JJWorkspace::new(&project_root);
+        if has_git && !jj_ws.is_colocated() {
+            println!("  ✗ JJ workspace is not colocated with Git");
+            println!("    → Run: aiki doctor --fix");
+            issues_found += 1;
+
+            if fix {
+                println!("    Fixing: re-initializing JJ as colocated...");
+                // Remove the non-colocated .jj and re-initialize colocated
+                let jj_dir = project_root.join(".jj");
+                if let Err(e) = fs::remove_dir_all(&jj_dir) {
+                    println!("    ✗ Failed to remove .jj: {}", e);
+                } else {
+                    match jj_ws.init_colocated() {
+                        Ok(()) => {
+                            println!("    ✓ Re-initialized JJ workspace (colocated with Git)");
+                        }
+                        Err(e) => {
+                            println!("    ✗ Failed to re-initialize JJ: {}", e);
+                            println!("      → Try manually: rm -rf .jj && jj git init --colocate");
+                        }
+                    }
+                }
+            }
+        } else {
+            println!("  ✓ JJ workspace initialized");
+        }
     } else {
         println!("  ✗ JJ workspace not found");
         println!("    → Run: aiki init");
         issues_found += 1;
-    }
 
-    // Check Git
-    if project_root.join(".git").exists() {
-        println!("  ✓ Git repository detected");
-    } else {
-        println!("  ⚠ No Git repository (optional)");
+        if fix && has_git {
+            println!("    Fixing: initializing JJ (colocated with Git)...");
+            let jj_ws = crate::jj::JJWorkspace::new(&project_root);
+            match jj_ws.init_colocated() {
+                Ok(()) => {
+                    println!("    ✓ Initialized JJ workspace (colocated with Git)");
+                }
+                Err(e) => {
+                    println!("    ✗ Failed to initialize JJ: {}", e);
+                    println!("      → Try manually: jj git init --colocate");
+                }
+            }
+        }
     }
 
     // Check Aiki directory
