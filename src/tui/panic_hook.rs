@@ -35,6 +35,7 @@ pub(crate) fn install_signal_handlers(stop: Arc<AtomicBool>) -> Vec<SignalGuard>
     }
 
     // SIGHUP — terminal hangup (e.g. SSH disconnect, terminal window closed)
+    #[cfg(unix)]
     if let Ok(id) = signal_hook::flag::register(signal_hook::consts::SIGHUP, Arc::clone(&stop)) {
         guards.push(SignalGuard(id));
     }
@@ -64,8 +65,11 @@ mod tests {
     fn test_signal_handlers_register_and_unregister() {
         let stop = Arc::new(AtomicBool::new(false));
         let guards = install_signal_handlers(stop);
-        // Should have registered 2 handlers (SIGTERM + SIGHUP)
+        // SIGTERM should always be registered. SIGHUP only on Unix.
+        #[cfg(unix)]
         assert_eq!(guards.len(), 2);
+        #[cfg(not(unix))]
+        assert_eq!(guards.len(), 1);
         // Drop guards — handlers are unregistered
         drop(guards);
     }

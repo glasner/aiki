@@ -440,6 +440,7 @@ fn get_unix_socket_peer_pid() -> Option<u32> {
     None
 }
 
+#[cfg(unix)]
 /// Get the peer PID for a TCP loopback connection on fd 0.
 ///
 /// Calls getpeername(0) to get the peer's ephemeral port, then runs
@@ -498,6 +499,12 @@ fn get_tcp_peer_pid() -> Option<u32> {
     }
 
     debug_log(|| format!("OTel: lsof found no peer PID for port {}", peer_port));
+    None
+}
+
+#[cfg(not(unix))]
+/// On non-Unix platforms, this path is not supported yet.
+fn get_tcp_peer_pid() -> Option<u32> {
     None
 }
 

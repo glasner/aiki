@@ -770,21 +770,18 @@ pub fn list_all_sessions() -> Result<Vec<SessionInfo>> {
 // PID-based session detection
 // ============================================================================
 
-/// Get the parent process ID
-///
-/// Uses `libc::getppid()` directly — a syscall that always succeeds.
-/// Previous implementation used sysinfo's process enumeration, which could
-/// intermittently fail on macOS (returning None) when the system was under
-/// load or due to timing issues with `sysctl`-based process listing.
+/// Get the parent process ID.
 #[must_use]
 pub fn get_parent_pid() -> Option<u32> {
-    // SAFETY: getppid() is always safe and always returns a valid PID
-    let ppid = unsafe { libc::getppid() };
-    if ppid > 0 {
-        Some(ppid as u32)
-    } else {
-        None // Should never happen — even init has ppid=0
-    }
+    let mut system = System::new();
+    system.refresh_processes(ProcessesToUpdate::All, true);
+
+    let pid = std::process::id();
+    let Some(process) = system.process(Pid::from_u32(pid)) else {
+        return None;
+    };
+
+    process.parent().map(|ppid| ppid.as_u32())
 }
 
 /// Get all ancestor PIDs from the current process up to init
