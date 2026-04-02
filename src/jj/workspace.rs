@@ -65,40 +65,6 @@ impl JJWorkspace {
 
         Ok(())
     }
-
-    /// Initialize a JJ repository colocated with an existing Git repository
-    /// This creates a .jj directory that uses the existing .git as its backend
-    /// Equivalent to `jj git init --colocate` in an existing git repo
-    pub fn init_colocated(&self) -> Result<()> {
-        let settings = Self::create_user_settings()?;
-        let git_dir = self.workspace_root.join(".git");
-
-        if git_dir.exists() {
-            // Existing git repo: use init_external_git to point at the .git dir
-            let (_workspace, _repo) =
-                Workspace::init_external_git(&settings, &self.workspace_root, &git_dir)
-                    .context("Failed to initialize colocated JJ workspace")?;
-        } else {
-            // No git repo yet: init_colocated_git creates both .jj and .git
-            let (_workspace, _repo) =
-                Workspace::init_colocated_git(&settings, &self.workspace_root)
-                    .context("Failed to initialize colocated JJ workspace")?;
-        }
-
-        Ok(())
-    }
-
-    /// Check whether this JJ workspace is colocated with Git
-    ///
-    /// Non-colocated workspaces have an internal git repo at `.jj/repo/store/git/`.
-    /// Colocated workspaces point `git_target` at the working-copy `.git` instead.
-    #[must_use]
-    pub fn is_colocated(&self) -> bool {
-        // Non-colocated workspaces have .jj/repo/store/git as a directory
-        // containing the internal git backend. Colocated workspaces don't.
-        let internal_git = self.workspace_root.join(".jj/repo/store/git");
-        !internal_git.is_dir()
-    }
 }
 
 #[cfg(test)]
@@ -191,46 +157,5 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let workspace = JJWorkspace::new(temp_dir.path());
         assert_eq!(workspace.workspace_root(), temp_dir.path());
-    }
-
-    #[test]
-    fn workspace_init_colocated_creates_jj_with_git() {
-        let temp_dir = tempfile::tempdir().unwrap();
-
-        // Create a git repo first (colocated init requires existing .git)
-        std::process::Command::new("git")
-            .args(["init"])
-            .current_dir(temp_dir.path())
-            .output()
-            .expect("git init should succeed");
-
-        let workspace = JJWorkspace::new(temp_dir.path());
-        let result = workspace.init_colocated();
-
-        assert!(
-            result.is_ok(),
-            "Colocated init should succeed: {:?}",
-            result.err()
-        );
-
-        assert!(
-            temp_dir.path().join(".jj").exists(),
-            ".jj directory should exist"
-        );
-
-        assert!(workspace.is_colocated(), "Workspace should be colocated");
-    }
-
-    #[test]
-    fn workspace_non_colocated_is_not_colocated() {
-        let temp_dir = tempfile::tempdir().unwrap();
-
-        let workspace = JJWorkspace::new(temp_dir.path());
-        workspace.init().unwrap();
-
-        assert!(
-            !workspace.is_colocated(),
-            "Non-colocated workspace should not report as colocated"
-        );
     }
 }

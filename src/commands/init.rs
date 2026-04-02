@@ -175,30 +175,19 @@ pub fn run(quiet: bool, instructions_file: Option<String>) -> Result<()> {
             println!("✓ Found existing JJ repository");
         }
     } else {
+        if !quiet {
+            println!("Initializing JJ repository...");
+        }
         // Create JJ workspace manager for the repository root
         let workspace = jj::JJWorkspace::new(&repo_root);
-        let has_git = repo_root.join(".git").exists();
 
-        if has_git {
-            if !quiet {
-                println!("Initializing JJ repository (colocated with Git)...");
-            }
-            workspace
-                .init_colocated()
-                .context("Failed to initialize colocated JJ repository")?;
-            if !quiet {
-                println!("✓ Initialized JJ repository (colocated with Git)");
-            }
-        } else {
-            if !quiet {
-                println!("Initializing JJ repository...");
-            }
-            workspace
-                .init()
-                .context("Failed to initialize JJ repository")?;
-            if !quiet {
-                println!("✓ Initialized JJ repository");
-            }
+        // Initialize pure JJ storage (independent from Git)
+        workspace
+            .init()
+            .context("Failed to initialize JJ repository")?;
+
+        if !quiet {
+            println!("✓ Initialized JJ repository");
         }
     }
 
