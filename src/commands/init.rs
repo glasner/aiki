@@ -171,21 +171,35 @@ pub fn run(quiet: bool, instructions_file: Option<String>) -> Result<()> {
 
     // Check if JJ is already initialized
     if RepoDetector::has_jj(&repo_root) {
-        if !quiet {
-            println!("✓ Found existing JJ repository");
+        let workspace = jj::JJWorkspace::new(&repo_root);
+        if workspace.is_healthy_non_colocated() {
+            if !quiet {
+                println!("✓ Found existing JJ repository");
+            }
+        } else {
+            // .jj/ exists but is broken or was initialized colocated (e.g. by
+            // a newer jj that defaults to --colocate). Re-initialize properly.
+            if !quiet {
+                println!("⚠ JJ workspace is broken or colocated, re-initializing...");
+            }
+            let jj_dir = repo_root.join(".jj");
+            fs::remove_dir_all(&jj_dir)
+                .context("Failed to remove broken .jj directory")?;
+            workspace
+                .init()
+                .context("Failed to re-initialize JJ repository")?;
+            if !quiet {
+                println!("✓ Re-initialized JJ repository (non-colocated)");
+            }
         }
     } else {
         if !quiet {
             println!("Initializing JJ repository...");
         }
-        // Create JJ workspace manager for the repository root
         let workspace = jj::JJWorkspace::new(&repo_root);
-
-        // Initialize pure JJ storage (independent from Git)
         workspace
             .init()
             .context("Failed to initialize JJ repository")?;
-
         if !quiet {
             println!("✓ Initialized JJ repository");
         }

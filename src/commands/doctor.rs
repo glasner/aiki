@@ -55,7 +55,33 @@ pub fn run(fix: bool) -> Result<()> {
 
     // Check JJ
     if RepoDetector::has_jj(&project_root) {
-        println!("  ✓ JJ workspace initialized");
+        let jj_ws = crate::jj::JJWorkspace::new(&project_root);
+        if jj_ws.is_healthy_non_colocated() {
+            println!("  ✓ JJ workspace initialized");
+        } else {
+            println!("  ✗ JJ workspace is broken or colocated");
+            println!("    Newer jj versions default to --colocate; aiki requires --no-colocate");
+            println!("    → Run: aiki doctor --fix");
+            issues_found += 1;
+
+            if fix {
+                println!("    Fixing: re-initializing JJ as non-colocated...");
+                let jj_dir = project_root.join(".jj");
+                if let Err(e) = fs::remove_dir_all(&jj_dir) {
+                    println!("    ✗ Failed to remove .jj: {}", e);
+                } else {
+                    match jj_ws.init() {
+                        Ok(()) => {
+                            println!("    ✓ Re-initialized JJ workspace (non-colocated)");
+                        }
+                        Err(e) => {
+                            println!("    ✗ Failed to re-initialize JJ: {}", e);
+                            println!("      → Try manually: rm -rf .jj && jj git init --no-colocate");
+                        }
+                    }
+                }
+            }
+        }
     } else {
         println!("  ✗ JJ workspace not found");
         println!("    → Run: aiki init");
