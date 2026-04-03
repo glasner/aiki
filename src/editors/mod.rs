@@ -32,6 +32,7 @@ impl HookCommandOutput {
     }
 
     #[must_use]
+    #[allow(dead_code)]
     pub fn from_stdout(stdout_text: impl Into<String>, exit_code: i32) -> Self {
         Self {
             json_value: None,

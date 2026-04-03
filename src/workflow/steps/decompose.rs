@@ -18,10 +18,8 @@ use crate::error::{AikiError, Result};
 use crate::tasks::runner::TaskRunOptions;
 use crate::tasks::{
     find_task, get_subtasks, materialize_graph, read_events, write_link_event,
-    TaskStatus,
 };
 
-use super::plan::resolve_plan_path;
 /// Options for `run_decompose` that callers can customize.
 pub struct DecomposeOptions {
     pub template: Option<String>,

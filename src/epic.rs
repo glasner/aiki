@@ -18,7 +18,7 @@ use crate::tasks::graph::TaskGraph;
 use crate::tasks::id::generate_task_id;
 use crate::tasks::types::Task;
 use crate::tasks::{
-    find_task, get_subtasks, materialize_graph, read_events, write_event, write_link_event,
+    get_subtasks, materialize_graph, read_events, write_event,
     TaskEvent, TaskOutcome, TaskPriority, TaskStatus,
 };
 use crate::workflow::steps::plan::resolve_plan_path;
@@ -209,6 +209,7 @@ pub(crate) fn close_epic_as_invalid(cwd: &Path, epic_id: &str) -> AikiResult<()>
 ///
 /// An epic is blocked if any of its `depends-on` targets are not closed with
 /// outcome `Done`.
+#[allow(dead_code)]
 pub(crate) fn check_epic_blockers(graph: &TaskGraph, epic_id: &str) -> AikiResult<()> {
     let blocker_ids: Vec<&str> = graph
         .edges
@@ -253,6 +254,7 @@ pub(crate) fn check_epic_blockers(graph: &TaskGraph, epic_id: &str) -> AikiResul
 /// - No epic or closed epic → create new via decompose agent
 ///
 /// Returns the epic task ID.
+#[allow(dead_code)]
 pub fn find_or_create_epic(
     cwd: &Path,
     plan_path: &str,

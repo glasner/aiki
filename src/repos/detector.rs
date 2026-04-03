@@ -95,6 +95,7 @@ impl RepoDetector {
     /// Get the repo folder name (last path component of the git root).
     ///
     /// Falls back to the `cwd` folder name if `.git` can't be found.
+    #[allow(dead_code)]
     pub fn repo_folder_name(&self) -> String {
         let root = self
             .find_repo_root()

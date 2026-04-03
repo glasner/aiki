@@ -105,6 +105,13 @@ pub fn remove_plugin(plugin: &PluginRef, plugins_base: &Path) -> Result<()> {
         details: format!("Failed to remove plugin directory: {}", e),
     })?;
 
+    // Clean up empty parent (namespace) directory
+    if let Some(parent) = install_dir.parent() {
+        if parent != plugins_base {
+            let _ = fs::remove_dir(parent); // Only removes if empty, ignore errors
+        }
+    }
+
     Ok(())
 }
 
@@ -181,5 +188,39 @@ mod tests {
 
         let err = remove_plugin(&plugin, tmp.path()).unwrap_err();
         assert_eq!(err.to_string(), "Plugin test/repo is not installed");
+    }
+
+    #[test]
+    fn test_remove_cleans_up_empty_parent_dir() {
+        let tmp = TempDir::new().unwrap();
+        let plugin: PluginRef = "test/repo".parse().unwrap();
+        let dir = plugin.install_dir(tmp.path());
+        fs::create_dir_all(dir.join(".git")).unwrap();
+
+        let ns_dir = dir.parent().unwrap();
+        let result = remove_plugin(&plugin, tmp.path());
+        assert!(result.is_ok());
+        assert!(!dir.exists());
+        // Namespace dir should be removed since it's now empty
+        assert!(!ns_dir.exists());
+    }
+
+    #[test]
+    fn test_remove_keeps_parent_dir_with_siblings() {
+        let tmp = TempDir::new().unwrap();
+        let plugin: PluginRef = "test/repo".parse().unwrap();
+        let sibling: PluginRef = "test/other".parse().unwrap();
+
+        let dir = plugin.install_dir(tmp.path());
+        let sibling_dir = sibling.install_dir(tmp.path());
+        fs::create_dir_all(dir.join(".git")).unwrap();
+        fs::create_dir_all(sibling_dir.join(".git")).unwrap();
+
+        let ns_dir = dir.parent().unwrap().to_path_buf();
+        let result = remove_plugin(&plugin, tmp.path());
+        assert!(result.is_ok());
+        assert!(!dir.exists());
+        // Namespace dir should still exist because sibling plugin is there
+        assert!(ns_dir.exists());
     }
 }

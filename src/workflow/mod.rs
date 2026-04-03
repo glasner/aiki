@@ -100,6 +100,7 @@ impl WorkflowContext {
     }
 
     /// Emit a raw output line when text output is enabled.
+    #[allow(dead_code)]
     pub fn emit(&self, msg: &str) {
         self.output.emit(msg);
     }
@@ -158,6 +159,7 @@ impl WorkflowOutput {
         }
     }
 
+    #[allow(dead_code)]
     pub fn emit(self, msg: &str) {
         if matches!(self.kind, OutputKind::Text) {
             eprintln!("{}", msg);

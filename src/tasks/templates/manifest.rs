@@ -106,6 +106,7 @@ impl RepoManifest {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn get_plugin(&self, plugin_ref: &str) -> Option<&PluginTemplateEntry> {
         self.templates.get(plugin_ref)
     }

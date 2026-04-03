@@ -10,7 +10,6 @@ mod types;
 pub use detect::detect_agent_from_process_tree;
 pub use runtime::{
     get_runtime, AgentRuntime, AgentSessionResult, AgentSpawnOptions, BackgroundHandle,
-    MonitoredChild,
 };
 pub use types::{AgentType, Assignee};
 

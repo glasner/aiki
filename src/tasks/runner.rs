@@ -684,6 +684,7 @@ pub fn task_run_async(
 /// Run a task asynchronously and output XML result
 ///
 /// Wrapper around `task_run_async` that outputs formatted results.
+#[allow(dead_code)]
 pub fn run_task_async_with_output(
     cwd: &Path,
     task_id: &str,

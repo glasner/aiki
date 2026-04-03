@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use crate::error::{AikiError, Result};
+use crate::plugins::manifest::resolve_display_name;
 
 /// Reserved namespace that maps to the `glasner` GitHub owner.
 const AIKI_NAMESPACE: &str = "aiki";
@@ -49,6 +50,22 @@ impl PluginRef {
     #[must_use]
     pub fn install_dir(&self, plugins_base: &Path) -> PathBuf {
         plugins_base.join(&self.namespace).join(&self.name)
+    }
+
+    /// Returns a human-readable display name if one differs from the `namespace/name` path.
+    ///
+    /// Returns `Some(name)` when plugin.yaml or hooks.yaml provides a distinct name,
+    /// `None` when the display name would be identical to `self.to_string()`.
+    #[must_use]
+    pub fn display_name(&self, plugins_base: &Path) -> Option<String> {
+        let install_dir = self.install_dir(plugins_base);
+        let plugin_path = self.to_string();
+        let display = resolve_display_name(&install_dir, &plugin_path);
+        if display != plugin_path {
+            Some(display)
+        } else {
+            None
+        }
     }
 }
 
@@ -268,5 +285,24 @@ mod tests {
             check_install_status(&r, tmp.path()),
             InstallStatus::PartialInstall
         );
+    }
+
+    #[test]
+    fn test_display_name_returns_some_when_manifest_has_name() {
+        let tmp = TempDir::new().unwrap();
+        let r: PluginRef = "aiki/way".parse().unwrap();
+        let dir = r.install_dir(tmp.path());
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("plugin.yaml"), "name: The Way\n").unwrap();
+
+        assert_eq!(r.display_name(tmp.path()), Some("The Way".to_string()));
+    }
+
+    #[test]
+    fn test_display_name_returns_none_when_no_distinct_name() {
+        let tmp = TempDir::new().unwrap();
+        let r: PluginRef = "aiki/way".parse().unwrap();
+        // No plugin dir, no manifest — fallback equals to_string()
+        assert_eq!(r.display_name(tmp.path()), None);
     }
 }

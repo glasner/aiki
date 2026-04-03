@@ -47,11 +47,13 @@ pub fn handle_stdin(codex_event_name: &str) -> Result<()> {
     hook_output.print_and_exit();
 }
 
+#[allow(dead_code)]
 pub fn parse_hook_payload_json(json: &str) -> Result<()> {
     let _ = events::build_aiki_event_from_json_str(json)?;
     Ok(())
 }
 
+#[allow(dead_code)]
 pub fn render_hook_output(event_name: &str, response: HookResult) -> HookCommandOutput {
     build_command_output(response, event_name)
 }

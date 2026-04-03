@@ -380,6 +380,7 @@ fn dump_otlp_payload(body: &[u8], content_type: Option<&str>, request_path: &str
 ///
 /// On Linux, SO_PEERCRED works for Unix domain sockets. For TCP, we fall back
 /// to the same lsof approach.
+#[allow(dead_code)]
 fn get_socket_peer_pid() -> Option<u32> {
     // Try Unix domain socket methods first (cheap, no subprocess)
     if let Some(pid) = get_unix_socket_peer_pid() {
@@ -392,6 +393,7 @@ fn get_socket_peer_pid() -> Option<u32> {
 
 /// Try LOCAL_PEERPID (macOS) or SO_PEERCRED (Linux) on fd 0.
 /// Only works if the socket is AF_UNIX.
+#[allow(dead_code)]
 fn get_unix_socket_peer_pid() -> Option<u32> {
     #[cfg(target_os = "macos")]
     {
@@ -444,6 +446,7 @@ fn get_unix_socket_peer_pid() -> Option<u32> {
 ///
 /// Calls getpeername(0) to get the peer's ephemeral port, then runs
 /// `lsof -i TCP@127.0.0.1:{port} -sTCP:ESTABLISHED -t` to resolve the PID.
+#[allow(dead_code)]
 fn get_tcp_peer_pid() -> Option<u32> {
     // getpeername on fd 0 to learn the peer's address:port
     let mut addr: libc::sockaddr_in = unsafe { std::mem::zeroed() };
@@ -502,6 +505,7 @@ fn get_tcp_peer_pid() -> Option<u32> {
 }
 
 /// Info resolved from the socket peer's process tree.
+#[allow(dead_code)]
 struct SocketPeerInfo {
     /// The PID of the codex process found in the ancestor chain.
     codex_pid: u32,
@@ -517,6 +521,7 @@ struct SocketPeerInfo {
 ///
 /// Also captures the cwd of the codex process via sysinfo, which avoids
 /// the race condition of reading the `.jsonl` session file.
+#[allow(dead_code)]
 fn resolve_codex_info_from_socket() -> Option<SocketPeerInfo> {
     let peer_pid = get_socket_peer_pid()?;
 

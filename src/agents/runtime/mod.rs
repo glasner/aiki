@@ -26,6 +26,7 @@ pub struct BackgroundHandle {
     /// Thread being worked on
     pub thread: ThreadId,
     /// Session UUID, resolved after spawn via event polling
+    #[allow(dead_code)]
     pub session_id: Option<String>,
     /// Agent type that was spawned
     pub agent_type: AgentType,
@@ -36,7 +37,7 @@ pub struct BackgroundHandle {
 /// Unlike `BackgroundHandle`, this keeps the `Child` handle so we can properly
 /// detect when the process exits (including zombie processes). This is used
 /// for real-time status monitoring where we need accurate exit detection.
-pub struct MonitoredChild {
+#[allow(dead_code)]pub struct MonitoredChild {
     /// The child process handle
     child: Child,
     /// Stdout handle for capturing agent output on failure
@@ -45,7 +46,7 @@ pub struct MonitoredChild {
     stderr: Option<ChildStderr>,
 }
 
-impl MonitoredChild {
+#[allow(dead_code)]impl MonitoredChild {
     /// Create a new monitored child from a Child process
     #[must_use]
     pub fn new(mut child: Child) -> Self {
@@ -98,6 +99,7 @@ impl MonitoredChild {
 
 /// Captured output from an exited agent process.
 #[derive(Debug, Clone, Default)]
+#[allow(dead_code)]
 pub struct ProcessOutput {
     /// Anything the agent wrote to stdout before exiting.
     pub stdout: String,
@@ -235,6 +237,7 @@ pub trait AgentRuntime {
     /// Similar to `spawn_background`, but keeps the Child handle so we can
     /// properly detect when the process exits (including zombie processes).
     /// This should be used when real-time status monitoring is needed.
+    #[allow(dead_code)]
     fn spawn_monitored(&self, options: &AgentSpawnOptions) -> Result<MonitoredChild>;
 }
 

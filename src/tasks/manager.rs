@@ -24,6 +24,7 @@ impl ScopeSet {
 
     /// Get scope list for XML output, including "root" when include_root=true
     #[must_use]
+    #[allow(dead_code)]
     pub fn to_xml_scopes(&self) -> Vec<String> {
         let mut result = Vec::new();
         if self.include_root {

@@ -319,6 +319,7 @@ pub fn get_prompt_by_change_id(cwd: &Path, change_id: &str) -> Result<Option<Str
 /// Get the current turn number for a session (from most recent prompt event)
 ///
 /// Returns 0 if no prompt events found (new session).
+#[allow(dead_code)]
 pub fn get_current_turn_number(cwd: &Path, session_id: &str) -> Result<u32> {
     let (turn, _source) = get_current_turn_info(cwd, session_id)?;
     Ok(turn)

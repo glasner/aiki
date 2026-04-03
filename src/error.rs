@@ -146,6 +146,10 @@ Alternatively, install the agent globally:
     #[error("Unsupported platform: {0}")]
     UnsupportedPlatform(String),
 
+    // Plugin errors
+    #[error("{plugin} is a dependency of: {dependents}. Use --force to remove anyway.")]
+    PluginHasDependents { plugin: String, dependents: String },
+
     // Argument validation errors
     #[error("{0}")]
     InvalidArgument(String),
@@ -294,6 +298,7 @@ Alternatively, install the agent globally:
 
     // Workflow errors
     #[error("Unexpected workflow result: {0}")]
+    #[allow(dead_code)]
     UnexpectedWorkflowResult(String),
 
     // Generic wrapper for underlying errors

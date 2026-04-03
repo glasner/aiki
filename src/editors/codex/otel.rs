@@ -337,6 +337,7 @@ pub fn parse_apply_patch(patch_content: &str) -> Vec<(&'static str, String)> {
 }
 
 /// Extract file path from read tool arguments JSON.
+#[allow(dead_code)]
 pub fn extract_read_path(arguments: &str) -> Option<String> {
     let json: serde_json::Value = serde_json::from_str(arguments).ok()?;
     for key in &["path", "file_path", "file", "filename"] {

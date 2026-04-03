@@ -172,11 +172,9 @@ impl HookResolver {
             return Ok(user_path);
         }
 
-        // 3. Installed plugin: ~/.aiki/plugins/{ns}/{name}/hooks.yaml
-        let installed_plugin_path = self
-            .path_resolver
-            .home_dir()
-            .join(".aiki/plugins")
+        // 3. Installed plugin: $AIKI_HOME/plugins/{ns}/{name}/hooks.yaml
+        let installed_plugin_path = crate::global::global_aiki_dir()
+            .join("plugins")
             .join(namespace)
             .join(name)
             .join("hooks.yaml");

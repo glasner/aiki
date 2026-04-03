@@ -406,8 +406,6 @@ fn test_plugin_remove_with_dot_in_namespace() {
 /// Outside-repo `plugin list` reports no project plugin references.
 #[test]
 fn test_plugin_list_outside_repo_cycle_shows_all_top_level() {
-    use assert_cmd::prelude::*;
-    use predicates::prelude::*;
     use std::process::Command;
 
     let aiki_home = TempDir::new().unwrap();
@@ -774,7 +772,7 @@ fn test_manifest_invalid_plugin_yaml_error() {
 
     let err = load_manifest(tmp.path()).unwrap_err();
     assert!(
-        err.to_string().contains("Invalid plugin.yaml"),
+        err.to_string().contains("Failed to parse plugin.yaml"),
         "Should report invalid plugin.yaml: {}",
         err
     );
@@ -801,5 +799,257 @@ fn test_plugin_remove_nonexistent_fails() {
     cmd.assert()
         .failure()
         .stderr(predicate::str::contains("not installed"));
+}
+
+// ---------------------------------------------------------------------------
+// Install directory structure — verifies {ns}/{name}/ layout
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_install_dir_creates_ns_name_structure() {
+    let tmp = TempDir::new().unwrap();
+    let plugin: PluginRef = "myorg/security-hooks".parse().unwrap();
+    let dir = plugin.install_dir(tmp.path());
+
+    // Verify the path components match the namespace/name structure
+    assert_eq!(
+        dir,
+        tmp.path().join("myorg").join("security-hooks"),
+        "install_dir should produce base/namespace/name"
+    );
+
+    // Create the structure and verify it exists as expected
+    fs::create_dir_all(dir.join(".git")).unwrap();
+    assert!(tmp.path().join("myorg").is_dir());
+    assert!(tmp.path().join("myorg").join("security-hooks").is_dir());
+    assert!(
+        tmp.path()
+            .join("myorg")
+            .join("security-hooks")
+            .join(".git")
+            .is_dir()
+    );
+}
+
+#[test]
+fn test_install_dir_preserves_aiki_namespace() {
+    let plugin: PluginRef = "aiki/way".parse().unwrap();
+    let base = Path::new("/fake/plugins");
+    let dir = plugin.install_dir(base);
+
+    // install_dir uses the original namespace, not the resolved GitHub owner
+    assert_eq!(dir, Path::new("/fake/plugins/aiki/way"));
+}
+
+// ---------------------------------------------------------------------------
+// Display name resolution — full fallback chain (integration)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_display_name_resolution_full_chain() {
+    use aiki::plugins::manifest::resolve_display_name;
+
+    let tmp = TempDir::new().unwrap();
+
+    // 1. With plugin.yaml name → uses manifest name
+    fs::write(tmp.path().join("plugin.yaml"), "name: From Manifest\n").unwrap();
+    fs::write(
+        tmp.path().join("hooks.yaml"),
+        "name: From Hooks\nversion: '1'\n",
+    )
+    .unwrap();
+    assert_eq!(
+        resolve_display_name(tmp.path(), "ns/plugin"),
+        "From Manifest"
+    );
+
+    // 2. Remove manifest name, keep hooks → uses hooks name
+    fs::write(tmp.path().join("plugin.yaml"), "{}\n").unwrap();
+    assert_eq!(
+        resolve_display_name(tmp.path(), "ns/plugin"),
+        "From Hooks"
+    );
+
+    // 3. Remove hooks name too → falls back to path
+    fs::remove_file(tmp.path().join("hooks.yaml")).unwrap();
+    fs::remove_file(tmp.path().join("plugin.yaml")).unwrap();
+    assert_eq!(
+        resolve_display_name(tmp.path(), "ns/plugin"),
+        "ns/plugin"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Hook resolver — installed plugin lookup via AIKI_HOME
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_hook_resolver_installed_plugin_via_aiki_home() {
+    use aiki::flows::hook_resolver::HookResolver;
+
+    let tmp = TempDir::new().unwrap();
+    let aiki_home = TempDir::new().unwrap();
+
+    // Create minimal .aiki dir in project (no hooks override)
+    fs::create_dir_all(tmp.path().join(".aiki/hooks")).unwrap();
+
+    // Create installed plugin under AIKI_HOME: $AIKI_HOME/plugins/{ns}/{name}/hooks.yaml
+    let plugin_dir = aiki_home
+        .path()
+        .join("plugins")
+        .join("vendor")
+        .join("lint");
+    fs::create_dir_all(&plugin_dir).unwrap();
+    let hooks_path = plugin_dir.join("hooks.yaml");
+    fs::write(&hooks_path, "name: vendor-lint\nversion: \"1\"\n").unwrap();
+
+    // Point AIKI_HOME to our temp dir so the resolver's step 3 finds the plugin there
+    with_temp_aiki_home(aiki_home.path(), || {
+        let resolver = HookResolver::with_start_dir(tmp.path()).unwrap();
+        let resolved = resolver.resolve("vendor/lint").unwrap();
+        assert_eq!(
+            resolved.canonicalize().unwrap(),
+            hooks_path.canonicalize().unwrap()
+        );
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Scanner — plugin dependency scanning uses hooks.yaml in tasks/ dir
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_scan_plugin_deps_via_hooks_yaml() {
+    let tmp = TempDir::new().unwrap();
+    let plugin_dir = tmp.path().join("ns").join("myplugin");
+    fs::create_dir_all(plugin_dir.join(".git")).unwrap();
+
+    // Plugin has hooks.yaml referencing another plugin's template
+    fs::write(
+        plugin_dir.join("hooks.yaml"),
+        "review:\n  template: dep/other/scan\n",
+    )
+    .unwrap();
+
+    // Scanner should find the dependency ref when scanning the plugin's .aiki-like dir
+    // (derive_plugin_refs scans hooks.yaml at the aiki_dir level)
+    let refs = derive_plugin_refs(&plugin_dir, None);
+    let ref_strs: Vec<String> = refs.iter().map(|r| r.to_string()).collect();
+    assert!(
+        ref_strs.contains(&"dep/other".to_string()),
+        "Should find plugin refs from hooks.yaml: {:?}",
+        ref_strs
+    );
+}
+
+#[test]
+fn test_scan_plugin_with_tasks_dir_refs() {
+    let tmp = TempDir::new().unwrap();
+    let plugin_dir = tmp.path().join("ns").join("myplugin");
+    fs::create_dir_all(plugin_dir.join(".git")).unwrap();
+
+    // Plugin has templates in tasks/ dir that reference other plugins
+    let tasks_dir = plugin_dir.join("tasks");
+    fs::create_dir_all(&tasks_dir).unwrap();
+    fs::write(
+        tasks_dir.join("review.md"),
+        "# Review\n\n{{> dep/lint/check}}\n",
+    )
+    .unwrap();
+
+    let refs = derive_plugin_refs(&plugin_dir, None);
+    let ref_strs: Vec<String> = refs.iter().map(|r| r.to_string()).collect();
+    assert!(
+        ref_strs.contains(&"dep/lint".to_string()),
+        "Should find plugin refs from tasks/ dir partials: {:?}",
+        ref_strs
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Template resolution — plugin templates/ dir NOT used (only tasks/)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_template_resolution_ignores_old_templates_dir_in_plugin() {
+    use aiki::tasks::templates::resolver::load_template;
+
+    let tmp = TempDir::new().unwrap();
+    let aiki_home = TempDir::new().unwrap();
+
+    let project_templates = tmp.path().join(".aiki").join("tasks");
+    fs::create_dir_all(&project_templates).unwrap();
+
+    // Create plugin with template in old templates/ dir (should NOT resolve)
+    let plugins_base = aiki_home.path().join("plugins");
+    let plugin_old_dir = plugins_base.join("ns").join("oldplug").join("templates");
+    fs::create_dir_all(&plugin_old_dir).unwrap();
+    fs::create_dir_all(plugins_base.join("ns").join("oldplug").join(".git")).unwrap();
+    fs::write(
+        plugin_old_dir.join("check.md"),
+        "---\nname: Old Template\n---\n# Should not be found\n",
+    )
+    .unwrap();
+
+    with_temp_aiki_home(aiki_home.path(), || {
+        let result = load_template("ns/oldplug/check", &project_templates);
+        assert!(
+            result.is_err(),
+            "Should NOT resolve template from plugin templates/ dir (only tasks/)"
+        );
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Manifest — deny_unknown_fields rejects unexpected keys
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_manifest_rejects_unknown_fields() {
+    use aiki::plugins::manifest::load_manifest;
+
+    let tmp = TempDir::new().unwrap();
+    fs::write(
+        tmp.path().join("plugin.yaml"),
+        "name: Valid\nunknown_field: should_fail\n",
+    )
+    .unwrap();
+
+    let err = load_manifest(tmp.path()).unwrap_err();
+    assert!(
+        err.to_string().contains("Failed to parse plugin.yaml"),
+        "Should reject unknown fields: {}",
+        err
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Remove — verifies directory cleanup end-to-end
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_remove_plugin_cleans_up_directory_structure() {
+    use aiki::plugins::git::remove_plugin;
+
+    let tmp = TempDir::new().unwrap();
+    let plugin: PluginRef = "myns/myplugin".parse().unwrap();
+    let dir = plugin.install_dir(tmp.path());
+
+    // Create a fully installed plugin with various files
+    fs::create_dir_all(dir.join(".git")).unwrap();
+    fs::write(dir.join("plugin.yaml"), "name: Test Plugin\n").unwrap();
+    fs::write(dir.join("hooks.yaml"), "name: test\n").unwrap();
+    let tasks_dir = dir.join("tasks");
+    fs::create_dir_all(&tasks_dir).unwrap();
+    fs::write(tasks_dir.join("review.md"), "# Review\n").unwrap();
+
+    // Remove it
+    let result = remove_plugin(&plugin, tmp.path());
+    assert!(result.is_ok());
+
+    // Plugin dir and all contents should be gone
+    assert!(!dir.exists());
+    // Namespace dir should be cleaned up (empty after removal)
+    assert!(!tmp.path().join("myns").exists());
 }
 

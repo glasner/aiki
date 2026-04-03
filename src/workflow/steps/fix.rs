@@ -11,6 +11,7 @@ use crate::tasks::{
 };
 
 use super::run_task_with_show_tui;
+#[cfg(test)]
 use super::Step;
 use super::StepResult;
 use super::WorkflowChange;

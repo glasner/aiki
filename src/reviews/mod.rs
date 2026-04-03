@@ -16,12 +16,14 @@ pub mod location;
 pub mod output;
 pub mod scope;
 
-pub use create::{create_review, CreateReviewParams, CreateReviewResult};
+pub use create::{create_review, CreateReviewParams};
 pub use detect::detect_target;
-pub use history::{epic_review_history, ReviewFix, ReviewIssue, ReviewIteration};
+pub use history::{epic_review_history, ReviewIteration};
+#[cfg(test)]
+pub use history::{ReviewFix, ReviewIssue};
 pub use issues::{get_issue_comments, has_actionable_issues, issue_count};
 pub use location::{format_locations, parse_locations, Location};
-pub use output::{output_approved, review_summary};
+pub use output::review_summary;
 pub use scope::{ReviewScope, ReviewScopeKind};
 
 /// Check if a task is a review task.
@@ -44,6 +46,7 @@ pub fn is_review_task(task: &Task) -> bool {
 /// Resolve the plan template from CLI arg or review task data.
 ///
 /// Priority: CLI arg > review_task.data["options.fix_template"] > None (caller default).
+#[allow(dead_code)]
 pub fn resolve_plan_template(
     cli_arg: Option<String>,
     review_data: &HashMap<String, String>,
@@ -53,6 +56,7 @@ pub fn resolve_plan_template(
 
 /// Resolves the final template name for fix-plan tasks.
 /// Combines CLI arg / review-data resolution with the default fallback.
+#[allow(dead_code)]
 pub fn resolve_fix_template_name(
     cli_arg: Option<String>,
     review_data: &HashMap<String, String>,

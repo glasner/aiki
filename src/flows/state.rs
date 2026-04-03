@@ -206,6 +206,7 @@ impl AikiState {
     ///
     /// This preserves the legacy prompt-rewrite behavior for callers that need it.
     #[must_use]
+    #[allow(dead_code)]
     pub fn build_context_with_original_prompt(&self) -> Option<String> {
         self.context_assembler.as_ref().and_then(|assembler| {
             if assembler.is_empty() {

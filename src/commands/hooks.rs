@@ -128,7 +128,7 @@ fn parse_agent_type(agent: &str) -> Result<provenance::AgentType> {
 }
 
 /// Handle editor event (called by hooks)
-fn handle_event(agent: provenance::AgentType, event: &str, payload: Option<&str>) -> Result<()> {
+fn handle_event(agent: provenance::AgentType, event: &str, _payload: Option<&str>) -> Result<()> {
     use crate::error::AikiError;
     use provenance::AgentType;
 

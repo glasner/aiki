@@ -843,32 +843,6 @@ fn event_to_metadata_block(event: &TaskEvent) -> String {
             }
             add_metadata_timestamp(timestamp, &mut lines);
         }
-        TaskEvent::Reserved {
-            task_ids,
-            agent_type,
-            timestamp,
-        } => {
-            add_metadata("event", "reserved", &mut lines);
-            for task_id in task_ids {
-                add_metadata("task_id", task_id, &mut lines);
-            }
-            add_metadata("agent_type", agent_type, &mut lines);
-            add_metadata_timestamp(timestamp, &mut lines);
-        }
-        TaskEvent::Released {
-            task_ids,
-            reason,
-            timestamp,
-        } => {
-            add_metadata("event", "released", &mut lines);
-            for task_id in task_ids {
-                add_metadata("task_id", task_id, &mut lines);
-            }
-            if let Some(reason) = reason {
-                add_metadata_escaped("reason", reason, &mut lines);
-            }
-            add_metadata_timestamp(timestamp, &mut lines);
-        }
     }
 
     lines.push(METADATA_END.to_string());
@@ -1286,41 +1260,6 @@ fn parse_metadata_block(block: &str) -> Option<TaskEvent> {
                 task_ids,
                 session_id,
                 turn_id,
-                timestamp,
-            })
-        }
-        "reserved" => {
-            let task_ids = fields
-                .get("task_id")?
-                .iter()
-                .map(|s| s.to_string())
-                .collect();
-            let agent_type = fields
-                .get("agent_type")
-                .and_then(|v| v.first())
-                .unwrap_or(&"unknown")
-                .to_string();
-
-            Some(TaskEvent::Reserved {
-                task_ids,
-                agent_type,
-                timestamp,
-            })
-        }
-        "released" => {
-            let task_ids = fields
-                .get("task_id")?
-                .iter()
-                .map(|s| s.to_string())
-                .collect();
-            let reason = fields
-                .get("reason")
-                .and_then(|v| v.first())
-                .map(|s| unescape_metadata_value(s));
-
-            Some(TaskEvent::Released {
-                task_ids,
-                reason,
                 timestamp,
             })
         }

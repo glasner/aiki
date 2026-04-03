@@ -29,7 +29,7 @@ pub use manager::{
     find_task, get_current_scope_set, get_in_progress, get_ready_queue_for_scope_set, get_subtasks,
 };
 pub use md::MdBuilder;
-pub use revset::{build_task_revset_pattern, build_task_revset_pattern_with_graph};
+pub use revset::build_task_revset_pattern_with_graph;
 pub use storage::{
     read_events, read_events_with_ids, write_event, write_link_event, write_link_event_with_autorun,
 };

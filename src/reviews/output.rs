@@ -23,6 +23,7 @@ pub fn review_summary(cwd: &Path, review_id: &str) -> Result<String> {
 }
 
 /// Output approved message when no issues found.
+#[allow(dead_code)]
 pub fn output_approved(task_id: &str) -> Result<()> {
     output_utils::emit(|| {
         let output = CommandOutput {

@@ -34,12 +34,25 @@ impl TurnTranscript {
     /// Reads the file, passes the content to `parse_lines` which returns
     /// per-API-call entries, then aggregates them via [`from_entries`].
     /// Returns `Default` if the file can't be read or produces no entries.
+    ///
+    /// If the first read produces no entries, retries once after a short delay.
+    /// This works around a race condition where Claude Code fires the Stop hook
+    /// before flushing the final assistant entry to the transcript JSONL file.
     pub fn parse(path: &str, parse_lines: fn(&str) -> Vec<TranscriptEntry>) -> Self {
-        let content = match std::fs::read_to_string(path) {
-            Ok(c) => c,
-            Err(_) => return Self::default(),
-        };
-        Self::from_entries(parse_lines(&content))
+        for attempt in 0..2 {
+            let content = match std::fs::read_to_string(path) {
+                Ok(c) => c,
+                Err(_) => return Self::default(),
+            };
+            let entries = parse_lines(&content);
+            if !entries.is_empty() {
+                return Self::from_entries(entries);
+            }
+            if attempt == 0 {
+                std::thread::sleep(std::time::Duration::from_millis(150));
+            }
+        }
+        Self::default()
     }
 
     /// Aggregate a sequence of per-API-call entries into a single turn transcript.

@@ -110,7 +110,7 @@ fn determine_mode(
     cwd: &Path,
     repo_root: &Path,
     args: &[String],
-    plan_dir: &Path,
+    _plan_dir: &Path,
 ) -> Result<PlanMode> {
     if args.is_empty() {
         // Interactive mode - prompt for description
@@ -580,11 +580,14 @@ fn run_epic(
         .arg(&prompt)
         .status();
 
+    // Resolve the actual plan path — the agent may have renamed a .pending- file
+    let actual_plan_path = resolve_plan_path_after_session(cwd, &plan_task_id, &plan_path);
+
     match status {
         Ok(exit_status) => {
             if exit_status.success() {
                 if !output_id {
-                    output_plan_completed(&plan_task_id, &plan_path)?;
+                    output_plan_completed(&plan_task_id, &actual_plan_path)?;
                 }
             } else {
                 // Claude exited with non-zero - could be user cancelled, graceful termination, or error
@@ -598,7 +601,7 @@ fn run_epic(
                     // SIGTERM - graceful termination (e.g., via `claude --exit` when task closes)
                     // This is expected behavior, not an error
                     if !output_id {
-                        output_plan_completed(&plan_task_id, &plan_path)?;
+                        output_plan_completed(&plan_task_id, &actual_plan_path)?;
                     }
                 } else {
                     output_plan_error(
@@ -812,6 +815,27 @@ fn output_plan_started(
         MdBuilder::new().build(&content)
     });
     Ok(())
+}
+
+/// Resolve the actual plan path after an agent session.
+///
+/// The agent may have renamed the pending file and updated the task's
+/// `data.plan_path` via `aiki task set`. Re-read the task graph to get
+/// the current value. Falls back to the original path if not updated or
+/// if the updated path doesn't exist on disk.
+fn resolve_plan_path_after_session(cwd: &Path, task_id: &str, original: &Path) -> PathBuf {
+    if let Ok(events) = read_events(cwd) {
+        let graph = materialize_graph(&events);
+        if let Some(task) = graph.tasks.get(task_id) {
+            if let Some(updated) = task.data.get("plan_path") {
+                let updated_path = PathBuf::from(updated);
+                if updated_path != original && updated_path.exists() {
+                    return updated_path;
+                }
+            }
+        }
+    }
+    original.to_path_buf()
 }
 
 /// Output plan completed message
@@ -1219,10 +1243,17 @@ fn build_interactive_plan_prompt(
                     " This is a temporary name. Before you begin writing the plan,",
                     " rename this file to a descriptive kebab-case name in `{}/`",
                     " (e.g., `{}/add-user-auth.md`) based on your understanding",
-                    " of what the plan is about. Use `mv` to rename it.",
+                    " of what the plan is about. Use `mv` to rename it, then update",
+                    " the task metadata so the new path is tracked:",
+                    "\n\n```\nmv {} {}/your-plan-name.md",
+                    "\naiki task set {} --data plan_path={}/your-plan-name.md\n```",
                 ),
                 plan_path.display(),
                 plan_dir,
+                plan_dir,
+                plan_path.display(),
+                plan_dir,
+                plan_task_id,
                 plan_dir,
             ));
         } else {

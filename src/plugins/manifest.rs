@@ -19,6 +19,7 @@ pub struct PluginManifest {
     /// Human-readable display name (recommended, optional).
     pub name: Option<String>,
     /// One-line summary (recommended, optional).
+    #[allow(dead_code)]
     pub description: Option<String>,
 }
 

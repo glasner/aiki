@@ -35,6 +35,7 @@ enum ReviewScopeSource {
 }
 
 /// Resolve the regression review scope from workflow context.
+#[allow(dead_code)]
 pub(crate) fn resolve_regression_review_scope(
     ctx: &WorkflowContext,
 ) -> anyhow::Result<Option<ReviewScope>> {

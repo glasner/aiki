@@ -164,6 +164,7 @@ pub fn build_aiki_event_from_stdin() -> Result<BuiltCodexEvents> {
     build_aiki_event_from_parsed(event)
 }
 
+#[allow(dead_code)]
 pub(crate) fn build_aiki_event_from_json_str(json: &str) -> Result<BuiltCodexEvents> {
     let event: CodexEvent = serde_json::from_str(json).map_err(anyhow::Error::from)?;
     build_aiki_event_from_parsed(event)

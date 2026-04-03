@@ -64,6 +64,7 @@ pub struct TokenUsage {
     pub cache_created: u64,
 }
 
+#[allow(dead_code)]
 impl TokenUsage {
     pub fn total(&self) -> u64 {
         self.input + self.output

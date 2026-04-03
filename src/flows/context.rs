@@ -366,6 +366,7 @@ impl ContextAssembler {
     ///
     /// The assembled message as a single string.
     #[must_use]
+    #[allow(dead_code)]
     pub fn build_with_original(&self) -> String {
         self.build_inner(true)
     }

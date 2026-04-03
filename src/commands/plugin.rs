@@ -9,7 +9,7 @@ use std::path::Path;
 use crate::error::{AikiError, Result};
 use crate::plugins::deps::{install_with_deps, resolve_deps, InstallReport};
 use crate::plugins::git::{pull_plugin, remove_plugin};
-use crate::plugins::manifest::{load_manifest, resolve_display_name};
+use crate::plugins::manifest::load_manifest;
 use crate::plugins::scanner::derive_plugin_refs;
 use crate::plugins::{check_install_status, plugins_base_dir, InstallStatus, PluginRef};
 use crate::tasks::templates::TASKS_DIR_NAME;
@@ -37,6 +37,9 @@ pub enum PluginCommands {
     Remove {
         /// Plugin reference to remove (e.g., aiki/way)
         reference: String,
+        /// Remove even if other plugins depend on this one
+        #[arg(long)]
+        force: bool,
     },
 }
 
@@ -45,7 +48,7 @@ pub fn run(command: PluginCommands) -> Result<()> {
         PluginCommands::Install { reference } => run_install(reference),
         PluginCommands::Update { reference } => run_update(reference),
         PluginCommands::List { number } => run_list(number),
-        PluginCommands::Remove { reference } => run_remove(reference),
+        PluginCommands::Remove { reference, force } => run_remove(reference, force),
     }
 }
 
@@ -127,7 +130,10 @@ fn run_update(reference: Option<String>) -> Result<()> {
 fn update_single(plugin: &PluginRef, plugins_base: &Path) -> Result<()> {
     // 1. Pull the root plugin
     pull_plugin(plugin, plugins_base)?;
-    println!("Updated: {}", plugin);
+    match plugin.display_name(plugins_base) {
+        Some(name) => println!("Updated: {} ({})", plugin, name),
+        None => println!("Updated: {}", plugin),
+    }
 
     let mut failures: Vec<String> = Vec::new();
 
@@ -161,8 +167,11 @@ fn update_single(plugin: &PluginRef, plugins_base: &Path) -> Result<()> {
             _ => {
                 // New dep — install with its own deps
                 let report = install_with_deps(dep, plugins_base)?;
-                for (installed, _) in &report.installed {
-                    println!("Installed (dependency): {}", installed);
+                for (installed, _manifest) in &report.installed {
+                    match installed.display_name(plugins_base) {
+                        Some(name) => println!("Installed (dependency): {} ({})", installed, name),
+                        None => println!("Installed (dependency): {}", installed),
+                    }
                 }
                 for (failed, err) in &report.failed {
                     eprintln!("Error: failed to install {}: {}", failed, err);
@@ -207,15 +216,11 @@ fn run_list(number: Option<usize>) -> Result<()> {
                 println!("Plugins:");
                 for plugin in &project_refs {
                     let status = check_install_status(plugin, &plugins_base);
-                    let plugin_path = plugin.to_string();
                     match status {
                         InstallStatus::Installed => {
-                            let install_dir = plugin.install_dir(&plugins_base);
-                            let display = resolve_display_name(&install_dir, &plugin_path);
-                            if display != plugin_path {
-                                println!("  {}    {}    installed", plugin, display);
-                            } else {
-                                println!("  {}    installed", plugin);
+                            match plugin.display_name(&plugins_base) {
+                                Some(name) => println!("  {}    {}    installed", plugin, name),
+                                None => println!("  {}    installed", plugin),
                             }
                             // Show deps
                             let deps = resolve_deps(plugin, &plugins_base);
@@ -306,18 +311,14 @@ fn run_list(number: Option<usize>) -> Result<()> {
             if let Some(n) = number {
                 plugin_deps.truncate(n);
             }
-            println!("Installed (~/.aiki/plugins/):");
+            println!("Installed ({}):", plugins_base.display());
             for (plugin, deps) in &plugin_deps {
                 if hidden.contains(plugin) {
                     continue; // Only show as dependency under its parent
                 }
-                let plugin_path = plugin.to_string();
-                let install_dir = plugin.install_dir(&plugins_base);
-                let display = resolve_display_name(&install_dir, &plugin_path);
-                if display != plugin_path {
-                    println!("  {}    {}", plugin, display);
-                } else {
-                    println!("  {}", plugin);
+                match plugin.display_name(&plugins_base) {
+                    Some(name) => println!("  {}    {}", plugin, name),
+                    None => println!("  {}", plugin),
                 }
                 for dep in deps {
                     println!("    └ {}    (dependency)", dep);
@@ -329,7 +330,7 @@ fn run_list(number: Option<usize>) -> Result<()> {
     Ok(())
 }
 
-fn run_remove(reference: String) -> Result<()> {
+fn run_remove(reference: String, force: bool) -> Result<()> {
     let plugins_base = plugins_base_dir()?;
     let plugin: PluginRef = reference.parse()?;
 
@@ -338,6 +339,24 @@ fn run_remove(reference: String) -> Result<()> {
     let display_name = load_manifest(&install_dir)
         .ok()
         .and_then(|m| m.name);
+
+    // Error if other installed plugins depend on this one (unless --force)
+    let dependents = find_dependents(&plugin, &plugins_base);
+    if !dependents.is_empty() {
+        let names: Vec<String> = dependents.iter().map(|d| d.to_string()).collect();
+        if force {
+            eprintln!(
+                "Warning: {} is a dependency of: {}",
+                plugin,
+                names.join(", ")
+            );
+        } else {
+            return Err(AikiError::PluginHasDependents {
+                plugin: plugin.to_string(),
+                dependents: names.join(", "),
+            });
+        }
+    }
 
     remove_plugin(&plugin, &plugins_base)?;
 
@@ -373,21 +392,34 @@ fn find_aiki_dir_optional(start: &Path) -> Option<std::path::PathBuf> {
     }
 }
 
+/// Find installed plugins that depend on the given plugin.
+fn find_dependents(plugin: &PluginRef, plugins_base: &Path) -> Vec<PluginRef> {
+    let installed = list_installed_plugins(plugins_base);
+    installed
+        .into_iter()
+        .filter(|p| {
+            p != plugin && resolve_deps(p, plugins_base).contains(plugin)
+        })
+        .collect()
+}
+
 /// Print install report.
 ///
 /// Validation (plugin.yaml check + cleanup) is handled by `install_single` in
 /// `deps.rs`, so this function only formats the output.
-fn print_install_report(
-    report: &InstallReport,
-    root: &PluginRef,
-) {
+fn print_install_report(report: &InstallReport, root: &PluginRef) {
     for (plugin, manifest) in &report.installed {
-        let fallback = plugin.to_string();
-        let display = manifest.name.as_deref().unwrap_or(&fallback);
-        if plugin == root {
-            println!("Installed: {} ({})", plugin, display);
+        let label = if plugin == root {
+            "Installed"
         } else {
-            println!("Installed (dependency): {} ({})", plugin, display);
+            "Installed (dependency)"
+        };
+        let plugin_str = plugin.to_string();
+        match manifest.name.as_deref() {
+            Some(name) if !name.is_empty() && name != plugin_str => {
+                println!("{}: {} ({})", label, plugin, name);
+            }
+            _ => println!("{}: {}", label, plugin),
         }
     }
     for (failed, err) in &report.failed {
@@ -414,6 +446,10 @@ fn remove_from_hooks_yml(aiki_dir: &Path, plugin: &PluginRef) {
 
     // Filter out lines that are include references to this plugin.
     // We operate on raw lines to preserve formatting/comments.
+    // NOTE: This removes ALL list items matching the plugin name regardless of
+    // which YAML key they appear under (not just `include:` blocks). Accepted
+    // risk: hooks.yml is a controlled format and non-include list items matching
+    // a plugin ref are not expected in practice.
     let lines: Vec<&str> = content.lines().collect();
     let mut new_lines: Vec<&str> = Vec::with_capacity(lines.len());
     let mut changed = false;
@@ -552,5 +588,88 @@ fn collect_overrides(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn test_remove_from_hooks_yml_removes_matching_line() {
+        let tmp = TempDir::new().unwrap();
+        let aiki_dir = tmp.path().join(".aiki");
+        fs::create_dir_all(&aiki_dir).unwrap();
+
+        let hooks_content = "include:\n  - eslint/standard\n  - aiki/way\n";
+        fs::write(aiki_dir.join("hooks.yml"), hooks_content).unwrap();
+
+        let plugin: PluginRef = "eslint/standard".parse().unwrap();
+        remove_from_hooks_yml(&aiki_dir, &plugin);
+
+        let result = fs::read_to_string(aiki_dir.join("hooks.yml")).unwrap();
+        assert!(!result.contains("eslint/standard"));
+        assert!(result.contains("aiki/way"));
+    }
+
+    #[test]
+    fn test_remove_from_hooks_yml_preserves_trailing_newline() {
+        let tmp = TempDir::new().unwrap();
+        let aiki_dir = tmp.path().join(".aiki");
+        fs::create_dir_all(&aiki_dir).unwrap();
+
+        let hooks_content = "include:\n  - eslint/standard\n  - aiki/way\n";
+        fs::write(aiki_dir.join("hooks.yml"), hooks_content).unwrap();
+
+        let plugin: PluginRef = "eslint/standard".parse().unwrap();
+        remove_from_hooks_yml(&aiki_dir, &plugin);
+
+        let result = fs::read_to_string(aiki_dir.join("hooks.yml")).unwrap();
+        assert!(result.ends_with('\n'));
+    }
+
+    #[test]
+    fn test_remove_from_hooks_yml_no_file() {
+        let tmp = TempDir::new().unwrap();
+        let aiki_dir = tmp.path().join(".aiki");
+        fs::create_dir_all(&aiki_dir).unwrap();
+
+        let plugin: PluginRef = "eslint/standard".parse().unwrap();
+        // Should not panic when hooks.yml doesn't exist
+        remove_from_hooks_yml(&aiki_dir, &plugin);
+    }
+
+    #[test]
+    fn test_remove_from_hooks_yml_no_match() {
+        let tmp = TempDir::new().unwrap();
+        let aiki_dir = tmp.path().join(".aiki");
+        fs::create_dir_all(&aiki_dir).unwrap();
+
+        let original = "include:\n  - aiki/way\n";
+        fs::write(aiki_dir.join("hooks.yml"), original).unwrap();
+
+        let plugin: PluginRef = "eslint/standard".parse().unwrap();
+        remove_from_hooks_yml(&aiki_dir, &plugin);
+
+        let result = fs::read_to_string(aiki_dir.join("hooks.yml")).unwrap();
+        assert_eq!(result, original);
+    }
+
+    #[test]
+    fn test_remove_from_hooks_yml_with_comment() {
+        let tmp = TempDir::new().unwrap();
+        let aiki_dir = tmp.path().join(".aiki");
+        fs::create_dir_all(&aiki_dir).unwrap();
+
+        let hooks_content = "include:\n  - eslint/standard  # linting\n  - aiki/way\n";
+        fs::write(aiki_dir.join("hooks.yml"), hooks_content).unwrap();
+
+        let plugin: PluginRef = "eslint/standard".parse().unwrap();
+        remove_from_hooks_yml(&aiki_dir, &plugin);
+
+        let result = fs::read_to_string(aiki_dir.join("hooks.yml")).unwrap();
+        assert!(!result.contains("eslint/standard"));
+        assert!(result.contains("aiki/way"));
     }
 }

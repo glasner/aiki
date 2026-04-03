@@ -24,6 +24,7 @@ pub struct ReviewIteration {
     pub outcome: String,
     pub issues: Vec<ReviewIssue>,
     pub fixes: Vec<ReviewFix>,
+    #[allow(dead_code)]
     pub fix_task_id: Option<String>,
 }
 
