@@ -81,5 +81,5 @@ version: 1.0.0
 
 5. Close this task when the plan is written:
    ```bash
-   aiki task close {{id}} --confidence 3 --summary "Fix plan written to /tmp/aiki/plans/{{id}}.md — N issues, M steps"
+   aiki task close {{id}} --confidence <1-4> --summary "Fix plan written to /tmp/aiki/plans/{{id}}.md — N issues, M steps"
    ```

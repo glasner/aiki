@@ -12,5 +12,5 @@ aiki task diff <task-id>
 When done close this task with a summary of your understanding:
 
 ```bash
-aiki task close {{id}} --confidence 2 --summary <your summary here>
+aiki task close {{id}} --confidence <1-4> --summary <your summary here>
 ```

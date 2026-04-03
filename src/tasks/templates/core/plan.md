@@ -156,7 +156,7 @@ Ask the user if the plan is complete and ready for implementation.
    - Remove the `draft` field from the plan file's YAML frontmatter
    - Read the file, find the `---` frontmatter block, remove the `draft: true` line, write back
    - If removing `draft` leaves the frontmatter empty, remove the `---` block entirely
-   - Close this subtask with `--confidence 3` and summary "Plan marked as ready"
+   - Close this subtask with `--confidence <1-4>` and summary "Plan marked as ready"
 3. If the user wants to continue editing:
    - Leave `draft: true` in place
    - Close this subtask as wont_do with summary "User wants to continue editing, draft status preserved"
