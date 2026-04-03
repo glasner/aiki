@@ -50,7 +50,22 @@ aiki task close <id> --confidence <1-4> --summary "Created plan at ops/now/renam
 aiki task comment add <task-id> "Completed phase 1, now working on phase 2"
 ```
 
-**When closing done work from an agent session, include confidence and summarize your work:**
+**When closing done work, reflect before scoring confidence:**
+
+1. What could be wrong with your changes?
+2. What did you NOT verify?
+3. Pick a confidence level:
+
+| Level | When to use |
+|-------|-------------|
+| 4 (verified) | Tests passed, or change is trivially correct (typo, comment, config) |
+| 3 (high) | Logic is sound and you reviewed your changes, but no test run or full verification |
+| 2 (medium) | Meaningful unknowns: unfamiliar code area, complex logic, multi-file changes you couldn't fully trace |
+| 1 (low) | Made assumptions, task was ambiguous, or working blind in unfamiliar territory |
+
+If you ran tests and they passed → use 4, not 3.
+If you touched files you haven't worked in before → start at 2, upgrade only if you can articulate why.
+
 ```bash
 aiki task close <task-id> --confidence <1-4> --summary "What you did"
 ```
@@ -277,7 +292,7 @@ Task(prompt="Go fix the tests", subagent_type="general-purpose")
 # ✅ CORRECT: Pass task ID and instruct the subagent to use aiki
 Task(prompt="You are working on aiki task <task-id>.
 Run `aiki task start <task-id>` first, then do the work,
-then `aiki task close <task-id> --confidence 3 --summary '...'`.
+then `aiki task close <task-id> --confidence <1-4> --summary '...'`.
 Fix the failing tests in cli/tests/auth_tests.rs.",
 subagent_type="general-purpose")
 ```
