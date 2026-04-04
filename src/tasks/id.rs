@@ -99,6 +99,26 @@ pub fn generate_task_id(name: &str) -> String {
     result
 }
 
+/// An unresolved reference to a task (full ID, prefix, or slug ref).
+///
+/// Not yet validated against the task graph. Use `resolve_task_id_in_graph()`
+/// (or equivalent) to resolve to a full task ID.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct TaskRef(pub String);
+
+impl std::ops::Deref for TaskRef {
+    type Target = str;
+    fn deref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for TaskRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
 /// Check if a string looks like a task ID prefix (shorter than a full ID)
 ///
 /// Returns true if the input could be a task ID prefix:

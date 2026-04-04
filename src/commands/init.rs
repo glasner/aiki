@@ -113,7 +113,7 @@ include:
 #   # Use for: blocking external requests, domain allowlisting
 "#;
 
-pub fn run(quiet: bool, instructions_file: Option<String>) -> Result<()> {
+pub fn run(quiet: bool) -> Result<()> {
     prerequisites::check_prerequisites(quiet)?;
 
     // Get current directory
@@ -152,6 +152,9 @@ pub fn run(quiet: bool, instructions_file: Option<String>) -> Result<()> {
 
             // Sync built-in templates on re-init (picks up new/updated templates)
             crate::tasks::templates::sync::sync_default_templates(&repo_root, quiet)?;
+
+            // Ensure instruction files exist even on re-init
+            instructions::ensure_instruction_files(&repo_root, quiet)?;
 
             if quiet {
                 // Silent success for auto mode
@@ -349,14 +352,7 @@ pub fn run(quiet: bool, instructions_file: Option<String>) -> Result<()> {
     if !quiet {
         println!("\nConfiguring agent instructions...");
     }
-    let canonical = instructions::detect_canonical(&repo_root, instructions_file.as_deref())?;
-    instructions::ensure_aiki_block(&repo_root, canonical, quiet)?;
-    let link_name = if canonical == instructions::AGENTS_MD {
-        instructions::CLAUDE_MD
-    } else {
-        instructions::AGENTS_MD
-    };
-    instructions::ensure_symlink(&repo_root, canonical, link_name, quiet)?;
+    instructions::ensure_instruction_files(&repo_root, quiet)?;
 
     // Sync built-in templates
     if !quiet {

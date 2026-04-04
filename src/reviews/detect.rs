@@ -1,12 +1,12 @@
 //! Review target detection — resolve CLI args to a ReviewScope.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
+use crate::commands::input::{resolve_ref, RefKind};
 use crate::error::{AikiError, Result};
 use crate::output_utils;
 use crate::reviews::{ReviewScope, ReviewScopeKind};
 use crate::session::find_active_session;
-use crate::tasks::looks_like_task_id;
 use crate::tasks::md::MdBuilder;
 use crate::tasks::{find_task, materialize_graph, read_events, Task, TaskStatus};
 
@@ -82,52 +82,45 @@ pub fn detect_target(
             Ok((scope, session_agent))
         }
 
-        Some(s) if s.ends_with(".md") && PathBuf::from(s).exists() => {
-            let kind = if code {
-                ReviewScopeKind::Code
-            } else {
-                ReviewScopeKind::Plan
-            };
-            Ok((
-                ReviewScope {
-                    kind,
-                    id: s.to_string(),
-                    task_ids: vec![],
-                },
-                None,
-            ))
-        }
-
-        Some(s) if s.ends_with(".md") => {
-            Err(AikiError::InvalidArgument(format!("File not found: {}", s)))
-        }
-
-        Some(s) if looks_like_task_id(s) => {
-            if code {
-                return Err(AikiError::InvalidArgument(
-                    "--code flag only applies to file targets".to_string(),
-                ));
+        Some(s) => match resolve_ref(s, Some(cwd))? {
+            RefKind::Plan(_) => {
+                let kind = if code {
+                    ReviewScopeKind::Code
+                } else {
+                    ReviewScopeKind::Plan
+                };
+                Ok((
+                    ReviewScope {
+                        kind,
+                        id: s.to_string(),
+                        task_ids: vec![],
+                    },
+                    None,
+                ))
             }
+            RefKind::File(_) => {
+                Err(AikiError::InvalidArgument(
+                    "File review only supports .md files currently".to_string(),
+                ))
+            }
+            RefKind::Task(task_ref) => {
+                if code {
+                    return Err(AikiError::InvalidArgument(
+                        "--code flag only applies to file targets".to_string(),
+                    ));
+                }
 
-            let events = read_events(cwd)?;
-            let tasks = materialize_graph(&events).tasks;
-            let task = find_task(&tasks, s)?;
-            let worker = task.assignee.as_deref().map(|s| s.to_string());
-            let scope = ReviewScope {
-                kind: ReviewScopeKind::Task,
-                id: task.id.clone(),
-                task_ids: vec![],
-            };
-            Ok((scope, worker))
-        }
-
-        Some(s) if Path::new(s).exists() => Err(AikiError::InvalidArgument(
-            "File review only supports .md files currently".to_string(),
-        )),
-
-        Some(s) => Err(AikiError::InvalidArgument(format!(
-            "Target not found: {}",
-            s
-        ))),
+                let events = read_events(cwd)?;
+                let tasks = materialize_graph(&events).tasks;
+                let task = find_task(&tasks, &task_ref.0)?;
+                let worker = task.assignee.as_deref().map(|a| a.to_string());
+                let scope = ReviewScope {
+                    kind: ReviewScopeKind::Task,
+                    id: task.id.clone(),
+                    task_ids: vec![],
+                };
+                Ok((scope, worker))
+            }
+        },
     }
 }

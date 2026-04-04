@@ -383,6 +383,10 @@ pub enum TaskCommands {
         #[arg(long, value_name = "KEY=VALUE", action = clap::ArgAction::Append)]
         data: Vec<String>,
 
+        /// Set instructions (inline, from file, or stdin with bare flag)
+        #[arg(long, short = 'i', num_args = 0..=1, default_missing_value = "")]
+        instructions: Option<String>,
+
         /// Create as child of existing task (hidden alias for --subtask-of)
         #[arg(long, hide = true)]
         parent: Option<String>,
@@ -714,9 +718,9 @@ pub enum TaskCommands {
         #[arg(long, value_name = "KEY=VALUE", action = clap::ArgAction::Append)]
         data: Vec<String>,
 
-        /// Set instructions (reads content from stdin)
-        #[arg(long)]
-        instructions: bool,
+        /// Set instructions (inline, from file, or stdin with bare flag)
+        #[arg(long, short = 'i', num_args = 0..=1, default_missing_value = "")]
+        instructions: Option<String>,
     },
 
     /// Clear optional fields on a task
@@ -1085,6 +1089,7 @@ pub fn run(command: Option<TaskCommands>) -> Result<()> {
             name,
             template,
             data,
+            instructions,
             parent,
             slug,
             assignee,
@@ -1114,6 +1119,7 @@ pub fn run(command: Option<TaskCommands>) -> Result<()> {
             name,
             template,
             data,
+            instructions,
             resolve_subtask_of_alias(subtask_of, parent)?,
             slug,
             assignee,
@@ -1913,6 +1919,7 @@ fn run_add(
     name: Option<String>,
     template_name: Option<String>,
     data_args: Vec<String>,
+    instructions_arg: Option<String>,
     parent: Option<String>,
     slug: Option<String>,
     assignee_arg: Option<String>,
@@ -1995,6 +2002,9 @@ fn run_add(
             None // Let template defaults apply
         };
 
+        // Resolve instructions before create_from_template() so stdin is read before side effects
+        let resolved_instructions = super::input::resolve_text(instructions_arg.as_deref())?;
+
         let params = TemplateTaskParams {
             template_name: template.clone(),
             data,
@@ -2004,6 +2014,20 @@ fn run_add(
             ..Default::default()
         };
         let task_id = create_from_template(cwd, params)?;
+
+        // If --instructions provided alongside --template, override via Updated event
+        if let Some(ref instr) = resolved_instructions {
+            let update_event = TaskEvent::Updated {
+                task_id: task_id.clone(),
+                name: None,
+                priority: None,
+                assignee: None,
+                data: None,
+                instructions: Some(instr.clone()),
+                timestamp: chrono::Utc::now(),
+            };
+            write_event(cwd, &update_event)?;
+        }
 
         // Read events to get the task we just created
         let events = read_events(cwd)?;
@@ -2119,6 +2143,9 @@ fn run_add(
         (generate_task_id(&name), assignee.clone())
     };
 
+    // Resolve instructions from inline text, file path, or stdin
+    let resolved_instructions = super::input::resolve_text(instructions_arg.as_deref())?;
+
     let timestamp = chrono::Utc::now();
 
     let event = TaskEvent::Created {
@@ -2130,7 +2157,7 @@ fn run_add(
         assignee: effective_assignee.clone(),
         sources: sources.clone(),
         template: None,
-        instructions: None,
+        instructions: resolved_instructions.clone(),
         data: std::collections::HashMap::new(),
         timestamp,
     };
@@ -2178,7 +2205,7 @@ fn run_add(
         assignee: effective_assignee,
         sources,
         template: None,
-        instructions: None,
+        instructions: resolved_instructions,
         data: std::collections::HashMap::new(),
         created_at: timestamp,
         started_at: None,
@@ -3051,7 +3078,6 @@ fn run_close(
     use crate::tasks::manager::{
         all_subtasks_closed, get_all_unclosed_descendants, get_scoped_ready_queue,
     };
-    use std::io::Read;
 
     // Validate outcome (unless --wont_do is used, which overrides)
     if !wont_do {
@@ -3115,14 +3141,8 @@ fn run_close(
     descendants_to_close.append(&mut ids_to_close);
     ids_to_close = descendants_to_close;
 
-    // Handle stdin for --summary -
-    let summary_text = if summary.as_deref() == Some("-") {
-        let mut buffer = String::new();
-        std::io::stdin().read_to_string(&mut buffer)?;
-        Some(buffer.trim().to_string())
-    } else {
-        summary
-    };
+    // Resolve summary from inline text, file path, or stdin
+    let summary_text = super::input::resolve_text(summary.as_deref())?;
 
     // Determine if summary is required
     let session_match = find_active_session(cwd);
@@ -5470,7 +5490,7 @@ fn run_set(
     name: Option<String>,
     assignee_arg: Option<String>,
     data_args: Vec<String>,
-    instructions_flag: bool,
+    instructions: Option<String>,
 ) -> Result<()> {
     use crate::agents::Assignee;
     use crate::validation::is_valid_template_identifier;
@@ -5567,14 +5587,8 @@ fn run_set(
         Some(data_updates)
     };
 
-    // Read instructions from stdin if --instructions flag is set
-    let new_instructions = if instructions_flag {
-        let content = std::io::read_to_string(std::io::stdin())
-            .map_err(|e| AikiError::JjCommandFailed(format!("Failed to read stdin: {}", e)))?;
-        Some(content.trim_end().to_string())
-    } else {
-        None
-    };
+    // Resolve instructions from inline text, file path, or stdin
+    let new_instructions = super::input::resolve_text(instructions.as_deref())?;
 
     // Check if there's anything to update
     if new_priority.is_none()
@@ -6044,31 +6058,6 @@ fn extract_task_id(input: &str) -> String {
     trimmed.to_string()
 }
 
-/// Read task ID from stdin for piping support
-///
-/// Reads all available input and extracts the task ID using `extract_task_id`.
-fn read_wait_task_id_from_stdin() -> Result<String> {
-    use std::io::{self, BufRead};
-
-    let stdin = io::stdin();
-    let mut input = String::new();
-
-    for line in stdin.lock().lines() {
-        let line = line
-            .map_err(|e| AikiError::InvalidArgument(format!("Failed to read from stdin: {}", e)))?;
-        input.push_str(&line);
-        input.push('\n');
-    }
-
-    if input.trim().is_empty() {
-        return Err(AikiError::InvalidArgument(
-            "No task ID provided. Pass as argument or pipe from another command.".to_string(),
-        ));
-    }
-
-    Ok(extract_task_id(&input))
-}
-
 /// Wait for task(s) to reach a terminal state (closed or stopped)
 ///
 /// When `any` is true, returns as soon as any task reaches terminal state
@@ -6087,11 +6076,8 @@ fn run_wait(
 ) -> Result<()> {
     use std::time::Duration;
 
-    let ids = if ids.is_empty() {
-        vec![read_wait_task_id_from_stdin()?]
-    } else {
-        ids
-    };
+    let refs = super::input::resolve_ref_list(ids, extract_task_id)?;
+    let ids: Vec<String> = refs.into_iter().map(|r| r.0).collect();
 
     let mut delay_ms = WAIT_INITIAL_DELAY_MS;
 

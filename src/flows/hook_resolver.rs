@@ -2,8 +2,8 @@
 //!
 //! This module handles resolution of flow paths with namespacing:
 //! - `{namespace}/*` - Namespaced flows (e.g., `aiki/*`, `eslint/*`, `prettier/*`)
-//!   - Searches project `.aiki/hooks/{namespace}/` first, then `~/.aiki/hooks/{namespace}/`,
-//!     then installed plugins at `~/.aiki/plugins/{namespace}/`, then repo-root plugins
+//!   - Searches project `.aiki/hooks/{namespace}/` first, then `$AIKI_HOME/hooks/{namespace}/`,
+//!     then installed plugins at `$AIKI_HOME/plugins/{namespace}/`, then repo-root plugins
 //!
 //! All top-level directories in `.aiki/hooks/` are treated as namespaces.
 //!
@@ -85,7 +85,7 @@ impl HookResolver {
     ///
     /// | Format | Search Order |
     /// |--------|--------------|
-    /// | `{namespace}/{name}` | 1. Project `.aiki/hooks/{namespace}/{name}.yml`<br>2. User `~/.aiki/hooks/{namespace}/{name}.yml`<br>3. Installed `~/.aiki/plugins/{namespace}/{name}/hooks.yaml`<br>4. Repo-root `{project}/plugins/{namespace}/{name}/hooks.yaml` |
+    /// | `{namespace}/{name}` | 1. Project `.aiki/hooks/{namespace}/{name}.yml`<br>2. User `$AIKI_HOME/hooks/{namespace}/{name}.yml`<br>3. Installed `$AIKI_HOME/plugins/{namespace}/{name}/hooks.yaml`<br>4. Repo-root `{project}/plugins/{namespace}/{name}/hooks.yaml` |
     ///
     /// All top-level directories in `.aiki/hooks/` are treated as namespaces.
     /// Examples: `aiki/quick-lint`, `eslint/check-rules`, `prettier/format`, `mycompany/workflows`
@@ -137,8 +137,8 @@ impl HookResolver {
     ///
     /// Search order:
     /// 1. `{project}/.aiki/hooks/{namespace}/{name}.yml`
-    /// 2. `~/.aiki/hooks/{namespace}/{name}.yml`
-    /// 3. `~/.aiki/plugins/{namespace}/{name}/hooks.yaml`
+    /// 2. `$AIKI_HOME/hooks/{namespace}/{name}.yml`
+    /// 3. `$AIKI_HOME/plugins/{namespace}/{name}/hooks.yaml`
     /// 4. `{project}/plugins/{namespace}/{name}/hooks.yaml`
     ///
     /// # Arguments
@@ -159,11 +159,9 @@ impl HookResolver {
             return Ok(project_path);
         }
 
-        // 2. Fall back to user: ~/.aiki/hooks/{ns}/{name}.yml
-        let user_path = self
-            .path_resolver
-            .home_dir()
-            .join(".aiki/hooks")
+        // 2. Fall back to user: $AIKI_HOME/hooks/{ns}/{name}.yml
+        let user_path = crate::global::global_aiki_dir()
+            .join("hooks")
             .join(namespace)
             .join(name);
         let user_path = Self::add_yml_extension(&user_path);

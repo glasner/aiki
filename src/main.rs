@@ -90,9 +90,6 @@ enum Commands {
         /// Only print error and warning messages (suppress normal output)
         #[arg(short, long)]
         quiet: bool,
-        /// Specify which instruction file to use (AGENTS.md or CLAUDE.md)
-        #[arg(long, value_name = "FILE")]
-        instructions_file: Option<String>,
     },
     /// Diagnose and fix configuration issues
     Doctor {
@@ -289,10 +286,7 @@ fn run() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Init {
-            quiet,
-            instructions_file,
-        } => commands::init::run(quiet, instructions_file),
+        Commands::Init { quiet } => commands::init::run(quiet),
         Commands::Doctor { fix } => commands::doctor::run(fix),
         Commands::Plugin { command } => commands::plugin::run(command),
         Commands::Hooks { command } => match command {

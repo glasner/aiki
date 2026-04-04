@@ -50,6 +50,7 @@ pub fn run(args: DecomposeArgs) -> Result<()> {
     let options = DecomposeOptions {
         template: args.template,
         agent: agent_type,
+        instructions: None,
     };
 
     let decompose_task_id = run_decompose(&cwd, &args.plan_path, &args.target, options, false)?;

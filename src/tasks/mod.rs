@@ -24,7 +24,7 @@ pub mod types;
 
 pub use baseline::select_task_snapshot_baseline;
 pub use graph::{materialize_graph, materialize_graph_with_ids, TaskGraph};
-pub use id::{generate_task_id, is_task_id, is_task_id_prefix, is_valid_slug, looks_like_task_id};
+pub use id::{generate_task_id, is_task_id, is_task_id_prefix, is_valid_slug, looks_like_task_id, TaskRef};
 pub use manager::{
     find_task, get_current_scope_set, get_in_progress, get_ready_queue_for_scope_set, get_subtasks,
 };

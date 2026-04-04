@@ -289,18 +289,6 @@ Alternatively, install the agent globally:
     #[error("Plugin operation failed for '{plugin}': {details}")]
     PluginOperationFailed { plugin: String, details: String },
 
-    // Instructions file errors
-    #[error("Both AGENTS.md and CLAUDE.md exist as separate files.\nAiki needs one canonical file with a symlink for the other.\nOptions:\n    aiki init --instructions-file AGENTS.md\n    aiki init --instructions-file CLAUDE.md\nRun with one of these flags to resolve.")]
-    InstructionsConflict,
-
-    #[error("Invalid preferred instruction file: '{0}'. Must be AGENTS.md or CLAUDE.md")]
-    InvalidPreferred(String),
-
-    // Workflow errors
-    #[error("Unexpected workflow result: {0}")]
-    #[allow(dead_code)]
-    UnexpectedWorkflowResult(String),
-
     // Generic wrapper for underlying errors
     #[error(transparent)]
     Other(#[from] anyhow::Error),

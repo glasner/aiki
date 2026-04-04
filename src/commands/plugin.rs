@@ -393,6 +393,7 @@ fn find_aiki_dir_optional(start: &Path) -> Option<std::path::PathBuf> {
 }
 
 /// Find installed plugins that depend on the given plugin.
+// TODO: O(n²) — replace with PluginGraph once built (see ops/now/plugins/dependency-graph.md)
 fn find_dependents(plugin: &PluginRef, plugins_base: &Path) -> Vec<PluginRef> {
     let installed = list_installed_plugins(plugins_base);
     installed
@@ -446,10 +447,10 @@ fn remove_from_hooks_yml(aiki_dir: &Path, plugin: &PluginRef) {
 
     // Filter out lines that are include references to this plugin.
     // We operate on raw lines to preserve formatting/comments.
-    // NOTE: This removes ALL list items matching the plugin name regardless of
-    // which YAML key they appear under (not just `include:` blocks). Accepted
-    // risk: hooks.yml is a controlled format and non-include list items matching
-    // a plugin ref are not expected in practice.
+    // TODO: This removes ALL list items matching the plugin name regardless of
+    // which YAML key they appear under (not just `include:` blocks). Should be
+    // replaced with YAML-aware removal when PluginGraph lands
+    // (see ops/now/plugins/dependency-graph.md).
     let lines: Vec<&str> = content.lines().collect();
     let mut new_lines: Vec<&str> = Vec::with_capacity(lines.len());
     let mut changed = false;

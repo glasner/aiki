@@ -4,7 +4,6 @@
 //! Workflow step handlers live under `workflow::steps::fix`.
 
 use std::env;
-use std::io::{self, BufRead};
 
 use super::OutputFormat;
 use crate::error::{AikiError, Result};
@@ -74,10 +73,12 @@ impl crate::workflow::HasRunKind for FixArgs {
 pub fn run(args: FixArgs) -> Result<()> {
     let cwd = env::current_dir()
         .map_err(|_| AikiError::InvalidArgument("Failed to get current directory".to_string()))?;
-    let review_id = match args.task_id {
-        Some(ref id) => extract_task_id(id),
-        None => read_task_id_from_stdin()?,
-    };
+    let refs = super::input::resolve_ref_list(
+        args.task_id.iter().cloned().collect(),
+        extract_task_id,
+    )?;
+    // resolve_ref_list guarantees non-empty Vec (returns Err otherwise)
+    let review_id = refs.into_iter().next().ok_or_else(|| AikiError::InvalidArgument("No task reference provided".to_string()))?.0;
     let opts = FixOpts::from_args(&args, review_id)?;
     fix::run(&cwd, &opts)?;
     Ok(())
@@ -96,27 +97,6 @@ fn extract_task_id(input: &str) -> String {
     }
 
     trimmed.to_string()
-}
-
-/// Read task ID from stdin
-fn read_task_id_from_stdin() -> Result<String> {
-    let stdin = io::stdin();
-    let mut input = String::new();
-
-    for line in stdin.lock().lines() {
-        let line = line
-            .map_err(|e| AikiError::InvalidArgument(format!("Failed to read from stdin: {}", e)))?;
-        input.push_str(&line);
-        input.push('\n');
-    }
-
-    if input.trim().is_empty() {
-        return Err(AikiError::InvalidArgument(
-            "No task ID provided. Pass as argument or pipe from another command.".to_string(),
-        ));
-    }
-
-    Ok(extract_task_id(&input))
 }
 
 // ── Tests ────────────────────────────────────────────────────────────

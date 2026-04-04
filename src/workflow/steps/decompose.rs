@@ -24,6 +24,7 @@ use crate::tasks::{
 pub struct DecomposeOptions {
     pub template: Option<String>,
     pub agent: Option<AgentType>,
+    pub instructions: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -163,7 +164,7 @@ pub(crate) fn run(ctx: &mut WorkflowContext) -> anyhow::Result<StepResult> {
     let subtasks = get_subtasks(&graph, &epic_id);
     if subtasks.is_empty() {
         ctx.status("decomposing plan into subtasks");
-        let options = DecomposeOptions { template, agent };
+        let options = DecomposeOptions { template, agent, instructions: None };
         let decompose_task_id = run_decompose(&ctx.cwd, &plan_path, &epic_id, options, false)?;
 
         ctx.status("validating subtasks");
@@ -260,6 +261,9 @@ fn build_decompose_params(
     let mut data = std::collections::HashMap::new();
     data.insert("plan".to_string(), plan_path.to_string());
     data.insert("target".to_string(), target_id.to_string());
+    if let Some(ref instructions) = options.instructions {
+        data.insert("instructions".to_string(), instructions.clone());
+    }
 
     TemplateTaskParams {
         template_name: template.to_string(),
@@ -353,6 +357,7 @@ mod tests {
         let options = DecomposeOptions {
             template: None,
             agent: None,
+            instructions: None,
         };
         let params = build_decompose_params(
             "ops/now/feat.md",
@@ -373,6 +378,7 @@ mod tests {
         let options = DecomposeOptions {
             template: Some("my/custom-decompose".to_string()),
             agent: None,
+            instructions: None,
         };
         let params = build_decompose_params("plan.md", "t1", "file:plan.md", &options);
 
@@ -384,6 +390,7 @@ mod tests {
         let options = DecomposeOptions {
             template: None,
             agent: Some(AgentType::Codex),
+            instructions: None,
         };
         let params = build_decompose_params("plan.md", "t1", "file:plan.md", &options);
 
@@ -395,6 +402,7 @@ mod tests {
         let options = DecomposeOptions {
             template: None,
             agent: None,
+            instructions: None,
         };
         let params = build_decompose_params("plan.md", "target_id", "file:plan.md", &options);
 

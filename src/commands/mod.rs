@@ -31,6 +31,7 @@ pub mod explore;
 pub mod fix;
 pub mod hooks;
 pub mod init;
+pub mod input;
 pub mod loop_cmd;
 pub mod otel_receive;
 pub mod output;

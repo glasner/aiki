@@ -327,78 +327,7 @@ pub fn run(fix: bool) -> Result<()> {
     // Check instruction files (AGENTS.md / CLAUDE.md)
     println!("Agent Instructions:");
 
-    match instructions::detect_canonical(&project_root, None) {
-        Ok(canonical) => {
-            println!("  ✓ Canonical instruction file: {}", canonical);
-
-            let link_name = if canonical == instructions::AGENTS_MD {
-                instructions::CLAUDE_MD
-            } else {
-                instructions::AGENTS_MD
-            };
-
-            if fix {
-                if let Err(e) = instructions::ensure_aiki_block(&project_root, canonical, false) {
-                    println!("  ✗ Failed to ensure <aiki> block: {}", e);
-                    issues_found += 1;
-                }
-                if let Err(e) =
-                    instructions::ensure_symlink(&project_root, canonical, link_name, false)
-                {
-                    println!("  ✗ Failed to ensure symlink: {}", e);
-                    issues_found += 1;
-                }
-            } else {
-                // Check-only mode: report status
-                let file_path = project_root.join(canonical);
-                match std::fs::read_to_string(&file_path) {
-                    Ok(content) => {
-                        if content.contains(&format!("<aiki version=\"{}\">", AIKI_BLOCK_VERSION)) {
-                            println!("  ✓ {} has current <aiki> block", canonical);
-                        } else if content.contains("<aiki version=") {
-                            println!("  ⚠ {} has outdated <aiki> block", canonical);
-                            println!("    → Run: aiki doctor --fix (to update block)");
-                        } else {
-                            println!("  ⚠ {} missing <aiki> block", canonical);
-                            println!("    → Run: aiki doctor --fix (to add block)");
-                        }
-                    }
-                    Err(e) => {
-                        println!("  ✗ Failed to read {}: {}", canonical, e);
-                        issues_found += 1;
-                    }
-                }
-
-                // Check symlink status
-                let link_path = project_root.join(link_name);
-                if link_path
-                    .symlink_metadata()
-                    .map(|m| m.file_type().is_symlink())
-                    .unwrap_or(false)
-                {
-                    println!("  ✓ {} symlinked to {}", link_name, canonical);
-                } else if link_path.exists() {
-                    println!(
-                        "  ⚠ {} exists as a separate file (not symlinked)",
-                        link_name
-                    );
-                } else {
-                    println!("  ⚠ {} not found (no symlink)", link_name);
-                    println!("    → Run: aiki doctor --fix (to create symlink)");
-                }
-            }
-        }
-        Err(crate::error::AikiError::InstructionsConflict) => {
-            println!("  ⚠ Both AGENTS.md and CLAUDE.md exist as separate files");
-            println!("    → Run: aiki init --instructions-file AGENTS.md");
-            println!("      or:  aiki init --instructions-file CLAUDE.md");
-            issues_found += 1;
-        }
-        Err(e) => {
-            println!("  ✗ Failed to detect instruction file: {}", e);
-            issues_found += 1;
-        }
-    }
+    issues_found += check_instruction_files(&project_root, fix);
 
     println!();
 
@@ -583,6 +512,89 @@ pub fn run(fix: bool) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Check instruction file health using `RepoInstructionsKind`.
+///
+/// Reports per-variant diagnostics and, when `fix` is true, calls
+/// `ensure_instruction_files` to repair the setup. Returns issue count.
+fn check_instruction_files(project_root: &std::path::Path, fix: bool) -> usize {
+    use instructions::RepoInstructionsKind;
+
+    let kind = instructions::detect_instructions_kind(project_root);
+
+    if fix {
+        // Let ensure_instruction_files handle all variants
+        if let Err(e) = instructions::ensure_instruction_files(project_root, false) {
+            println!("  ✗ Failed to fix instruction files: {}", e);
+            return 1;
+        }
+        return 0;
+    }
+
+    // Check-only mode: report status per variant
+    let mut issues = 0;
+
+    match &kind {
+        RepoInstructionsKind::FileWithSymlink { canonical, symlink } => {
+            println!("  ✓ Canonical instruction file: {}", canonical);
+            println!("  ✓ {} symlinked to {}", symlink, canonical);
+        }
+        RepoInstructionsKind::BothFiles => {
+            println!("  ⚠ Both AGENTS.md and CLAUDE.md exist as separate files (not symlinked)");
+            println!("    Aiki will write the <aiki> block to both files.");
+        }
+        RepoInstructionsKind::FileWithoutSymlink { existing, missing } => {
+            println!("  ✓ Found {}", existing);
+            println!("  ⚠ {} not found (no symlink)", missing);
+            println!("    → Run: aiki doctor --fix (to create symlink)");
+            issues += 1;
+        }
+        RepoInstructionsKind::BothSymlinks => {
+            println!("  ⚠ Both AGENTS.md and CLAUDE.md are symlinks to external files");
+            println!("    Aiki cannot safely write through external symlinks.");
+            println!("    → Replace one symlink with a regular file, then run: aiki init");
+            issues += 1;
+        }
+        RepoInstructionsKind::Missing => {
+            println!("  ✗ Neither AGENTS.md nor CLAUDE.md found");
+            println!("    → Run: aiki doctor --fix (to create files)");
+            issues += 1;
+        }
+    }
+
+    // Check <aiki> block in real files (not for Missing or BothSymlinks)
+    let files_to_check: Vec<&str> = match &kind {
+        RepoInstructionsKind::FileWithSymlink { canonical, .. } => vec![canonical],
+        RepoInstructionsKind::BothFiles => vec![instructions::AGENTS_MD, instructions::CLAUDE_MD],
+        RepoInstructionsKind::FileWithoutSymlink { existing, .. } => vec![existing],
+        _ => vec![],
+    };
+
+    for filename in files_to_check {
+        let file_path = project_root.join(filename);
+        match std::fs::read_to_string(&file_path) {
+            Ok(content) => {
+                if content.contains(&format!("<aiki version=\"{}\">", AIKI_BLOCK_VERSION)) {
+                    println!("  ✓ {} has current <aiki> block", filename);
+                } else if content.contains("<aiki version=") {
+                    println!("  ⚠ {} has outdated <aiki> block", filename);
+                    println!("    → Run: aiki doctor --fix (to update block)");
+                    issues += 1;
+                } else {
+                    println!("  ⚠ {} missing <aiki> block", filename);
+                    println!("    → Run: aiki doctor --fix (to add block)");
+                    issues += 1;
+                }
+            }
+            Err(e) => {
+                println!("  ✗ Failed to read {}: {}", filename, e);
+                issues += 1;
+            }
+        }
+    }
+
+    issues
 }
 
 /// Check template health: manifest presence, schema compatibility, missing/dirty files, legacy dirs.
@@ -2110,5 +2122,114 @@ protocol = "binary"
 
         let issues = check_templates(repo, false);
         assert_eq!(issues, 1); // Legacy directory counts as an issue
+    }
+
+    // --- Instruction file tests ---
+
+    #[test]
+    fn test_check_instructions_file_with_symlink_current_block() {
+        let dir = tempfile::tempdir().unwrap();
+        let block = crate::commands::agents_template::aiki_block_template();
+        fs::write(dir.path().join("AGENTS.md"), &block).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("AGENTS.md", dir.path().join("CLAUDE.md")).unwrap();
+        let issues = check_instruction_files(dir.path(), false);
+        assert_eq!(issues, 0);
+    }
+
+    #[test]
+    fn test_check_instructions_file_with_symlink_outdated_block() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("AGENTS.md"),
+            "<aiki version=\"0.0.0\">\nold content\n</aiki>\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("AGENTS.md", dir.path().join("CLAUDE.md")).unwrap();
+        let issues = check_instruction_files(dir.path(), false);
+        assert_eq!(issues, 1); // outdated block
+    }
+
+    #[test]
+    fn test_check_instructions_file_with_symlink_missing_block() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("AGENTS.md"), "# My instructions\n").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("AGENTS.md", dir.path().join("CLAUDE.md")).unwrap();
+        let issues = check_instruction_files(dir.path(), false);
+        assert_eq!(issues, 1); // missing block
+    }
+
+    #[test]
+    fn test_check_instructions_both_files_no_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let block = crate::commands::agents_template::aiki_block_template();
+        fs::write(dir.path().join("AGENTS.md"), &block).unwrap();
+        fs::write(dir.path().join("CLAUDE.md"), &block).unwrap();
+        let issues = check_instruction_files(dir.path(), false);
+        // BothFiles is not an error — just informational + checks blocks
+        assert_eq!(issues, 0);
+    }
+
+    #[test]
+    fn test_check_instructions_file_without_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let block = crate::commands::agents_template::aiki_block_template();
+        fs::write(dir.path().join("AGENTS.md"), &block).unwrap();
+        // No CLAUDE.md at all
+        let issues = check_instruction_files(dir.path(), false);
+        assert_eq!(issues, 1); // missing symlink
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_check_instructions_both_symlinks() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("ext_agents"), "agents").unwrap();
+        fs::write(dir.path().join("ext_claude"), "claude").unwrap();
+        std::os::unix::fs::symlink("ext_agents", dir.path().join("AGENTS.md")).unwrap();
+        std::os::unix::fs::symlink("ext_claude", dir.path().join("CLAUDE.md")).unwrap();
+        let issues = check_instruction_files(dir.path(), false);
+        assert_eq!(issues, 1); // both symlinks is a problem
+    }
+
+    #[test]
+    fn test_check_instructions_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let issues = check_instruction_files(dir.path(), false);
+        assert_eq!(issues, 1); // neither file exists
+    }
+
+    #[test]
+    fn test_check_instructions_fix_creates_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let issues = check_instruction_files(dir.path(), true);
+        assert_eq!(issues, 0);
+        // Should have created AGENTS.md with block
+        let agents = fs::read_to_string(dir.path().join("AGENTS.md")).unwrap();
+        assert!(agents.contains("<aiki version="));
+        // Should have created CLAUDE.md symlink
+        #[cfg(unix)]
+        assert!(dir
+            .path()
+            .join("CLAUDE.md")
+            .symlink_metadata()
+            .unwrap()
+            .file_type()
+            .is_symlink());
+    }
+
+    #[test]
+    fn test_check_instructions_fix_adds_missing_block() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("AGENTS.md"), "# My instructions\n").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("AGENTS.md", dir.path().join("CLAUDE.md")).unwrap();
+        let issues = check_instruction_files(dir.path(), true);
+        assert_eq!(issues, 0);
+        let content = fs::read_to_string(dir.path().join("AGENTS.md")).unwrap();
+        assert!(content.contains("<aiki version="));
+        assert!(content.contains("# My instructions"));
     }
 }

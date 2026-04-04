@@ -221,35 +221,18 @@ aiki run <task-id> --async
 
 **Scenario 2: User asks you to have a subagent do something new**
 ```bash
-# 1. Create the task
-aiki task add "Fix the auth bug"
+# 1. Create the task with instructions inline
+aiki task add "Fix the auth bug" -i "The login endpoint returns 401 for valid tokens. Root cause: token validation in cli/src/auth.rs:42 compares expiry against UTC but the token uses local time. Fix the timezone handling and add a test that catches the regression."
 
-# 2. Set instructions (reads from stdin — use heredoc for multiline)
-aiki task set <task-id> --instructions <<'EOF'
-The login endpoint returns 401 for valid tokens.
-Root cause: token validation in cli/src/auth.rs:42 compares expiry
-against UTC but the token uses local time. Fix the timezone handling
-and add a test that catches the regression.
-EOF
-
-# 3. Run it with a subagent
+# 2. Run it with a subagent
 aiki run <task-id>
 ```
 
 **Scenario 3: User asks you to run multiple things in parallel**
 ```bash
-# Create tasks and set instructions on each
-aiki task add "Fix null check in auth"
-aiki task set <id1> --instructions <<'EOF'
-auth.rs:42 dereferences token.claims without checking for None.
-Add a guard and return 401.
-EOF
-
-aiki task add "Add retry logic to API client"
-aiki task set <id2> --instructions <<'EOF'
-api_client.rs fetch() fails on transient 503s.
-Add exponential backoff with 3 retries.
-EOF
+# Create tasks with instructions inline
+aiki task add "Fix null check in auth" -i "auth.rs:42 dereferences token.claims without checking for None. Add a guard and return 401."
+aiki task add "Add retry logic to API client" -i "api_client.rs fetch() fails on transient 503s. Add exponential backoff with 3 retries."
 
 # Run them concurrently in background
 aiki run <id1> --async
@@ -270,13 +253,8 @@ aiki run <id2> --async
 aiki task add "Fix the auth bug"
 aiki run <task-id>  # Subagent has no context!
 
-# ✅ CORRECT: Create task, set instructions, then run
-aiki task add "Fix the auth bug"
-aiki task set <task-id> --instructions <<'EOF'
-The login endpoint returns 401 for valid tokens.
-Root cause: timezone mismatch in token validation.
-Fix cli/src/auth.rs:42 and add a regression test.
-EOF
+# ✅ CORRECT: Create task with instructions, then run
+aiki task add "Fix the auth bug" -i "The login endpoint returns 401 for valid tokens. Root cause: timezone mismatch in token validation. Fix cli/src/auth.rs:42 and add a regression test."
 aiki run <task-id>
 ```
 
@@ -304,12 +282,7 @@ instructions in the prompt.
 
 ### Preferred: Using aiki run
 ```bash
-aiki task add "Fix failing tests in auth module"
-aiki task set <task-id> --instructions <<'EOF'
-Tests in cli/tests/auth_tests.rs fail because the mock server
-returns 200 but the handler expects 201. Update the mock to
-match the real API response code.
-EOF
+aiki task add "Fix failing tests in auth module" -i "Tests in cli/tests/auth_tests.rs fail because the mock server returns 200 but the handler expects 201. Update the mock to match the real API response code."
 aiki run <task-id>
 ```
 

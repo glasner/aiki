@@ -56,6 +56,8 @@ impl PluginRef {
     ///
     /// Returns `Some(name)` when plugin.yaml or hooks.yaml provides a distinct name,
     /// `None` when the display name would be identical to `self.to_string()`.
+    // TODO: Reads plugin.yaml from disk on every call. Cache display names in
+    // PluginGraph when it lands (see ops/now/plugins/dependency-graph.md).
     #[must_use]
     pub fn display_name(&self, plugins_base: &Path) -> Option<String> {
         let install_dir = self.install_dir(plugins_base);

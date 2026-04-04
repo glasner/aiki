@@ -12,9 +12,7 @@ use clap::Subcommand;
 
 use super::OutputFormat;
 use crate::agents::AgentType;
-use crate::epic::{
-    close_epic, close_epic_as_invalid, create_epic_with_decompose, undo_completed_subtasks,
-};
+use crate::epic::{close_epic, create_epic_with_decompose, undo_completed_subtasks};
 use crate::error::{AikiError, Result};
 use crate::output_utils;
 use crate::plans::{parse_plan_metadata, PlanGraph};
@@ -44,6 +42,10 @@ pub enum EpicCommands {
         /// Agent for decomposition (default: claude-code)
         #[arg(long)]
         agent: Option<String>,
+
+        /// Set instructions on the epic (inline, from file, or stdin with bare flag)
+        #[arg(long, short = 'i', num_args = 0..=1, default_missing_value = "")]
+        instructions: Option<String>,
 
         /// Output format (e.g., `id` for bare task ID on stdout)
         #[arg(long, short = 'o', value_name = "FORMAT")]
@@ -77,20 +79,20 @@ pub fn run(command: EpicCommands) -> Result<()> {
             restart,
             template,
             agent,
+            instructions,
             output,
-        } => run_add(&cwd, &plan_path, restart, template, agent, output),
+        } => run_add(&cwd, &plan_path, restart, template, agent, instructions, output),
         EpicCommands::Show { arg, output } => run_show(&cwd, &arg, output),
         EpicCommands::List { number } => run_list(&cwd, number),
     }
 }
 
-/// Core add (decompose) implementation — deterministic find-or-create.
+/// Core add (decompose) implementation — deterministic create-or-error.
 ///
 /// Behavior (no interactive prompts):
 /// - `--restart` → always close existing epic and create new
 /// - No epic exists → create new epic
-/// - Valid incomplete epic exists (has subtasks) → return it
-/// - Invalid epic exists (no subtasks, still open) → close as wont_do, create new
+/// - Open epic exists → error (user must use `--restart` to replace)
 /// - Closed epic exists → create new epic
 fn run_add(
     cwd: &Path,
@@ -98,6 +100,7 @@ fn run_add(
     restart: bool,
     template_name: Option<String>,
     agent: Option<String>,
+    instructions_arg: Option<String>,
     output_format: Option<OutputFormat>,
 ) -> Result<()> {
     // Validate plan file exists and is .md
@@ -132,6 +135,9 @@ fn run_add(
     let graph = materialize_graph(&events);
     let plan_graph = PlanGraph::build(&graph);
 
+    // Resolve instructions from inline text, file path, or stdin
+    let resolved_instructions = super::input::resolve_text(instructions_arg.as_deref())?;
+
     // --restart always creates a new epic
     if restart {
         if let Some(epic) = plan_graph.resolve_epic_for_plan(plan_path, &graph)? {
@@ -141,8 +147,8 @@ fn run_add(
             }
         }
         let epic_id =
-            create_epic_with_decompose(cwd, plan_path, template_name.as_deref(), agent_type, false)?;
-        return output_epic_result(cwd, &epic_id, true, output_format);
+            create_epic_with_decompose(cwd, plan_path, template_name.as_deref(), agent_type, false, resolved_instructions.clone())?;
+        return output_epic_result(cwd, &epic_id, output_format);
     }
 
     // Find-or-create: check for existing epic
@@ -150,29 +156,18 @@ fn run_add(
 
     match existing_epic {
         Some(epic) if epic.status != TaskStatus::Closed => {
-            // Epic is open — validate it has subtasks
-            let subtasks = get_subtasks(&graph, &epic.id);
-            if subtasks.is_empty() {
-                // Invalid epic (no subtasks) — decompose agent failed
-                close_epic_as_invalid(cwd, &epic.id)?;
-                let epic_id =
-                    create_epic_with_decompose(cwd, plan_path, template_name.as_deref(), agent_type, false)?;
-                return output_epic_result(cwd, &epic_id, true, output_format);
-            }
-
-            // Valid incomplete epic — return it (deterministic, no prompt)
-            if matches!(output_format, Some(OutputFormat::Id)) {
-                println!("{}", epic.id);
-            } else {
-                output_epic_resumed(&epic.id, &subtasks)?;
-            }
-            Ok(())
+            // Epic is open — error out; user must use --restart to replace it
+            return Err(AikiError::InvalidArgument(format!(
+                "An open epic already exists for this plan: {} ({}). Use --restart to replace it.",
+                &epic.id[..epic.id.len().min(8)],
+                epic.name
+            )));
         }
         _ => {
             // No epic, or epic is closed — create new
             let epic_id =
-                create_epic_with_decompose(cwd, plan_path, template_name.as_deref(), agent_type, false)?;
-            output_epic_result(cwd, &epic_id, true, output_format)
+                create_epic_with_decompose(cwd, plan_path, template_name.as_deref(), agent_type, false, resolved_instructions)?;
+            output_epic_result(cwd, &epic_id, output_format)
         }
     }
 }
@@ -276,11 +271,10 @@ fn run_list(cwd: &Path, number: Option<usize>) -> Result<()> {
     Ok(())
 }
 
-/// Output epic result (created or found) to stderr and stdout.
+/// Output epic result (created) to stderr and stdout.
 fn output_epic_result(
     cwd: &Path,
     epic_id: &str,
-    created: bool,
     output_format: Option<OutputFormat>,
 ) -> Result<()> {
     let events = read_events(cwd)?;
@@ -289,10 +283,8 @@ fn output_epic_result(
 
     if matches!(output_format, Some(OutputFormat::Id)) {
         println!("{}", epic_id);
-    } else if created {
-        output_epic_created(epic_id, &subtasks)?;
     } else {
-        output_epic_resumed(epic_id, &subtasks)?;
+        output_epic_created(epic_id, &subtasks)?;
     }
 
     Ok(())
@@ -314,35 +306,6 @@ fn output_epic_created(epic_id: &str, subtasks: &[&Task]) -> Result<()> {
     Ok(())
 }
 
-/// Output epic resumed message to stderr
-fn output_epic_resumed(epic_id: &str, subtasks: &[&Task]) -> Result<()> {
-    output_utils::emit(|| {
-        let completed = subtasks
-            .iter()
-            .filter(|t| t.status == TaskStatus::Closed)
-            .count();
-        let total = subtasks.len();
-
-        let mut content = format!(
-            "## Epic Resumed\n- **ID:** {}\n- Resuming existing epic ({}/{} subtasks done).\n\n",
-            epic_id, completed, total
-        );
-        for (i, subtask) in subtasks.iter().enumerate() {
-            let status_mark = if subtask.status == TaskStatus::Closed {
-                "done"
-            } else {
-                "pending"
-            };
-            content.push_str(&format!("{}. [{}] {}\n", i + 1, status_mark, &subtask.name));
-        }
-        content.push_str(&format!(
-            "\n- Review:  `aiki epic show {}`\n- Execute: `aiki build {}`\n",
-            epic_id, epic_id
-        ));
-        MdBuilder::new().build(&content)
-    });
-    Ok(())
-}
 
 /// Output epic show (detailed status display)
 fn output_epic_show(epic: &Task, subtasks: &[&Task]) -> Result<()> {
