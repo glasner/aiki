@@ -176,8 +176,8 @@ turn.started:
                     Run `aiki task` to view - OR - `aiki task start` to begin work.
 
 # turn.completed: Absorb workspace changes and handle post-turn actions
-# Note: turn.completed does NOT auto-trigger session.ended. Sessions persist
-# across turns and are only ended explicitly (via session end hooks or TTL cleanup).
+# Also auto-ends task-driven sessions when their driving task (thread tail) is closed.
+# This runs after the agent finishes its reply, avoiding mid-reply session kills.
 turn.completed:
     # Absorb isolated workspace changes back into parent/main workspace.
     # Returns "ok" if absorbed, "0" if no workspaces, or conflicted file list.
@@ -217,6 +217,17 @@ turn.completed:
                 The %%%%%%% section shows a diff (additions/removals from base),
                 NOT a middle version like Git's =======. Apply the diff's intent
                 to side #2's content to produce the merged result.
+
+    # Auto-end session when the driving task (thread tail) has been closed.
+    # Uses session.task.* (looked up from the task graph) instead of event.task.*
+    # since turn.completed doesn't carry task info.
+    # Skipped when an autoreply is pending (e.g. conflict resolution) — the
+    # follow-up turn will re-evaluate this condition after the agent responds.
+    # Fires for both interactive sessions and orchestrator tasks (--print agents).
+    - if: !has_pending_autoreply && session.task.status == "closed" && (session.mode == "interactive" || session.task.type == "orchestrator")
+      then:
+          - log: "Task {{session.task.id}} closed (thread tail), ending session"
+          - session.end: "Task completed"
 
 # ==============================================================================
 # Change Operation Events (unified mutations: write, delete, move)
@@ -381,13 +392,6 @@ task.started:
     # Empty by default - can be customized in user flows
 
 # task.closed: Handle actions when a task is closed
-# Auto-ends task-driven sessions when their driving task closes.
-# Fires for both interactive sessions and orchestrator tasks (--print agents).
 task.closed:
-    # session.thread.tail is empty if no session found for this task.
-    # Only closing the *tail* task (last in the thread chain) triggers session end.
-    # For single-task threads (head == tail), behavior is identical.
-    - if: event.task.id == session.thread.tail && (session.mode == "interactive" || event.task.type == "orchestrator")
-      then:
-          - log: "Task {{event.task.id}} closed (thread tail), ending session"
-          - session.end: "Task completed"
+    # Empty by default - session end moved to turn.completed to avoid
+    # killing the conversation mid-reply.

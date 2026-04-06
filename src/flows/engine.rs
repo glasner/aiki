@@ -528,6 +528,13 @@ impl HookEngine {
         // Add cwd using helper method
         resolver.add_var("cwd", state.cwd().to_string_lossy().to_string());
 
+        // Expose whether an autoreply has been queued earlier in this hook run.
+        // Used to guard session.end from firing when a follow-up turn is pending.
+        resolver.add_var(
+            "has_pending_autoreply".to_string(),
+            state.has_pending_autoreply().to_string(),
+        );
+
         // Set up lazy per-key env var lookup instead of collecting all env vars
         // This ensures runtime set_var/remove_var mutations are immediately visible
         resolver.set_env_lookup(|name| std::env::var(name).ok());
@@ -596,6 +603,78 @@ impl HookEngine {
                 debug_log(|| format!("task.closed: session.mode resolved to '{}'", result));
                 result
             });
+        }
+
+        // Add session variables for session-bearing events (turn.completed, etc.)
+        // These read directly from the session on the event payload.
+        if let Ok(session) = extract_session(&state.event) {
+            // Only add these if not already set (task.closed sets them via reverse lookup above)
+            if !matches!(&state.event, crate::events::AikiEvent::TaskClosed(_)) {
+                let mode = session.mode();
+                resolver.add_var("session.mode".to_string(), mode.to_string());
+
+                let thread = session.thread();
+
+                if let Some(thread) = thread {
+                    let tail = thread.tail.clone();
+                    let head = thread.head.clone();
+                    let serialized = thread.serialize();
+                    resolver.add_var("session.thread.tail".to_string(), tail);
+                    resolver.add_var("session.thread.head".to_string(), head);
+                    resolver.add_var("session.thread".to_string(), serialized);
+                } else {
+                    resolver.add_var("session.thread.tail".to_string(), String::new());
+                    resolver.add_var("session.thread.head".to_string(), String::new());
+                    resolver.add_var("session.thread".to_string(), String::new());
+                }
+
+                // session.task.* — lazy lookup of the thread tail task from the task graph
+                if let Some(thread) = thread {
+                    let tail_id = thread.tail.clone();
+                    let cwd = state.cwd().to_path_buf();
+                    // Cache the task lookup so we only load the graph once
+                    let task_cache: std::rc::Rc<
+                        std::cell::OnceCell<Option<(String, String)>>,
+                    > = std::rc::Rc::new(std::cell::OnceCell::new());
+
+                    let lookup_task = {
+                        let tail_id = tail_id.clone();
+                        let cwd = cwd.clone();
+                        let cache = task_cache.clone();
+                        move || -> Option<(String, String)> {
+                            cache.get_or_init(|| {
+                                let events = crate::tasks::read_events(&cwd).ok()?;
+                                let graph = crate::tasks::materialize_graph(&events);
+                                let task = graph.tasks.get(&tail_id)?;
+                                Some((
+                                    task.status.to_string(),
+                                    task.task_type.clone().unwrap_or_default(),
+                                ))
+                            }).clone()
+                        }
+                    };
+
+                    resolver.add_var("session.task.id".to_string(), tail_id);
+
+                    let lookup_status = lookup_task.clone();
+                    resolver.add_lazy_var("session.task.status", move || {
+                        lookup_status()
+                            .map(|(status, _)| status)
+                            .unwrap_or_default()
+                    });
+
+                    let lookup_type = lookup_task;
+                    resolver.add_lazy_var("session.task.type", move || {
+                        lookup_type()
+                            .map(|(_, task_type)| task_type)
+                            .unwrap_or_default()
+                    });
+                } else {
+                    resolver.add_var("session.task.id".to_string(), String::new());
+                    resolver.add_var("session.task.status".to_string(), String::new());
+                    resolver.add_var("session.task.type".to_string(), String::new());
+                }
+            }
         }
 
         resolver

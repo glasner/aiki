@@ -223,7 +223,7 @@ impl VariableResolver {
             "Variable not found in event context. Available: event.file_paths, event.task.id, etc."
                 .to_string()
         } else if var_name.starts_with("session.") {
-            "Variable not found in session context. Available: session.thread.tail, session.thread.head, session.mode, session.cwd, etc."
+            "Variable not found in session context. Available: session.thread.tail, session.thread.head, session.mode, session.task.id, session.task.status, session.task.type, session.cwd, etc."
                 .to_string()
         } else {
             format!(

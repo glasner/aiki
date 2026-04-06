@@ -184,6 +184,14 @@ impl AikiState {
         })
     }
 
+    /// Returns true if an autoreply (or context) has been queued in this hook run.
+    #[must_use]
+    pub fn has_pending_autoreply(&self) -> bool {
+        self.context_assembler
+            .as_ref()
+            .is_some_and(|a| !a.is_empty())
+    }
+
     /// Build the final context from accumulated chunks without the original prompt/body.
     ///
     /// This is the right default for hook adapters that already receive the

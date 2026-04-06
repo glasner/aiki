@@ -44,8 +44,9 @@ pub struct AikiTurnCompletedPayload {
 /// Returns autoreply via `response.context` and failures via `response.failures`,
 /// with graceful degradation on errors.
 ///
-/// Note: turn.completed does NOT auto-trigger session.ended. Sessions persist
-/// across turns and are only ended explicitly (via session end hooks or TTL cleanup).
+/// Note: turn.completed may trigger session.ended if the session's driving task
+/// (thread tail) has been closed during this turn. This replaces the old
+/// task.closed-based session end, which killed conversations mid-reply.
 pub fn handle_turn_completed(mut payload: AikiTurnCompletedPayload) -> Result<HookResult> {
     use super::prelude::execute_hook;
 
