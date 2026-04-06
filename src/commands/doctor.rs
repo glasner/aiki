@@ -7,7 +7,7 @@ use crate::instructions;
 use crate::prerequisites::{check_command_version, PREREQUISITES};
 use crate::repos::RepoDetector;
 use crate::tasks::templates::builtin::default_plugin_templates;
-use crate::tasks::templates::manifest::{checksum, RepoManifest};
+use crate::tasks::templates::manifest::{checksum, FileEntry, RepoManifest};
 use crate::tasks::templates::sync::sync_plugin_templates;
 use crate::tasks::templates::TASKS_DIR_NAME;
 use anyhow::Context;
@@ -683,6 +683,7 @@ fn check_templates(project_root: &std::path::Path, fix: bool) -> usize {
         let mut missing_files: Vec<String> = Vec::new();
         let mut dirty_files: Vec<String> = Vec::new();
         let mut adopted_files: Vec<String> = Vec::new();
+        let mut stale_manifest_files: Vec<String> = Vec::new();
 
         for (file_name, file_entry) in &plugin_entry.files {
             let disk_path = templates_dir.join(install_root).join(file_name);
@@ -695,14 +696,26 @@ fn check_templates(project_root: &std::path::Path, fix: bool) -> usize {
                 if let Ok(on_disk) = fs::read(&disk_path) {
                     let disk_cksum = checksum(&on_disk);
                     if disk_cksum != file_entry.checksum {
-                        // Distinguish dirty adoption from genuine modification:
-                        // If the manifest checksum matches the source template checksum,
-                        // this file was dirty-adopted (user had it before sync). The
-                        // mismatch is expected — not a real modification.
+                        // Disk doesn't match manifest — but why?
+                        //
+                        // Case 1: Stale manifest — disk matches current source template.
+                        // This happens when templates are git-tracked and updated via
+                        // commits, but the gitignored manifest wasn't re-synced.
+                        // Treat as up-to-date (manifest is just behind).
+                        let matches_source = source_checksums
+                            .get(file_name.as_str())
+                            .map_or(false, |src_cksum| *src_cksum == disk_cksum);
+
+                        // Case 2: Dirty adoption — manifest matches source but disk
+                        // differs. File was pre-existing when sync adopted it.
                         let is_dirty_adoption = source_checksums
                             .get(file_name.as_str())
                             .map_or(false, |src_cksum| *src_cksum == file_entry.checksum);
-                        if is_dirty_adoption {
+
+                        if matches_source {
+                            stale_manifest_files.push(file_name.clone());
+                            up_to_date += 1;
+                        } else if is_dirty_adoption {
                             adopted_files.push(file_name.clone());
                         } else {
                             dirty_files.push(file_name.clone());
@@ -722,6 +735,36 @@ fn check_templates(project_root: &std::path::Path, fix: bool) -> usize {
 
         if up_to_date > 0 {
             println!("    ✓ {} template(s) up to date", up_to_date);
+        }
+
+        // Stale manifest: disk matches source but manifest is outdated.
+        // Auto-repair the manifest since the files are already correct.
+        // Intentionally ungated on `fix`: this only updates manifest metadata
+        // (checksums/timestamps) to match files that are already correct on disk,
+        // so it's always safe and avoids noisy false positives on future runs.
+        if !stale_manifest_files.is_empty() {
+            if let Ok(Some(mut fix_manifest)) = RepoManifest::load(project_root) {
+                if let Some(plugin) = fix_manifest.templates.get_mut(plugin_ref) {
+                    let now = chrono::Utc::now().to_rfc3339();
+                    for file_name in &stale_manifest_files {
+                        if let Some(src_cksum) = source_checksums.get(file_name.as_str()) {
+                            plugin.files.insert(
+                                file_name.clone(),
+                                FileEntry {
+                                    checksum: src_cksum.clone(),
+                                    version: plugin
+                                        .files
+                                        .get(file_name)
+                                        .and_then(|e| e.version.clone()),
+                                    installed_at: now.clone(),
+                                },
+                            );
+                        }
+                    }
+                    plugin.source_version = env!("CARGO_PKG_VERSION").to_string();
+                    let _ = fix_manifest.save(project_root);
+                }
+            }
         }
 
         // (d) Dirty/modified templates
@@ -2089,6 +2132,51 @@ protocol = "binary"
 
         // File should now exist
         assert!(templates_dir.join(first_name).exists());
+    }
+
+    #[test]
+    fn test_check_templates_stale_manifest_auto_repairs() {
+        // Scenario: templates are git-tracked and updated via commits, but the
+        // gitignored manifest still has old checksums. Doctor should recognize
+        // that on-disk content matches the current source and auto-repair.
+        let dir = tempfile::TempDir::new().unwrap();
+        let repo = dir.path();
+        let aiki_dir = repo.join(".aiki");
+        let templates_dir = aiki_dir.join(TASKS_DIR_NAME);
+        std::fs::create_dir_all(&templates_dir).unwrap();
+
+        // Get the actual current source template
+        let source_templates = default_plugin_templates();
+        let (name, content) = source_templates[0];
+
+        // Write the CURRENT source content to disk (simulating git-tracked update)
+        if let Some(parent) = templates_dir.join(name).parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(templates_dir.join(name), content).unwrap();
+
+        // But put an OLD checksum in the manifest (simulating stale manifest)
+        let mut manifest = RepoManifest::new();
+        let plugin = manifest.get_or_create_plugin("aiki/default", "0.0.1", ".");
+        plugin.files.insert(
+            name.to_string(),
+            crate::tasks::templates::manifest::FileEntry {
+                checksum: checksum(b"stale old content that no longer exists"),
+                version: Some("0.0.1".to_string()),
+                installed_at: "2026-01-01T00:00:00Z".to_string(),
+            },
+        );
+        manifest.save(repo).unwrap();
+
+        // Doctor should report 0 issues (stale manifest is auto-repaired)
+        let issues = check_templates(repo, false);
+        assert_eq!(issues, 0);
+
+        // Manifest should now have the correct checksum
+        let updated = RepoManifest::load(repo).unwrap().unwrap();
+        let plugin = updated.get_plugin("aiki/default").unwrap();
+        let entry = plugin.files.get(name).unwrap();
+        assert_eq!(entry.checksum, checksum(content));
     }
 
     #[test]
