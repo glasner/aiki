@@ -460,6 +460,8 @@ fn run_inner(model: Model, cwd: &Path) -> Result<Effect> {
     let event_rx = listener.start();
     let jj_stop = Arc::clone(&stop);
     let _jj_bridge = thread::spawn(move || {
+        // TODO: all_events grows monotonically — consider periodic compaction
+        // or a cap for very long-running TUI sessions (multi-hour build loops).
         let mut all_events: Vec<crate::tasks::types::TaskEvent> = Vec::new();
         loop {
             if jj_stop.load(Ordering::Relaxed) {
@@ -547,6 +549,8 @@ where
     let event_rx = listener.start();
     let jj_stop = Arc::clone(&stop);
     let _jj_bridge = thread::spawn(move || {
+        // TODO: all_events grows monotonically — consider periodic compaction
+        // or a cap for very long-running TUI sessions (multi-hour build loops).
         let mut all_events: Vec<crate::tasks::types::TaskEvent> = Vec::new();
         loop {
             if jj_stop.load(Ordering::Relaxed) {
@@ -669,7 +673,7 @@ fn run_loop(
                         })) if modifiers.contains(KeyModifiers::CONTROL) => Msg::Detach,
                         Ok(TermEvent::Resize(w, h)) => Msg::Resize { width: w, height: h },
                         Ok(TermEvent::Key(_)) => Msg::Tick, // ignore other keys
-                        Err(_) => Msg::Tick,
+                        Err(_) => Msg::Detach,
                     }
                 },
                 recv(tick_rx) -> _ => Msg::Tick,
@@ -789,7 +793,7 @@ fn run_loop_with_worker(
                                 })) if modifiers.contains(KeyModifiers::CONTROL) => Msg::Detach,
                                 Ok(TermEvent::Resize(w, h)) => Msg::Resize { width: w, height: h },
                                 Ok(TermEvent::Key(_)) => Msg::Tick,
-                                Err(_) => Msg::Tick,
+                                Err(_) => Msg::Detach,
                             }
                         },
                         recv(tick_rx) -> _ => Msg::Tick,

@@ -5,8 +5,6 @@
 
 use std::collections::HashMap;
 use std::path::Path;
-use std::thread;
-use std::time::Duration;
 
 use super::downstream_review_steps;
 use super::fix_skip_to_regression_review;
@@ -18,10 +16,10 @@ use crate::agents::AgentType;
 use crate::commands::task::{create_from_template, TemplateTaskParams};
 use crate::epic::{close_epic, close_epic_as_invalid, create_epic_task, restart_epic, undo_completed_subtasks};
 use crate::error::{AikiError, Result};
-use crate::tasks::runner::{finalize_agent_run, prepare_task_run, rollback_if_still_reserved, TaskRunOptions};
-use crate::tasks::{
-    find_task, get_subtasks, materialize_graph, read_events, write_link_event, TaskEvent,
-};
+use crate::tasks::runner::TaskRunOptions;
+#[cfg(test)]
+use crate::tasks::TaskEvent;
+use crate::tasks::{find_task, get_subtasks, materialize_graph, read_events, write_link_event};
 
 /// Options for `run_decompose` that callers can customize.
 pub struct DecomposeOptions {
@@ -96,7 +94,20 @@ pub fn run_decompose(
     // Use spawn+drain pattern when workflow context with event_rx is available
     if let Some(ctx) = ctx {
         if ctx.event_rx.is_some() {
-            spawn_drain_finalize(cwd, &decompose_task_id, target_id, &run_options, ctx)?;
+            let output = ctx.output;
+            let mut handler = super::SubtaskDrainHandler::new(
+                &mut ctx.task_names,
+                target_id.to_string(),
+                output,
+            );
+            super::spawn_drain_finalize(
+                cwd,
+                &decompose_task_id,
+                &run_options,
+                ctx.event_rx.as_ref(),
+                output,
+                &mut handler,
+            )?;
         } else {
             super::run_task_with_show_tui(cwd, &decompose_task_id, run_options, show_tui)?;
         }
@@ -106,83 +117,6 @@ pub fn run_decompose(
 
     // 6. Return decompose task ID (subtask validation is done by the step handler)
     Ok(decompose_task_id)
-}
-
-/// Spawn the decompose agent via `spawn_monitored`, drain task events to show
-/// subtask creation in real-time (`  + {name}`), and finalize the agent run.
-fn spawn_drain_finalize(
-    cwd: &Path,
-    decompose_task_id: &str,
-    epic_id: &str,
-    run_options: &TaskRunOptions,
-    ctx: &mut WorkflowContext,
-) -> Result<()> {
-    let prepared = prepare_task_run(cwd, decompose_task_id, run_options, |_| {})?;
-
-    let mut agent_handle = match prepared.runtime.spawn_monitored(&prepared.spawn_options) {
-        Ok(handle) => handle,
-        Err(e) => {
-            rollback_if_still_reserved(cwd, &prepared.task_id, &e);
-            return Err(e);
-        }
-    };
-
-    // Copy output for use in the drain loop (WorkflowOutput is Copy)
-    let output = ctx.output;
-    let epic_id_owned = epic_id.to_string();
-
-    if let Some(ref rx) = ctx.event_rx {
-        // Track newly created task IDs; only display once confirmed as epic subtasks.
-        let mut pending_names: HashMap<String, String> = HashMap::new();
-
-        let drain = |rx: &crossbeam_channel::Receiver<TaskEvent>,
-                     pending: &mut HashMap<String, String>,
-                     task_names: &mut HashMap<String, String>,
-                     epic_id: &str| {
-            for event in rx.try_iter() {
-                match &event {
-                    TaskEvent::Created { task_id, name, .. } => {
-                        // Buffer the name — don't display yet
-                        pending.insert(task_id.clone(), name.clone());
-                    }
-                    TaskEvent::LinkAdded { from, to, kind, .. }
-                        if kind == "subtask-of" && to == epic_id =>
-                    {
-                        // Confirmed subtask of our epic — display it now
-                        if let Some(name) = pending.remove(from) {
-                            task_names.insert(from.clone(), name.clone());
-                            output.emit(&format!("  + {}", name));
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        };
-
-        // Non-blocking drain while agent is running.
-        while agent_handle
-            .try_wait()
-            .map_err(|e| AikiError::AgentSpawnFailed(format!("try_wait failed: {}", e)))?
-            .is_none()
-        {
-            drain(rx, &mut pending_names, &mut ctx.task_names, &epic_id_owned);
-            thread::sleep(Duration::from_millis(100));
-        }
-        // Final drain for any events that arrived after agent finished
-        drain(rx, &mut pending_names, &mut ctx.task_names, &epic_id_owned);
-    }
-
-    // Process has already exited; read any diagnostic output.
-    let proc_output = agent_handle.read_output();
-    if !proc_output.stderr.is_empty() {
-        ctx.emit(&format!("  agent stderr: {}", proc_output.stderr));
-    }
-
-    // Finalize: derive AgentSessionResult from task state and run
-    // handle_session_result() for Stopped event emission + cascade-close.
-    finalize_agent_run(cwd, decompose_task_id)?;
-
-    Ok(())
 }
 
 /// Decompose step: find/create epic, check blockers, run decompose if needed.
@@ -354,7 +288,7 @@ fn build_decompose_params(
         .map(|a| a.as_str().to_string())
         .or_else(|| Some("claude-code".to_string()));
 
-    let mut data = std::collections::HashMap::new();
+    let mut data = HashMap::new();
     data.insert("plan".to_string(), plan_path.to_string());
     data.insert("target".to_string(), target_id.to_string());
     if let Some(ref instructions) = options.instructions {
@@ -427,7 +361,7 @@ mod tests {
             assignee: None,
             iteration: 0,
             event_rx: None,
-            task_names: std::collections::HashMap::new(),
+            task_names: HashMap::new(),
         };
 
         assert_eq!(empty_decompose_policy(&ctx), EmptyDecomposePolicy::Build);
@@ -446,7 +380,7 @@ mod tests {
             assignee: None,
             iteration: 0,
             event_rx: None,
-            task_names: std::collections::HashMap::new(),
+            task_names: HashMap::new(),
         };
 
         assert_eq!(empty_decompose_policy(&ctx), EmptyDecomposePolicy::Fix);

@@ -5,16 +5,12 @@
 //! `WorkflowChange::NextSteps`.
 
 use std::path::Path;
-use std::thread;
-use std::time::Duration;
 
-use crate::error::{AikiError, Result};
+use crate::error::AikiError;
 use crate::reviews::{
     create_review, has_actionable_issues, CreateReviewParams, ReviewScope, ReviewScopeKind,
 };
-use crate::tasks::runner::{
-    finalize_agent_run, prepare_task_run, rollback_if_still_reserved, TaskRunOptions,
-};
+use crate::tasks::runner::TaskRunOptions;
 use crate::tasks::types::TaskOutcome;
 use crate::tasks::{find_task, materialize_graph_with_ids, read_events_with_ids};
 use crate::tasks::{write_event, TaskEvent};
@@ -120,7 +116,17 @@ fn run_review_for_fix(
 
     ctx.status("running review agent");
     if ctx.event_rx.is_some() {
-        review_spawn_drain_finalize(ctx, &review_result.review_task_id)?;
+        let output = ctx.output;
+        let run_options = TaskRunOptions::new();
+        let mut handler = super::ReviewDrainHandler::new(review_result.review_task_id.clone(), output);
+        super::spawn_drain_finalize(
+            &cwd,
+            &review_result.review_task_id,
+            &run_options,
+            ctx.event_rx.as_ref(),
+            output,
+            &mut handler,
+        )?;
     } else {
         let run_options = TaskRunOptions::new();
         run_task_with_show_tui(&cwd, &review_result.review_task_id, run_options, false)?;
@@ -135,70 +141,6 @@ fn run_review_for_fix(
         .to_string(),
         task_id: Some(review_result.review_task_id),
     })
-}
-
-/// Spawn the review agent via `spawn_monitored`, drain task events to track
-/// issue count in real-time, and finalize the agent run.
-/// Same pattern as the review step.
-fn review_spawn_drain_finalize(ctx: &mut WorkflowContext, review_id: &str) -> Result<()> {
-    let options = TaskRunOptions::new();
-    let prepared = prepare_task_run(&ctx.cwd, review_id, &options, |_| {})?;
-
-    let mut agent_handle = match prepared.runtime.spawn_monitored(&prepared.spawn_options) {
-        Ok(handle) => handle,
-        Err(e) => {
-            rollback_if_still_reserved(&ctx.cwd, &prepared.task_id, &e);
-            return Err(e);
-        }
-    };
-
-    let output = ctx.output;
-    let review_id_owned = review_id.to_string();
-
-    if let Some(ref rx) = ctx.event_rx {
-        let mut issue_count: usize = 0;
-
-        let drain = |rx: &crossbeam_channel::Receiver<TaskEvent>,
-                     review_id: &str,
-                     issue_count: &mut usize| {
-            for event in rx.try_iter() {
-                if let TaskEvent::CommentAdded { task_ids, .. } = &event {
-                    if task_ids.iter().any(|id| id == review_id) {
-                        *issue_count += 1;
-                    }
-                }
-            }
-        };
-
-        while agent_handle
-            .try_wait()
-            .map_err(|e| AikiError::AgentSpawnFailed(format!("try_wait failed: {}", e)))?
-            .is_none()
-        {
-            drain(rx, &review_id_owned, &mut issue_count);
-            thread::sleep(Duration::from_millis(100));
-        }
-        // Final drain
-        drain(rx, &review_id_owned, &mut issue_count);
-
-        if issue_count > 0 {
-            output.emit(&format!(
-                "  Found {} issue{}",
-                issue_count,
-                if issue_count == 1 { "" } else { "s" }
-            ));
-        }
-    }
-
-    // Read any diagnostic output
-    let proc_output = agent_handle.read_output();
-    if !proc_output.stderr.is_empty() {
-        ctx.emit(&format!("  agent stderr: {}", proc_output.stderr));
-    }
-
-    finalize_agent_run(&ctx.cwd, review_id)?;
-
-    Ok(())
 }
 
 // ── Fix-parent helpers ──────────────────────────────────────────────

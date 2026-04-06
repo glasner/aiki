@@ -4,8 +4,6 @@ use std::env;
 use std::path::Path;
 #[cfg(test)]
 use std::process::Command;
-use std::thread;
-use std::time::Duration;
 
 use super::StepResult;
 use super::WorkflowChange;
@@ -14,8 +12,7 @@ use crate::agents::AgentType;
 use crate::error::{AikiError, Result};
 use crate::tasks::md::MdBuilder;
 use crate::tasks::runner::{
-    finalize_agent_run, handle_session_result, prepare_task_run, rollback_if_still_reserved,
-    task_run, task_run_async, task_run_on_session, TaskRunOptions,
+    handle_session_result, task_run, task_run_async, task_run_on_session, TaskRunOptions,
 };
 use crate::tasks::types::TaskOutcome;
 use crate::tasks::{
@@ -144,7 +141,19 @@ pub fn run_loop(
         emit_loop_async(output_ctx, &loop_task_id, &parent_id);
     } else if let Some(ctx) = ctx {
         if ctx.event_rx.is_some() {
-            spawn_drain_finalize(cwd, &loop_task_id, &task_run_options, ctx)?;
+            let output = ctx.output;
+            let mut handler = LoopDrainHandler {
+                task_names: &mut ctx.task_names,
+                output,
+            };
+            super::spawn_drain_finalize(
+                cwd,
+                &loop_task_id,
+                &task_run_options,
+                ctx.event_rx.as_ref(),
+                output,
+                &mut handler,
+            )?;
         } else {
             emit_loop_started(output_ctx, &loop_task_id, &parent_id);
             task_run(cwd, &loop_task_id, task_run_options.quiet())?;
@@ -159,91 +168,57 @@ pub fn run_loop(
     Ok(loop_task_id)
 }
 
-/// Spawn the loop agent via `spawn_monitored`, drain task events to show
-/// subtask progress in real-time, and finalize the agent run.
-fn spawn_drain_finalize(
-    cwd: &Path,
-    loop_task_id: &str,
-    run_options: &TaskRunOptions,
-    ctx: &mut WorkflowContext,
-) -> Result<()> {
-    let prepared = prepare_task_run(cwd, loop_task_id, run_options, |_| {})?;
+/// Drain handler for the loop step: displays task lifecycle events
+/// (started, completed, skipped, failed) in real-time.
+struct LoopDrainHandler<'a> {
+    task_names: &'a mut HashMap<String, String>,
+    output: WorkflowOutput,
+}
 
-    let mut agent_handle = match prepared.runtime.spawn_monitored(&prepared.spawn_options) {
-        Ok(handle) => handle,
-        Err(e) => {
-            rollback_if_still_reserved(cwd, &prepared.task_id, &e);
-            return Err(e);
-        }
-    };
-
-    let output = ctx.output;
-
-    if let Some(ref rx) = ctx.event_rx {
-        let drain = |rx: &crossbeam_channel::Receiver<TaskEvent>,
-                     task_names: &mut HashMap<String, String>| {
-            for event in rx.try_iter() {
-                match &event {
-                    TaskEvent::Created { task_id, name, .. } => {
-                        // Tasks created during loop (not seen during decompose)
-                        task_names.insert(task_id.clone(), name.clone());
+impl super::DrainHandler for LoopDrainHandler<'_> {
+    fn drain(&mut self, rx: &crossbeam_channel::Receiver<TaskEvent>) {
+        for event in rx.try_iter() {
+            match &event {
+                TaskEvent::Created { task_id, name, .. } => {
+                    self.task_names.insert(task_id.clone(), name.clone());
+                }
+                TaskEvent::Started { task_ids, .. } => {
+                    for id in task_ids {
+                        let name =
+                            self.task_names.get(id).map(|s| s.as_str()).unwrap_or(id);
+                        self.output.emit(&format!("  \u{25b8} {}", name));
                     }
-                    TaskEvent::Started { task_ids, .. } => {
-                        for id in task_ids {
-                            let name =
-                                task_names.get(id).map(|s| s.as_str()).unwrap_or(id);
-                            output.emit(&format!("  \u{25b8} {}", name));
-                        }
-                    }
-                    TaskEvent::Closed {
-                        task_ids, outcome, ..
-                    } => {
-                        for id in task_ids {
-                            let name =
-                                task_names.get(id).map(|s| s.as_str()).unwrap_or(id);
-                            match outcome {
-                                TaskOutcome::Done => {
-                                    output.emit(&format!("  \u{2714} {} \u{2014} done", name));
-                                }
-                                TaskOutcome::WontDo => {
-                                    output.emit(&format!("  \u{2298} {} \u{2014} skipped", name));
-                                }
+                }
+                TaskEvent::Closed {
+                    task_ids, outcome, ..
+                } => {
+                    for id in task_ids {
+                        let name =
+                            self.task_names.get(id).map(|s| s.as_str()).unwrap_or(id);
+                        match outcome {
+                            TaskOutcome::Done => {
+                                self.output
+                                    .emit(&format!("  \u{2714} {} \u{2014} done", name));
+                            }
+                            TaskOutcome::WontDo => {
+                                self.output
+                                    .emit(&format!("  \u{2298} {} \u{2014} skipped", name));
                             }
                         }
                     }
-                    TaskEvent::Stopped { task_ids, .. } => {
-                        for id in task_ids {
-                            let name =
-                                task_names.get(id).map(|s| s.as_str()).unwrap_or(id);
-                            output.emit(&format!("  \u{2718} {} \u{2014} failed", name));
-                        }
-                    }
-                    _ => {}
                 }
+                TaskEvent::Stopped { task_ids, .. } => {
+                    for id in task_ids {
+                        let name =
+                            self.task_names.get(id).map(|s| s.as_str()).unwrap_or(id);
+                        self.output
+                            .emit(&format!("  \u{2718} {} \u{2014} failed", name));
+                    }
+                }
+                _ => {}
             }
-        };
-
-        while agent_handle
-            .try_wait()
-            .map_err(|e| AikiError::AgentSpawnFailed(format!("try_wait failed: {}", e)))?
-            .is_none()
-        {
-            drain(rx, &mut ctx.task_names);
-            thread::sleep(Duration::from_millis(100));
         }
-        // Final drain for events that arrived after agent finished
-        drain(rx, &mut ctx.task_names);
     }
-
-    // Read any diagnostic output
-    let proc_output = agent_handle.read_output();
-    if !proc_output.stderr.is_empty() {
-        ctx.emit(&format!("  agent stderr: {}", proc_output.stderr));
-    }
-
-    finalize_agent_run(cwd, loop_task_id)?;
-
-    Ok(())
 }
 
 /// Loop step: run the orchestration loop over epic subtasks.

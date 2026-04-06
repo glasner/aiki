@@ -73,6 +73,15 @@ pub struct WorkflowContext {
     pub iteration: usize,
     /// Receiver for raw task events. Present when a listener is active.
     /// Started by the workflow runner, stopped when the workflow completes.
+    ///
+    /// **Single-consumer constraint:** This is a single crossbeam `Receiver`
+    /// shared sequentially across all workflow steps. Each step's `DrainHandler`
+    /// calls `rx.try_iter()`, which destructively consumes events — once a step
+    /// drains an event, no later step can see it. This is intentional: each step
+    /// only cares about events produced during its own agent run, and the
+    /// drain loop in `spawn_drain_finalize` runs only while that step's agent
+    /// is alive. Events from step A's agent are drained by step A's handler
+    /// before step B starts.
     pub event_rx: Option<Receiver<TaskEvent>>,
     /// Best-effort task-id -> task-name cache built from Created events
     /// so later steps can render names without re-reading JJ state.
@@ -256,8 +265,10 @@ impl Workflow {
     pub fn run(mut self) -> Result<WorkflowContext> {
         let verbose = matches!(self.ctx.output.kind(), OutputKind::Text);
 
-        // Start listener for text-mode foreground runs so steps can observe
-        // task events in real-time via ctx.event_rx.
+        // Start a single listener for the entire workflow. The resulting
+        // Receiver is shared sequentially across steps — each step's
+        // DrainHandler consumes only events produced during its own agent
+        // run (single-consumer-per-step design).
         let stop = Arc::new(AtomicBool::new(false));
         if verbose {
             let listener = TaskEventListener::new(&self.ctx.cwd, Arc::clone(&stop));

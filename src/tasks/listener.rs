@@ -14,6 +14,15 @@ use crossbeam_channel::Receiver;
 use super::storage::read_events;
 use super::types::TaskEvent;
 
+/// How often the listener polls JJ for new events.
+///
+/// Also used by `spawn_drain_finalize` to size the post-exit tail drain
+/// window — if you change this, the tail drain adjusts automatically.
+pub const POLL_INTERVAL: Duration = Duration::from_secs(1);
+
+/// Increment used for interruptible sleeps (stop-flag checks).
+const SLEEP_INCREMENT: Duration = Duration::from_millis(100);
+
 /// Listens for new task events by polling JJ at ~1s intervals.
 /// Tracks a high-water mark (event count) so it only yields events
 /// that appeared since the last poll.
@@ -56,12 +65,14 @@ impl TaskEventListener {
                     }
                 }
 
-                // Sleep ~1s in 100ms increments, checking stop flag between sleeps
-                for _ in 0..10 {
+                // Sleep for POLL_INTERVAL in SLEEP_INCREMENT steps,
+                // checking the stop flag between sleeps.
+                let ticks = POLL_INTERVAL.as_millis() / SLEEP_INCREMENT.as_millis();
+                for _ in 0..ticks {
                     if self.stop.load(Ordering::Relaxed) {
                         return;
                     }
-                    thread::sleep(Duration::from_millis(100));
+                    thread::sleep(SLEEP_INCREMENT);
                 }
             }
         });

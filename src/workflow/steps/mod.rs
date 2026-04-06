@@ -1,9 +1,20 @@
+use std::collections::HashMap;
 use std::path::Path;
+use std::thread;
+use std::time::Duration;
 
 use anyhow::Result;
+use crossbeam_channel::Receiver;
 
 pub(crate) use super::WorkflowContext;
-use crate::tasks::runner::{handle_session_result, task_run, task_run_on_session, TaskRunOptions};
+use super::WorkflowOutput;
+use crate::error::AikiError;
+use crate::tasks::runner::{
+    finalize_agent_run, handle_session_result, prepare_task_run, rollback_if_still_reserved,
+    task_run, task_run_on_session, TaskRunOptions,
+};
+use crate::tasks::listener::POLL_INTERVAL;
+use crate::tasks::TaskEvent;
 
 pub(crate) mod decompose;
 pub(crate) mod fix;
@@ -200,4 +211,183 @@ pub(crate) fn run_task_with_show_tui(
         task_run(cwd, task_id, options.quiet())?;
     }
     Ok(())
+}
+
+// ── Shared spawn-drain-finalize ─────────────────────────────────────
+
+/// Step-specific event processing during the spawn-drain-finalize loop.
+///
+/// Each step gets exclusive access to the shared `event_rx` channel for the
+/// duration of its agent run. Because `rx.try_iter()` destructively consumes
+/// events, implementations only see events produced while their agent is alive.
+/// This is the intended single-consumer-per-step design — see
+/// `WorkflowContext::event_rx` for details.
+pub(crate) trait DrainHandler {
+    /// Process events from the channel. Called repeatedly while the agent is
+    /// running and once after it exits. Consumes all pending events from `rx`
+    /// via `try_iter()` — consumed events are not visible to later steps.
+    fn drain(&mut self, rx: &Receiver<TaskEvent>);
+
+    /// Called once after the final drain, before stderr/finalize. Use for
+    /// summary output (e.g. issue counts).
+    fn finish(&mut self) {}
+}
+
+/// Shared spawn-drain-finalize loop.
+///
+/// Spawns a monitored agent process, drains task events through the provided
+/// handler while the agent runs, reads diagnostic output, and finalizes the
+/// agent run. The `event_rx` channel is shared across all workflow steps
+/// (see `WorkflowContext::event_rx`), but only one step's drain loop runs
+/// at a time, so each handler only consumes events from its own agent.
+pub(crate) fn spawn_drain_finalize(
+    cwd: &Path,
+    task_id: &str,
+    run_options: &TaskRunOptions,
+    event_rx: Option<&Receiver<TaskEvent>>,
+    output: WorkflowOutput,
+    handler: &mut dyn DrainHandler,
+) -> crate::error::Result<()> {
+    let prepared = prepare_task_run(cwd, task_id, run_options, |_| {})?;
+
+    let mut agent_handle = match prepared.runtime.spawn_monitored(&prepared.spawn_options) {
+        Ok(handle) => handle,
+        Err(e) => {
+            rollback_if_still_reserved(cwd, &prepared.task_id, &e);
+            return Err(e);
+        }
+    };
+
+    if let Some(rx) = event_rx {
+        while agent_handle
+            .try_wait()
+            .map_err(|e| AikiError::AgentSpawnFailed(format!("try_wait failed: {}", e)))?
+            .is_none()
+        {
+            handler.drain(rx);
+            thread::sleep(Duration::from_millis(250));
+        }
+        // The listener thread polls JJ at POLL_INTERVAL. After the agent
+        // exits there may be events written just before exit that the listener
+        // hasn't picked up yet. Wait for one full poll cycle plus margin,
+        // draining as new events arrive, so we don't lose tail events.
+        let tail_drain = POLL_INTERVAL + Duration::from_millis(200);
+        let deadline = std::time::Instant::now() + tail_drain;
+        loop {
+            handler.drain(rx);
+            if std::time::Instant::now() >= deadline {
+                break;
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+        handler.finish();
+    } else {
+        // No event channel — still must wait for the agent to exit before
+        // reading output and finalizing.
+        agent_handle
+            .wait()
+            .map_err(|e| AikiError::AgentSpawnFailed(format!("wait failed: {}", e)))?;
+    }
+
+    // Read any diagnostic output
+    let proc_output = agent_handle.read_output();
+    if !proc_output.stderr.is_empty() {
+        output.emit(&format!("  agent stderr: {}", proc_output.stderr));
+    }
+
+    finalize_agent_run(cwd, task_id)?;
+
+    Ok(())
+}
+
+/// Drain handler for steps that track subtask creation under a parent task.
+///
+/// Buffers `Created` events and only displays them once a `LinkAdded`
+/// (`subtask-of` → parent) event confirms the task is a child of the target.
+/// Used by the decompose and fix steps.
+pub(crate) struct SubtaskDrainHandler<'a> {
+    pending_names: HashMap<String, String>,
+    task_names: &'a mut HashMap<String, String>,
+    parent_id: String,
+    output: WorkflowOutput,
+}
+
+impl<'a> SubtaskDrainHandler<'a> {
+    pub fn new(
+        task_names: &'a mut HashMap<String, String>,
+        parent_id: String,
+        output: WorkflowOutput,
+    ) -> Self {
+        Self {
+            pending_names: HashMap::new(),
+            task_names,
+            parent_id,
+            output,
+        }
+    }
+}
+
+impl DrainHandler for SubtaskDrainHandler<'_> {
+    fn drain(&mut self, rx: &Receiver<TaskEvent>) {
+        for event in rx.try_iter() {
+            match &event {
+                TaskEvent::Created { task_id, name, .. } => {
+                    self.pending_names.insert(task_id.clone(), name.clone());
+                }
+                TaskEvent::LinkAdded { from, to, kind, .. }
+                    if kind == "subtask-of" && to == &self.parent_id =>
+                {
+                    if let Some(name) = self.pending_names.remove(from) {
+                        self.task_names.insert(from.clone(), name.clone());
+                        self.output.emit(&format!("  + {}", name));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+/// Drain handler for review steps that count issue comments.
+///
+/// Counts `CommentAdded` events where `data.issue == "true"` and the comment
+/// targets the review task. Used by the review and regression_review steps.
+pub(crate) struct ReviewDrainHandler {
+    review_id: String,
+    issue_count: usize,
+    output: WorkflowOutput,
+}
+
+impl ReviewDrainHandler {
+    pub fn new(review_id: String, output: WorkflowOutput) -> Self {
+        Self {
+            review_id,
+            issue_count: 0,
+            output,
+        }
+    }
+}
+
+impl DrainHandler for ReviewDrainHandler {
+    fn drain(&mut self, rx: &Receiver<TaskEvent>) {
+        for event in rx.try_iter() {
+            if let TaskEvent::CommentAdded { task_ids, data, .. } = &event {
+                if task_ids.iter().any(|id| id == &self.review_id)
+                    && data.get("issue").map(|v| v == "true").unwrap_or(false)
+                {
+                    self.issue_count += 1;
+                }
+            }
+        }
+    }
+
+    fn finish(&mut self) {
+        if self.issue_count > 0 {
+            self.output.emit(&format!(
+                "  Found {} issue{}",
+                self.issue_count,
+                if self.issue_count == 1 { "" } else { "s" }
+            ));
+        }
+    }
 }

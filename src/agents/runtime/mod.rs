@@ -73,6 +73,13 @@ pub struct BackgroundHandle {
         self.child.try_wait()
     }
 
+    /// Block until the process exits
+    ///
+    /// Returns the exit status. This reaps the child process.
+    pub fn wait(&mut self) -> std::io::Result<ExitStatus> {
+        self.child.wait()
+    }
+
     /// Read any captured stdout/stderr output
     ///
     /// Should be called after the process has exited to get diagnostic messages.
