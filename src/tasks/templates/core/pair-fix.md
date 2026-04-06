@@ -47,14 +47,26 @@ Walk through each issue below **one at a time**, starting with the highest sever
    - Do not claim an issue is completed unless the fix is actually done
    - If a fix was delegated and is still running, report it as in progress
    - Do not imply the whole pair-fix task is complete while delegated subtasks are still in flight
+8. **Wait for delegated fixes to complete**:
+   If any fixes were delegated to background agents, wait for them actively:
+   1. Start a background heartbeat that alerts you every 30 seconds:
+      ```bash
+      (sleep 30 && echo "HEARTBEAT: Give status update on in-flight fixes") &
+      ```
+   2. Wait for the next completion:
+      ```bash
+      aiki session wait <id1> <id2> <id3> --any
+      ```
+   3. When one returns, report its result to the user, restart the heartbeat, and repeat with the remaining IDs
+   4. On each heartbeat, give a brief status update (e.g., "Still waiting on 2 fixes: `<id1>`, `<id2>`")
+   5. Repeat until all delegated fixes have completed or failed
 
 When all issues are addressed, summarize:
 - N issues fixed
 - N issues planned
 - N issues skipped (with reasons)
-- N issues delegated / still in progress (if any)
 
-Then close this task with the summary **only when every issue is fixed, planned, skipped, or explicitly left in-progress via delegated work with that status reported accurately**.
+Then close this task with the summary **only when every issue is fixed, planned, or skipped**.
 
 ## Issues
 
