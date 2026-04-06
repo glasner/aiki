@@ -33,8 +33,8 @@ pub fn resolve_ref(input: &str, cwd: Option<&Path>) -> Result<RefKind> {
 
     // 2-3. File path detection (only when cwd is provided)
     if let Some(cwd) = cwd {
-        if has_any_extension(input) {
-            if !has_supported_extension(input) {
+        match classify_extension(input) {
+            ExtKind::Unsupported => {
                 let ext = Path::new(input)
                     .extension()
                     .and_then(|e| e.to_str())
@@ -43,21 +43,26 @@ pub fn resolve_ref(input: &str, cwd: Option<&Path>) -> Result<RefKind> {
                     "Unsupported file extension '.{ext}': only .md and .txt files are accepted"
                 )));
             }
-            let path = if Path::new(input).is_absolute() {
-                PathBuf::from(input)
-            } else {
-                cwd.join(input)
-            };
-            if path.exists() {
-                if path.extension().is_some_and(|ext| ext == "md") {
-                    return Ok(RefKind::Plan(path));
+            kind @ (ExtKind::Plan | ExtKind::Text) => {
+                let expanded = expand_tilde(input);
+                let path = if Path::new(&expanded).is_absolute() {
+                    PathBuf::from(&expanded)
+                } else {
+                    cwd.join(&expanded)
+                };
+                if path.exists() {
+                    return match kind {
+                        ExtKind::Plan => Ok(RefKind::Plan(path)),
+                        ExtKind::Text => Ok(RefKind::File(path)),
+                        ExtKind::None | ExtKind::Unsupported => unreachable!(),
+                    };
                 }
-                return Ok(RefKind::File(path));
+                return Err(AikiError::InvalidArgument(format!(
+                    "File not found: {}",
+                    input
+                )));
             }
-            return Err(AikiError::InvalidArgument(format!(
-                "File not found: {}",
-                input
-            )));
+            ExtKind::None => {} // fall through to unrecognized
         }
     }
 
@@ -77,17 +82,29 @@ fn looks_like_slug_ref(input: &str) -> bool {
     }
 }
 
-/// Check if input has any file extension (contains a dot with non-empty suffix).
-fn has_any_extension(val: &str) -> bool {
-    Path::new(val).extension().is_some()
+/// Classified file extension.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum ExtKind {
+    /// No file extension present.
+    None,
+    /// A `.md` file (case-insensitive) — treated as a plan.
+    Plan,
+    /// A `.txt` file (case-insensitive) — treated as a text file.
+    Text,
+    /// Has an extension, but not one we support.
+    Unsupported,
 }
 
-/// Check if input has a supported text-file extension (`.md` or `.txt`).
-fn has_supported_extension(val: &str) -> bool {
-    Path::new(val)
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .is_some_and(|ext| matches!(ext.to_ascii_lowercase().as_str(), "md" | "txt"))
+/// Classify the file extension of `val` (case-insensitive).
+fn classify_extension(val: &str) -> ExtKind {
+    match Path::new(val).extension().and_then(|e| e.to_str()) {
+        None | Some("") => ExtKind::None,
+        Some(ext) => match ext.to_ascii_lowercase().as_str() {
+            "md" => ExtKind::Plan,
+            "txt" => ExtKind::Text,
+            _ => ExtKind::Unsupported,
+        },
+    }
 }
 
 /// Resolve a CLI text value that may come from inline text, a file path, or stdin.
@@ -95,7 +112,7 @@ fn has_supported_extension(val: &str) -> bool {
 /// - `None` → flag was omitted → `Ok(None)`
 /// - `Some("")` → bare flag (clap `default_missing_value`) → read stdin
 /// - `Some("-")` → explicit stdin sentinel → read stdin
-/// - `Some(val)` where val looks like a readable text file (.md/.txt, or explicit path prefix) → file contents
+/// - `Some(val)` where val has a supported text-file extension (.md/.txt) → file contents
 /// - `Some(val)` otherwise → literal text
 pub fn resolve_text(value: Option<&str>) -> Result<Option<String>> {
     let val = match value {
@@ -112,8 +129,8 @@ pub fn resolve_text(value: Option<&str>) -> Result<Option<String>> {
         return Ok(Some(content.trim_end().to_string()));
     }
 
-    // Check if value looks like a text file path
-    if looks_like_text_file(val) {
+    // Check if value looks like a text file path (.md or .txt)
+    if matches!(classify_extension(val), ExtKind::Plan | ExtKind::Text) {
         let expanded = expand_tilde(val);
         if let Ok(content) = std::fs::read_to_string(&expanded) {
             return Ok(Some(content.trim_end().to_string()));
@@ -122,21 +139,6 @@ pub fn resolve_text(value: Option<&str>) -> Result<Option<String>> {
     }
 
     Ok(Some(val.to_string()))
-}
-
-/// Check if a value looks like a text file path.
-///
-/// Heuristic: has an explicit path prefix or text-file extension, and in both
-/// cases only `.md`/`.txt` files are read. Other extensions are not matched to
-/// avoid accidentally reading source files or large structured data as text.
-fn looks_like_text_file(val: &str) -> bool {
-    has_supported_extension(val)
-        && (val.starts_with('/')
-            || val.starts_with("./")
-            || val.starts_with("../")
-            || val.starts_with('~')
-            || val.to_ascii_lowercase().ends_with(".md")
-            || val.to_ascii_lowercase().ends_with(".txt"))
 }
 
 /// Expand leading `~` to the user's home directory.
@@ -166,7 +168,6 @@ pub fn resolve_ref_list(
     ids: Vec<String>,
     extract_fn: fn(&str) -> String,
 ) -> Result<Vec<TaskRef>> {
-
     if !ids.is_empty() {
         return Ok(ids.into_iter().map(|s| TaskRef(s)).collect());
     }
@@ -241,25 +242,28 @@ mod tests {
     }
 
     #[test]
-    fn test_looks_like_text_file() {
-        assert!(!looks_like_text_file("/absolute/path"));
-        assert!(!looks_like_text_file("./relative"));
-        assert!(!looks_like_text_file("../parent"));
-        assert!(!looks_like_text_file("~/home"));
-        assert!(looks_like_text_file("/absolute/path.md"));
-        assert!(looks_like_text_file("./relative.txt"));
-        assert!(looks_like_text_file("../parent.md"));
-        assert!(looks_like_text_file("~/home.txt"));
-        assert!(looks_like_text_file("file.md"));
-        assert!(looks_like_text_file("file.txt"));
-        assert!(!looks_like_text_file("auth.rs"));
-        assert!(!looks_like_text_file("config.toml"));
-        assert!(!looks_like_text_file("hello world"));
-        assert!(!looks_like_text_file("just text"));
-        // Case-insensitive extension matching
-        assert!(looks_like_text_file("README.MD"));
-        assert!(looks_like_text_file("notes.TXT"));
-        assert!(looks_like_text_file("/path/to/FILE.Md"));
+    fn test_classify_extension() {
+        // No extension
+        assert_eq!(classify_extension("/absolute/path"), ExtKind::None);
+        assert_eq!(classify_extension("./relative"), ExtKind::None);
+        assert_eq!(classify_extension("../parent"), ExtKind::None);
+        assert_eq!(classify_extension("~/home"), ExtKind::None);
+        assert_eq!(classify_extension("hello world"), ExtKind::None);
+        assert_eq!(classify_extension("just text"), ExtKind::None);
+        // Plan (.md)
+        assert_eq!(classify_extension("/absolute/path.md"), ExtKind::Plan);
+        assert_eq!(classify_extension("../parent.md"), ExtKind::Plan);
+        assert_eq!(classify_extension("file.md"), ExtKind::Plan);
+        assert_eq!(classify_extension("README.MD"), ExtKind::Plan);
+        assert_eq!(classify_extension("/path/to/FILE.Md"), ExtKind::Plan);
+        // Text (.txt)
+        assert_eq!(classify_extension("./relative.txt"), ExtKind::Text);
+        assert_eq!(classify_extension("~/home.txt"), ExtKind::Text);
+        assert_eq!(classify_extension("file.txt"), ExtKind::Text);
+        assert_eq!(classify_extension("notes.TXT"), ExtKind::Text);
+        // Unsupported
+        assert_eq!(classify_extension("auth.rs"), ExtKind::Unsupported);
+        assert_eq!(classify_extension("config.toml"), ExtKind::Unsupported);
     }
 
     // --- resolve_ref_list tests ---
@@ -270,7 +274,6 @@ mod tests {
 
     #[test]
     fn test_resolve_ref_list_non_empty_vec() {
-        use crate::tasks::TaskRef;
         let ids = vec!["abc".to_string(), "def".to_string()];
         let result = resolve_ref_list(ids, identity).unwrap();
         assert_eq!(result, vec![TaskRef("abc".to_string()), TaskRef("def".to_string())]);
@@ -278,7 +281,6 @@ mod tests {
 
     #[test]
     fn test_resolve_ref_list_single_id() {
-        use crate::tasks::TaskRef;
         let ids = vec!["mvslrsp".to_string()];
         let result = resolve_ref_list(ids, identity).unwrap();
         assert_eq!(result, vec![TaskRef("mvslrsp".to_string())]);
@@ -317,6 +319,15 @@ mod tests {
     }
 
     #[test]
+    fn test_resolve_ref_uppercase_md_is_plan() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("README.MD");
+        std::fs::write(&file_path, "content").unwrap();
+        let result = resolve_ref("README.MD", Some(dir.path())).unwrap();
+        assert_eq!(result, RefKind::Plan(dir.path().join("README.MD")));
+    }
+
+    #[test]
     fn test_resolve_ref_non_md_file_exists() {
         // Non-text extensions (.py, .rs, etc.) are not recognized — only .md/.txt are
         let dir = tempfile::tempdir().unwrap();
@@ -351,6 +362,13 @@ mod tests {
         // Without cwd, a non-task-id with extension is an error, not a file check
         let result = resolve_ref("plan.md", None);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_trailing_dot_not_treated_as_extension() {
+        // "file." has a trailing dot but no actual extension — should not be
+        // classified as a file path.
+        assert_eq!(classify_extension("file."), ExtKind::None);
     }
 
     #[test]
