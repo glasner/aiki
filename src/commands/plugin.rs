@@ -62,7 +62,7 @@ fn run_install(reference: Option<String>) -> Result<()> {
             print_install_report(&report, &plugin);
 
             if !report.failed.is_empty() {
-                std::process::exit(1);
+                Err(anyhow::anyhow!("Some plugins failed to install"))?;
             }
         }
         None => {
@@ -86,7 +86,7 @@ fn run_install(reference: Option<String>) -> Result<()> {
             }
 
             if any_failed {
-                std::process::exit(1);
+                Err(anyhow::anyhow!("Some plugins failed to install"))?;
             }
         }
     }
@@ -119,7 +119,7 @@ fn run_update(reference: Option<String>) -> Result<()> {
             }
 
             if any_failed {
-                std::process::exit(1);
+                Err(anyhow::anyhow!("Some plugins failed to update"))?;
             }
         }
     }
