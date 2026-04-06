@@ -166,6 +166,8 @@ fn run_show(cwd: &Path, plan_path: &str, output_format: Option<OutputFormat>) ->
                 scope: None,
                 assignee: None,
                 iteration: 0,
+                event_rx: None,
+                task_names: std::collections::HashMap::new(),
             };
             output_build_status(&ctx, &None);
         }
@@ -483,6 +485,8 @@ mod tests {
             scope: None,
             assignee: None,
             iteration: 0,
+            event_rx: None,
+            task_names: std::collections::HashMap::new(),
         };
         output_build_status(&ctx, &None);
         output_build_status(&ctx, &Some(crate::commands::OutputFormat::Id));
@@ -504,6 +508,8 @@ mod tests {
             scope: None,
             assignee: None,
             iteration: 0,
+            event_rx: None,
+            task_names: std::collections::HashMap::new(),
         };
         output_build_status(&ctx, &None);
     }

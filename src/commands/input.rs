@@ -79,7 +79,7 @@ fn looks_like_slug_ref(input: &str) -> bool {
 
 /// Check if input has any file extension (contains a dot with non-empty suffix).
 fn has_any_extension(val: &str) -> bool {
-    Path::new(val).extension().is_some_and(|ext| !ext.is_empty())
+    Path::new(val).extension().is_some()
 }
 
 /// Check if input has a supported text-file extension (`.md` or `.txt`).
@@ -126,19 +126,17 @@ pub fn resolve_text(value: Option<&str>) -> Result<Option<String>> {
 
 /// Check if a value looks like a text file path.
 ///
-/// Heuristic: starts with `/`, `./`, `../`, `~` (explicit path prefix), or
-/// has a `.md` or `.txt` extension. Other extensions are NOT matched to avoid
-/// accidentally reading source files passed as literal text.
+/// Heuristic: has an explicit path prefix or text-file extension, and in both
+/// cases only `.md`/`.txt` files are read. Other extensions are not matched to
+/// avoid accidentally reading source files or large structured data as text.
 fn looks_like_text_file(val: &str) -> bool {
-    if val.starts_with('/')
-        || val.starts_with("./")
-        || val.starts_with("../")
-        || val.starts_with('~')
-    {
-        return true;
-    }
-
-    val.ends_with(".md") || val.ends_with(".txt")
+    has_supported_extension(val)
+        && (val.starts_with('/')
+            || val.starts_with("./")
+            || val.starts_with("../")
+            || val.starts_with('~')
+            || val.to_ascii_lowercase().ends_with(".md")
+            || val.to_ascii_lowercase().ends_with(".txt"))
 }
 
 /// Expand leading `~` to the user's home directory.
@@ -167,8 +165,7 @@ fn expand_tilde(path: &str) -> String {
 pub fn resolve_ref_list(
     ids: Vec<String>,
     extract_fn: fn(&str) -> String,
-) -> Result<Vec<crate::tasks::TaskRef>> {
-    use crate::tasks::TaskRef;
+) -> Result<Vec<TaskRef>> {
 
     if !ids.is_empty() {
         return Ok(ids.into_iter().map(|s| TaskRef(s)).collect());
@@ -176,6 +173,11 @@ pub fn resolve_ref_list(
 
     // Read from stdin, processing each line individually
     use std::io::{self, BufRead};
+    if io::stdin().is_terminal() {
+        return Err(AikiError::InvalidArgument(
+            "No task ID provided. Pass as argument or pipe from another command.".to_string(),
+        ));
+    }
     let stdin = io::stdin();
     let mut refs: Vec<TaskRef> = Vec::new();
     for line in stdin.lock().lines() {
@@ -240,16 +242,24 @@ mod tests {
 
     #[test]
     fn test_looks_like_text_file() {
-        assert!(looks_like_text_file("/absolute/path"));
-        assert!(looks_like_text_file("./relative"));
-        assert!(looks_like_text_file("../parent"));
-        assert!(looks_like_text_file("~/home"));
+        assert!(!looks_like_text_file("/absolute/path"));
+        assert!(!looks_like_text_file("./relative"));
+        assert!(!looks_like_text_file("../parent"));
+        assert!(!looks_like_text_file("~/home"));
+        assert!(looks_like_text_file("/absolute/path.md"));
+        assert!(looks_like_text_file("./relative.txt"));
+        assert!(looks_like_text_file("../parent.md"));
+        assert!(looks_like_text_file("~/home.txt"));
         assert!(looks_like_text_file("file.md"));
         assert!(looks_like_text_file("file.txt"));
         assert!(!looks_like_text_file("auth.rs"));
         assert!(!looks_like_text_file("config.toml"));
         assert!(!looks_like_text_file("hello world"));
         assert!(!looks_like_text_file("just text"));
+        // Case-insensitive extension matching
+        assert!(looks_like_text_file("README.MD"));
+        assert!(looks_like_text_file("notes.TXT"));
+        assert!(looks_like_text_file("/path/to/FILE.Md"));
     }
 
     // --- resolve_ref_list tests ---

@@ -53,7 +53,7 @@ pub fn run(args: DecomposeArgs) -> Result<()> {
         instructions: None,
     };
 
-    let decompose_task_id = run_decompose(&cwd, &args.plan_path, &args.target, options, false)?;
+    let decompose_task_id = run_decompose(&cwd, &args.plan_path, &args.target, options, false, None)?;
 
     match args.output {
         Some(OutputFormat::Id) => println!("{}", decompose_task_id),

@@ -1,9 +1,13 @@
 use std::collections::HashMap;
 use std::path::Path;
+use std::thread;
+use std::time::Duration;
 
 use crate::agents::AgentType;
 use crate::error::{AikiError, Result};
-use crate::tasks::runner::TaskRunOptions;
+use crate::tasks::runner::{
+    finalize_agent_run, prepare_task_run, rollback_if_still_reserved, TaskRunOptions,
+};
 use crate::tasks::{find_task, materialize_graph_with_ids, read_events_with_ids};
 use crate::tasks::{
     generate_task_id, materialize_graph, read_events, write_event, write_link_event,
@@ -191,8 +195,12 @@ pub(crate) fn run(ctx: &mut WorkflowContext) -> anyhow::Result<StepResult> {
         Some(template_name),
     )?;
     ctx.status("running fix agent");
-    let run_options = TaskRunOptions::new();
-    run_task_with_show_tui(&cwd, &plan_fix_id, run_options, false)?;
+    if ctx.event_rx.is_some() {
+        fix_spawn_drain_finalize(&cwd, &plan_fix_id, &fix_parent_id, ctx)?;
+    } else {
+        let run_options = TaskRunOptions::new();
+        run_task_with_show_tui(&cwd, &plan_fix_id, run_options, false)?;
+    }
 
     ctx.task_id = Some(fix_parent_id.clone());
     ctx.plan_path = Some(format!("/tmp/aiki/plans/{}.md", plan_fix_id));
@@ -202,6 +210,75 @@ pub(crate) fn run(ctx: &mut WorkflowContext) -> anyhow::Result<StepResult> {
         message: "fix plan created".to_string(),
         task_id: Some(fix_parent_id),
     })
+}
+
+/// Spawn the fix agent via `spawn_monitored`, drain task events to show
+/// fix subtask creation in real-time, and finalize the agent run.
+fn fix_spawn_drain_finalize(
+    cwd: &Path,
+    plan_fix_id: &str,
+    fix_parent_id: &str,
+    ctx: &mut WorkflowContext,
+) -> Result<()> {
+    let run_options = TaskRunOptions::new();
+    let prepared = prepare_task_run(cwd, plan_fix_id, &run_options, |_| {})?;
+
+    let mut agent_handle = match prepared.runtime.spawn_monitored(&prepared.spawn_options) {
+        Ok(handle) => handle,
+        Err(e) => {
+            rollback_if_still_reserved(cwd, &prepared.task_id, &e);
+            return Err(e);
+        }
+    };
+
+    let output = ctx.output;
+    let fix_parent_id_owned = fix_parent_id.to_string();
+
+    if let Some(ref rx) = ctx.event_rx {
+        let mut pending_names: HashMap<String, String> = HashMap::new();
+
+        let drain = |rx: &crossbeam_channel::Receiver<TaskEvent>,
+                     pending: &mut HashMap<String, String>,
+                     fix_parent_id: &str| {
+            for event in rx.try_iter() {
+                match &event {
+                    TaskEvent::Created { task_id, name, .. } => {
+                        pending.insert(task_id.clone(), name.clone());
+                    }
+                    TaskEvent::LinkAdded { from, to, kind, .. }
+                        if kind == "subtask-of" && to == fix_parent_id =>
+                    {
+                        // Confirmed fix subtask — display it
+                        if let Some(name) = pending.remove(from) {
+                            output.emit(&format!("  + {}", name));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        };
+
+        while agent_handle
+            .try_wait()
+            .map_err(|e| AikiError::AgentSpawnFailed(format!("try_wait failed: {}", e)))?
+            .is_none()
+        {
+            drain(rx, &mut pending_names, &fix_parent_id_owned);
+            thread::sleep(Duration::from_millis(100));
+        }
+        // Final drain
+        drain(rx, &mut pending_names, &fix_parent_id_owned);
+    }
+
+    // Read any diagnostic output
+    let proc_output = agent_handle.read_output();
+    if !proc_output.stderr.is_empty() {
+        ctx.emit(&format!("  agent stderr: {}", proc_output.stderr));
+    }
+
+    finalize_agent_run(cwd, plan_fix_id)?;
+
+    Ok(())
 }
 
 #[cfg(test)]

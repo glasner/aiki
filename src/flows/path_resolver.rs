@@ -34,8 +34,6 @@ use crate::error::{AikiError, Result};
 pub struct PathResolver {
     /// Project root directory (discovered once, cached)
     project_root: PathBuf,
-    /// Home directory (cached for performance)
-    home_dir: PathBuf,
 }
 
 impl PathResolver {
@@ -49,13 +47,9 @@ impl PathResolver {
     /// Returns `AikiError::NotInAikiProject` if no `.aiki/` directory is found.
     pub fn with_start_dir(start_dir: &Path) -> Result<Self> {
         let project_root = Self::find_project_root(start_dir)?;
-        let home_dir = dirs::home_dir().ok_or_else(|| {
-            AikiError::Other(anyhow::anyhow!("Could not determine home directory"))
-        })?;
 
         Ok(Self {
             project_root,
-            home_dir,
         })
     }
 
@@ -89,11 +83,6 @@ impl PathResolver {
         &self.project_root
     }
 
-    /// Get the home directory.
-    #[must_use]
-    pub fn home_dir(&self) -> &Path {
-        &self.home_dir
-    }
 }
 
 #[cfg(test)]

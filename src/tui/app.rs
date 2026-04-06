@@ -1,16 +1,17 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc};
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
+use crossbeam_channel::select;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use ratatui::backend::CrosstermBackend;
 use ratatui::{Terminal, TerminalOptions, Viewport};
 
 use crate::tasks::types::TaskStatus;
-use crate::tasks::{materialize_graph, read_events, TaskGraph};
+use crate::tasks::{materialize_graph, TaskGraph};
 use crate::tui::render::{apply_dimming, lines_height, render_lines};
 use crate::tui::theme;
 
@@ -90,11 +91,11 @@ pub enum WorkerStatusMsg {
 /// Thin wrapper around the channel sender. Eliminates
 /// `tx.send(WorkerStatusMsg::...)` boilerplate from worker closures.
 pub struct WorkerStatus {
-    tx: mpsc::Sender<WorkerStatusMsg>,
+    tx: crossbeam_channel::Sender<WorkerStatusMsg>,
 }
 
 impl WorkerStatus {
-    pub fn new(tx: mpsc::Sender<WorkerStatusMsg>) -> Self {
+    pub fn new(tx: crossbeam_channel::Sender<WorkerStatusMsg>) -> Self {
         Self { tx }
     }
 
@@ -388,6 +389,41 @@ pub enum SubtaskStatus {
 ///
 /// Creates an inline viewport terminal on stdout, renders via the
 /// view → render → poll → update cycle at ~100ms tick rate.
+/// Terminal events read by the crossterm reader thread.
+enum TermEvent {
+    Key(KeyEvent),
+    Resize(u16, u16),
+}
+
+/// Spawn a thread that reads crossterm events and sends them on a channel.
+/// Returns the receiver. The thread exits when the stop flag is set or the
+/// receiver is dropped.
+fn spawn_crossterm_reader(
+    stop: Arc<AtomicBool>,
+) -> crossbeam_channel::Receiver<TermEvent> {
+    let (tx, rx) = crossbeam_channel::bounded(16);
+    thread::spawn(move || {
+        while !stop.load(Ordering::Relaxed) {
+            // Poll with a short timeout so we can check the stop flag periodically
+            if event::poll(Duration::from_millis(50)).unwrap_or(false) {
+                let ev = match event::read() {
+                    Ok(ev) => ev,
+                    Err(_) => break,
+                };
+                let term_ev = match ev {
+                    Event::Key(key) => TermEvent::Key(key),
+                    Event::Resize(w, h) => TermEvent::Resize(w, h),
+                    _ => continue,
+                };
+                if tx.send(term_ev).is_err() {
+                    break; // receiver dropped
+                }
+            }
+        }
+    });
+    rx
+}
+
 pub fn run(model: Model, cwd: &Path) -> Result<Effect> {
     run_inner(model, cwd)
 }
@@ -415,36 +451,48 @@ fn run_inner(model: Model, cwd: &Path) -> Result<Effect> {
 
     crossterm::terminal::enable_raw_mode()?;
 
-    // Spawn JJ reader thread — sends updated TaskGraphs via channel.
-    // Reads every ~1s (matches second-granularity timers).
-    // Checks the stop flag each iteration for graceful shutdown.
-    let (tx, rx) = mpsc::channel::<TaskGraph>();
-    let cwd_owned = cwd.to_owned();
+    // Spawn TaskEventListener + bridge thread — sends updated TaskGraphs
+    // via channel. The listener polls JJ for raw TaskEvents; the bridge
+    // accumulates them and rematerializes the graph for the TUI.
+    let (tx, rx) = crossbeam_channel::unbounded::<TaskGraph>();
+    let listener =
+        crate::tasks::listener::TaskEventListener::new(cwd, Arc::clone(&stop));
+    let event_rx = listener.start();
     let jj_stop = Arc::clone(&stop);
-    let _jj_thread = thread::spawn(move || {
+    let _jj_bridge = thread::spawn(move || {
+        let mut all_events: Vec<crate::tasks::types::TaskEvent> = Vec::new();
         loop {
             if jj_stop.load(Ordering::Relaxed) {
                 break;
             }
-            if let Ok(events) = read_events(&cwd_owned) {
-                let graph = materialize_graph(&events);
-                if tx.send(graph).is_err() {
-                    break; // main loop exited, receiver dropped
+            // Block until at least one new event arrives (or timeout to check stop)
+            match event_rx.recv_timeout(Duration::from_millis(200)) {
+                Ok(event) => {
+                    all_events.push(event);
+                    // Drain any additional events that arrived in the same batch
+                    while let Ok(ev) = event_rx.try_recv() {
+                        all_events.push(ev);
+                    }
+                    let graph = materialize_graph(&all_events);
+                    if tx.send(graph).is_err() {
+                        break; // main loop exited, receiver dropped
+                    }
                 }
-            }
-            // Sleep in 100ms increments so we notice the stop flag promptly
-            for _ in 0..10 {
-                if jj_stop.load(Ordering::Relaxed) {
-                    return;
-                }
-                thread::sleep(Duration::from_millis(100));
+                Err(crossbeam_channel::RecvTimeoutError::Timeout) => continue,
+                Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
             }
         }
     });
 
+    // Spawn crossterm reader thread and tick channel
+    let crossterm_rx = spawn_crossterm_reader(Arc::clone(&stop));
+    let tick_rx = crossbeam_channel::tick(Duration::from_millis(100));
+
     let result = run_loop(
         model,
         &rx,
+        &crossterm_rx,
+        &tick_rx,
         &stop,
         &theme,
         &mut terminal,
@@ -492,38 +540,51 @@ where
 
     crossterm::terminal::enable_raw_mode()?;
 
-    // Spawn JJ reader thread
-    let (jj_tx, jj_rx) = mpsc::channel::<TaskGraph>();
-    let cwd_owned = cwd.to_owned();
+    // Spawn TaskEventListener + bridge thread — same pattern as run_inner()
+    let (jj_tx, jj_rx) = crossbeam_channel::unbounded::<TaskGraph>();
+    let listener =
+        crate::tasks::listener::TaskEventListener::new(cwd, Arc::clone(&stop));
+    let event_rx = listener.start();
     let jj_stop = Arc::clone(&stop);
-    let _jj_thread = thread::spawn(move || loop {
-        if jj_stop.load(Ordering::Relaxed) {
-            break;
-        }
-        if let Ok(events) = read_events(&cwd_owned) {
-            let graph = materialize_graph(&events);
-            if jj_tx.send(graph).is_err() {
+    let _jj_bridge = thread::spawn(move || {
+        let mut all_events: Vec<crate::tasks::types::TaskEvent> = Vec::new();
+        loop {
+            if jj_stop.load(Ordering::Relaxed) {
                 break;
             }
-        }
-        for _ in 0..10 {
-            if jj_stop.load(Ordering::Relaxed) {
-                return;
+            match event_rx.recv_timeout(Duration::from_millis(200)) {
+                Ok(event) => {
+                    all_events.push(event);
+                    while let Ok(ev) = event_rx.try_recv() {
+                        all_events.push(ev);
+                    }
+                    let graph = materialize_graph(&all_events);
+                    if jj_tx.send(graph).is_err() {
+                        break;
+                    }
+                }
+                Err(crossbeam_channel::RecvTimeoutError::Timeout) => continue,
+                Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
             }
-            thread::sleep(Duration::from_millis(100));
         }
     });
 
     // Spawn worker thread
-    let (worker_tx, worker_rx) = mpsc::channel::<WorkerStatusMsg>();
+    let (worker_tx, worker_rx) = crossbeam_channel::unbounded::<WorkerStatusMsg>();
     let status = WorkerStatus::new(worker_tx);
     let worker_cwd = cwd.to_owned();
     let worker_handle = thread::spawn(move || worker(status, worker_cwd));
+
+    // Spawn crossterm reader thread and tick channel
+    let crossterm_rx = spawn_crossterm_reader(Arc::clone(&stop));
+    let tick_rx = crossbeam_channel::tick(Duration::from_millis(100));
 
     let result = run_loop_with_worker(
         model,
         &jj_rx,
         &worker_rx,
+        &crossterm_rx,
+        &tick_rx,
         &stop,
         &theme,
         &mut terminal,
@@ -547,7 +608,9 @@ where
 /// Inner loop — separated so cleanup always runs via the outer `run()`.
 fn run_loop(
     mut model: Model,
-    rx: &mpsc::Receiver<TaskGraph>,
+    rx: &crossbeam_channel::Receiver<TaskGraph>,
+    crossterm_rx: &crossbeam_channel::Receiver<TermEvent>,
+    tick_rx: &crossbeam_channel::Receiver<Instant>,
     stop: &AtomicBool,
     theme: &theme::Theme,
     terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
@@ -579,8 +642,39 @@ fn run_loop(
             render_lines(&lines, frame.buffer_mut(), area, theme, tick);
         })?;
 
-        // 4. Poll for next event (also checks stop flag for signal-driven exit)
-        let msg = poll_next_msg(rx, stop)?;
+        // 4. Wait for next event via crossbeam::select!
+        let msg = if stop.load(Ordering::Relaxed) {
+            Msg::Detach
+        } else {
+            select! {
+                recv(rx) -> graph => {
+                    match graph {
+                        Ok(g) => {
+                            // Batch drain: collect all pending graph updates, use latest
+                            let mut latest = g;
+                            while let Ok(more) = rx.try_recv() {
+                                latest = more;
+                            }
+                            Msg::GraphUpdated(latest)
+                        }
+                        Err(_) => Msg::Tick, // channel disconnected, treat as tick
+                    }
+                },
+                recv(crossterm_rx) -> ev => {
+                    match ev {
+                        Ok(TermEvent::Key(KeyEvent {
+                            code: KeyCode::Char('c'),
+                            modifiers,
+                            ..
+                        })) if modifiers.contains(KeyModifiers::CONTROL) => Msg::Detach,
+                        Ok(TermEvent::Resize(w, h)) => Msg::Resize { width: w, height: h },
+                        Ok(TermEvent::Key(_)) => Msg::Tick, // ignore other keys
+                        Err(_) => Msg::Tick,
+                    }
+                },
+                recv(tick_rx) -> _ => Msg::Tick,
+            }
+        };
 
         // 5. Update
         let (new_model, effect) = update(model, msg);
@@ -615,51 +709,13 @@ fn run_loop(
     }
 }
 
-/// Poll at ~100ms tick rate. Non-blocking:
-/// 1. Check stop flag (set by signal handlers on SIGTERM/SIGHUP)
-/// 2. Try rx.try_recv() for a new graph from the JJ reader thread
-/// 3. Poll crossterm events (Ctrl+C, resize) with 100ms timeout
-/// 4. If neither, return Tick (view re-renders with updated Utc::now() for elapsed times)
-fn poll_next_msg(rx: &mpsc::Receiver<TaskGraph>, stop: &AtomicBool) -> Result<Msg> {
-    // Signal-driven stop — SIGTERM or SIGHUP received
-    if stop.load(Ordering::Relaxed) {
-        return Ok(Msg::Detach);
-    }
-
-    // Check for new graph (non-blocking)
-    if let Ok(graph) = rx.try_recv() {
-        return Ok(Msg::GraphUpdated(graph));
-    }
-
-    // Poll crossterm for 100ms
-    if event::poll(Duration::from_millis(100))? {
-        match event::read()? {
-            Event::Key(KeyEvent {
-                code: KeyCode::Char('c'),
-                modifiers,
-                ..
-            }) if modifiers.contains(KeyModifiers::CONTROL) => {
-                return Ok(Msg::Detach);
-            }
-            Event::Resize(w, h) => {
-                return Ok(Msg::Resize {
-                    width: w,
-                    height: h,
-                });
-            }
-            _ => {}
-        }
-    }
-
-    // Nothing happened — return Tick
-    Ok(Msg::Tick)
-}
-
 /// Inner loop for worker mode — checks `model.finished` for exit.
 fn run_loop_with_worker(
     mut model: Model,
-    jj_rx: &mpsc::Receiver<TaskGraph>,
-    worker_rx: &mpsc::Receiver<WorkerStatusMsg>,
+    jj_rx: &crossbeam_channel::Receiver<TaskGraph>,
+    worker_rx: &crossbeam_channel::Receiver<WorkerStatusMsg>,
+    crossterm_rx: &crossbeam_channel::Receiver<TermEvent>,
+    tick_rx: &crossbeam_channel::Receiver<Instant>,
     stop: &AtomicBool,
     theme: &theme::Theme,
     terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
@@ -691,8 +747,56 @@ fn run_loop_with_worker(
             render_lines(&lines, frame.buffer_mut(), area, theme, tick);
         })?;
 
-        // 4. Poll for next event
-        let msg = poll_next_msg_with_worker(jj_rx, worker_rx, stop, model.finished)?;
+        // 4. Wait for next event via crossbeam::select!
+        let msg = if stop.load(Ordering::Relaxed) {
+            Msg::Detach
+        } else {
+            // Check worker channel first (priority — worker messages are structural).
+            // try_recv before select! so worker msgs are never starved by other channels.
+            match worker_rx.try_recv() {
+                Ok(msg) => Msg::Worker(msg),
+                Err(crossbeam_channel::TryRecvError::Disconnected) if !model.finished => {
+                    Msg::WorkerDisconnected
+                }
+                _ => {
+                    select! {
+                        recv(worker_rx) -> msg => {
+                            match msg {
+                                Ok(m) => Msg::Worker(m),
+                                Err(_) if !model.finished => Msg::WorkerDisconnected,
+                                Err(_) => Msg::Tick,
+                            }
+                        },
+                        recv(jj_rx) -> graph => {
+                            match graph {
+                                Ok(g) => {
+                                    // Batch drain: use latest graph update
+                                    let mut latest = g;
+                                    while let Ok(more) = jj_rx.try_recv() {
+                                        latest = more;
+                                    }
+                                    Msg::GraphUpdated(latest)
+                                }
+                                Err(_) => Msg::Tick,
+                            }
+                        },
+                        recv(crossterm_rx) -> ev => {
+                            match ev {
+                                Ok(TermEvent::Key(KeyEvent {
+                                    code: KeyCode::Char('c'),
+                                    modifiers,
+                                    ..
+                                })) if modifiers.contains(KeyModifiers::CONTROL) => Msg::Detach,
+                                Ok(TermEvent::Resize(w, h)) => Msg::Resize { width: w, height: h },
+                                Ok(TermEvent::Key(_)) => Msg::Tick,
+                                Err(_) => Msg::Tick,
+                            }
+                        },
+                        recv(tick_rx) -> _ => Msg::Tick,
+                    }
+                }
+            }
+        };
 
         // 5. Update
         let (new_model, effect) = update(model, msg);
@@ -732,59 +836,6 @@ fn run_loop_with_worker(
             }
         }
     }
-}
-
-/// Poll with worker channel support. Prioritizes worker messages over JJ graph updates.
-fn poll_next_msg_with_worker(
-    jj_rx: &mpsc::Receiver<TaskGraph>,
-    worker_rx: &mpsc::Receiver<WorkerStatusMsg>,
-    stop: &AtomicBool,
-    finished: bool,
-) -> Result<Msg> {
-    // 1. Signal-driven stop
-    if stop.load(Ordering::Relaxed) {
-        return Ok(Msg::Detach);
-    }
-
-    // 2. Check worker channel (priority — worker messages are structural)
-    match worker_rx.try_recv() {
-        Ok(msg) => return Ok(Msg::Worker(msg)),
-        Err(mpsc::TryRecvError::Empty) => {}
-        Err(mpsc::TryRecvError::Disconnected) => {
-            if !finished {
-                return Ok(Msg::WorkerDisconnected);
-            }
-            // Normal: worker sent Done then dropped
-        }
-    }
-
-    // 3. Check JJ graph (non-blocking)
-    if let Ok(graph) = jj_rx.try_recv() {
-        return Ok(Msg::GraphUpdated(graph));
-    }
-
-    // 4. Poll crossterm for 100ms
-    if event::poll(Duration::from_millis(100))? {
-        match event::read()? {
-            Event::Key(KeyEvent {
-                code: KeyCode::Char('c'),
-                modifiers,
-                ..
-            }) if modifiers.contains(KeyModifiers::CONTROL) => {
-                return Ok(Msg::Detach);
-            }
-            Event::Resize(w, h) => {
-                return Ok(Msg::Resize {
-                    width: w,
-                    height: h,
-                });
-            }
-            _ => {}
-        }
-    }
-
-    // 5. Tick
-    Ok(Msg::Tick)
 }
 
 /// Pure view function — produces lines from model.

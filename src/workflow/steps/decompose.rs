@@ -3,7 +3,10 @@
 //! Epic lifecycle functions (create, close, restart, etc.) live in `crate::epic`.
 //! This module handles the decompose step within the build workflow.
 
+use std::collections::HashMap;
 use std::path::Path;
+use std::thread;
+use std::time::Duration;
 
 use super::downstream_review_steps;
 use super::fix_skip_to_regression_review;
@@ -15,9 +18,9 @@ use crate::agents::AgentType;
 use crate::commands::task::{create_from_template, TemplateTaskParams};
 use crate::epic::{close_epic, close_epic_as_invalid, create_epic_task, restart_epic, undo_completed_subtasks};
 use crate::error::{AikiError, Result};
-use crate::tasks::runner::TaskRunOptions;
+use crate::tasks::runner::{finalize_agent_run, prepare_task_run, rollback_if_still_reserved, TaskRunOptions};
 use crate::tasks::{
-    find_task, get_subtasks, materialize_graph, read_events, write_link_event,
+    find_task, get_subtasks, materialize_graph, read_events, write_link_event, TaskEvent,
 };
 
 /// Options for `run_decompose` that callers can customize.
@@ -40,14 +43,19 @@ enum EmptyDecomposePolicy {
 /// 2. Create decompose task from template with `data.target` and `data.plan`
 /// 3. Write `decomposes-plan` link: decompose task → `file:<plan_path>`
 /// 4. Write `populated-by` link: target → decompose task
-/// 5. `task_run(decompose_task)` with agent options
+/// 5. Run decompose agent (spawn+drain when ctx provided, else blocking)
 /// 6. Return decompose task ID
+///
+/// When `ctx` is provided with an active `event_rx`, uses spawn_monitored +
+/// event drain loop to show subtask creation in real-time. Otherwise falls
+/// back to `run_task_with_show_tui()`.
 pub fn run_decompose(
     cwd: &Path,
     plan_path: &str,
     target_id: &str,
     options: DecomposeOptions,
     show_tui: bool,
+    ctx: Option<&mut WorkflowContext>,
 ) -> Result<String> {
     let spec_target = make_spec_target(plan_path);
 
@@ -78,16 +86,103 @@ pub fn run_decompose(
     // 4. Write populated-by link: target → decompose task
     write_link_event(cwd, &graph, "populated-by", target_id, &decompose_task_id)?;
 
-    // 5. task_run(decompose_task) with agent options
+    // 5. Run decompose agent
     let run_options = if let Some(agent) = options.agent {
         TaskRunOptions::new().with_agent(agent)
     } else {
         TaskRunOptions::new()
     };
-    super::run_task_with_show_tui(cwd, &decompose_task_id, run_options, show_tui)?;
+
+    // Use spawn+drain pattern when workflow context with event_rx is available
+    if let Some(ctx) = ctx {
+        if ctx.event_rx.is_some() {
+            spawn_drain_finalize(cwd, &decompose_task_id, target_id, &run_options, ctx)?;
+        } else {
+            super::run_task_with_show_tui(cwd, &decompose_task_id, run_options, show_tui)?;
+        }
+    } else {
+        super::run_task_with_show_tui(cwd, &decompose_task_id, run_options, show_tui)?;
+    }
 
     // 6. Return decompose task ID (subtask validation is done by the step handler)
     Ok(decompose_task_id)
+}
+
+/// Spawn the decompose agent via `spawn_monitored`, drain task events to show
+/// subtask creation in real-time (`  + {name}`), and finalize the agent run.
+fn spawn_drain_finalize(
+    cwd: &Path,
+    decompose_task_id: &str,
+    epic_id: &str,
+    run_options: &TaskRunOptions,
+    ctx: &mut WorkflowContext,
+) -> Result<()> {
+    let prepared = prepare_task_run(cwd, decompose_task_id, run_options, |_| {})?;
+
+    let mut agent_handle = match prepared.runtime.spawn_monitored(&prepared.spawn_options) {
+        Ok(handle) => handle,
+        Err(e) => {
+            rollback_if_still_reserved(cwd, &prepared.task_id, &e);
+            return Err(e);
+        }
+    };
+
+    // Copy output for use in the drain loop (WorkflowOutput is Copy)
+    let output = ctx.output;
+    let epic_id_owned = epic_id.to_string();
+
+    if let Some(ref rx) = ctx.event_rx {
+        // Track newly created task IDs; only display once confirmed as epic subtasks.
+        let mut pending_names: HashMap<String, String> = HashMap::new();
+
+        let drain = |rx: &crossbeam_channel::Receiver<TaskEvent>,
+                     pending: &mut HashMap<String, String>,
+                     task_names: &mut HashMap<String, String>,
+                     epic_id: &str| {
+            for event in rx.try_iter() {
+                match &event {
+                    TaskEvent::Created { task_id, name, .. } => {
+                        // Buffer the name — don't display yet
+                        pending.insert(task_id.clone(), name.clone());
+                    }
+                    TaskEvent::LinkAdded { from, to, kind, .. }
+                        if kind == "subtask-of" && to == epic_id =>
+                    {
+                        // Confirmed subtask of our epic — display it now
+                        if let Some(name) = pending.remove(from) {
+                            task_names.insert(from.clone(), name.clone());
+                            output.emit(&format!("  + {}", name));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        };
+
+        // Non-blocking drain while agent is running.
+        while agent_handle
+            .try_wait()
+            .map_err(|e| AikiError::AgentSpawnFailed(format!("try_wait failed: {}", e)))?
+            .is_none()
+        {
+            drain(rx, &mut pending_names, &mut ctx.task_names, &epic_id_owned);
+            thread::sleep(Duration::from_millis(100));
+        }
+        // Final drain for any events that arrived after agent finished
+        drain(rx, &mut pending_names, &mut ctx.task_names, &epic_id_owned);
+    }
+
+    // Process has already exited; read any diagnostic output.
+    let proc_output = agent_handle.read_output();
+    if !proc_output.stderr.is_empty() {
+        ctx.emit(&format!("  agent stderr: {}", proc_output.stderr));
+    }
+
+    // Finalize: derive AgentSessionResult from task state and run
+    // handle_session_result() for Stopped event emission + cascade-close.
+    finalize_agent_run(cwd, decompose_task_id)?;
+
+    Ok(())
 }
 
 /// Decompose step: find/create epic, check blockers, run decompose if needed.
@@ -165,7 +260,8 @@ pub(crate) fn run(ctx: &mut WorkflowContext) -> anyhow::Result<StepResult> {
     if subtasks.is_empty() {
         ctx.status("decomposing plan into subtasks");
         let options = DecomposeOptions { template, agent, instructions: None };
-        let decompose_task_id = run_decompose(&ctx.cwd, &plan_path, &epic_id, options, false)?;
+        let cwd = ctx.cwd.clone();
+        let decompose_task_id = run_decompose(&cwd, &plan_path, &epic_id, options, false, Some(ctx))?;
 
         ctx.status("validating subtasks");
         let events = read_events(&ctx.cwd)?;
@@ -330,6 +426,8 @@ mod tests {
             scope: None,
             assignee: None,
             iteration: 0,
+            event_rx: None,
+            task_names: std::collections::HashMap::new(),
         };
 
         assert_eq!(empty_decompose_policy(&ctx), EmptyDecomposePolicy::Build);
@@ -347,6 +445,8 @@ mod tests {
             scope: None,
             assignee: None,
             iteration: 0,
+            event_rx: None,
+            task_names: std::collections::HashMap::new(),
         };
 
         assert_eq!(empty_decompose_policy(&ctx), EmptyDecomposePolicy::Fix);
@@ -423,5 +523,180 @@ mod tests {
             !template_content.contains("{{data.epic}}"),
             "Decompose template must NOT use {{{{data.epic}}}}"
         );
+    }
+
+    /// Simulate the drain logic with synthetic events and verify that:
+    /// - Created + LinkAdded(subtask-of, to: epic) → task_names populated
+    /// - Only subtasks of the target epic are captured
+    /// - Created events without a matching LinkAdded are not captured
+    #[test]
+    fn drain_populates_task_names_for_epic_subtasks() {
+        use crate::tasks::types::TaskPriority;
+
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let mut task_names: HashMap<String, String> = HashMap::new();
+        let mut pending_names: HashMap<String, String> = HashMap::new();
+        let epic_id = "epic_001";
+
+        let now = chrono::Utc::now();
+
+        // Send Created event for subtask 1
+        tx.send(TaskEvent::Created {
+            task_id: "sub_001".to_string(),
+            name: "Fix auth token validation".to_string(),
+            slug: None,
+            task_type: None,
+            priority: TaskPriority::P2,
+            assignee: None,
+            sources: Vec::new(),
+            template: None,
+            instructions: None,
+            data: HashMap::new(),
+            timestamp: now,
+        })
+        .unwrap();
+
+        // Send Created event for subtask 2
+        tx.send(TaskEvent::Created {
+            task_id: "sub_002".to_string(),
+            name: "Add error handling".to_string(),
+            slug: None,
+            task_type: None,
+            priority: TaskPriority::P2,
+            assignee: None,
+            sources: Vec::new(),
+            template: None,
+            instructions: None,
+            data: HashMap::new(),
+            timestamp: now,
+        })
+        .unwrap();
+
+        // Send Created event for unrelated task (not a subtask of our epic)
+        tx.send(TaskEvent::Created {
+            task_id: "unrelated_001".to_string(),
+            name: "Unrelated task".to_string(),
+            slug: None,
+            task_type: None,
+            priority: TaskPriority::P2,
+            assignee: None,
+            sources: Vec::new(),
+            template: None,
+            instructions: None,
+            data: HashMap::new(),
+            timestamp: now,
+        })
+        .unwrap();
+
+        // Send LinkAdded for subtask 1 → epic (confirmed as our epic's subtask)
+        tx.send(TaskEvent::LinkAdded {
+            from: "sub_001".to_string(),
+            to: epic_id.to_string(),
+            kind: "subtask-of".to_string(),
+            autorun: None,
+            timestamp: now,
+        })
+        .unwrap();
+
+        // Send LinkAdded for subtask 2 → epic
+        tx.send(TaskEvent::LinkAdded {
+            from: "sub_002".to_string(),
+            to: epic_id.to_string(),
+            kind: "subtask-of".to_string(),
+            autorun: None,
+            timestamp: now,
+        })
+        .unwrap();
+
+        // Send LinkAdded for unrelated task → different epic
+        tx.send(TaskEvent::LinkAdded {
+            from: "unrelated_001".to_string(),
+            to: "other_epic".to_string(),
+            kind: "subtask-of".to_string(),
+            autorun: None,
+            timestamp: now,
+        })
+        .unwrap();
+
+        // Run the drain logic (same as in spawn_drain_finalize)
+        for event in rx.try_iter() {
+            match &event {
+                TaskEvent::Created { task_id, name, .. } => {
+                    pending_names.insert(task_id.clone(), name.clone());
+                }
+                TaskEvent::LinkAdded { from, to, kind, .. }
+                    if kind == "subtask-of" && to == epic_id =>
+                {
+                    if let Some(name) = pending_names.remove(from) {
+                        task_names.insert(from.clone(), name.clone());
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // Verify: only epic subtasks captured
+        assert_eq!(task_names.len(), 2);
+        assert_eq!(
+            task_names.get("sub_001").unwrap(),
+            "Fix auth token validation"
+        );
+        assert_eq!(task_names.get("sub_002").unwrap(), "Add error handling");
+        assert!(!task_names.contains_key("unrelated_001"));
+
+        // Unrelated task should still be in pending (never matched a subtask-of link to our epic)
+        assert_eq!(pending_names.len(), 1);
+        assert!(pending_names.contains_key("unrelated_001"));
+    }
+
+    /// Verify that Created events without a subsequent LinkAdded are not displayed.
+    #[test]
+    fn drain_does_not_display_without_link_confirmation() {
+        use crate::tasks::types::TaskPriority;
+
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let mut task_names: HashMap<String, String> = HashMap::new();
+        let mut pending_names: HashMap<String, String> = HashMap::new();
+        let epic_id = "epic_001";
+
+        let now = chrono::Utc::now();
+
+        // Send only Created, no LinkAdded
+        tx.send(TaskEvent::Created {
+            task_id: "orphan_001".to_string(),
+            name: "Orphan task".to_string(),
+            slug: None,
+            task_type: None,
+            priority: TaskPriority::P2,
+            assignee: None,
+            sources: Vec::new(),
+            template: None,
+            instructions: None,
+            data: HashMap::new(),
+            timestamp: now,
+        })
+        .unwrap();
+
+        drop(tx); // Close channel
+
+        for event in rx.try_iter() {
+            match &event {
+                TaskEvent::Created { task_id, name, .. } => {
+                    pending_names.insert(task_id.clone(), name.clone());
+                }
+                TaskEvent::LinkAdded { from, to, kind, .. }
+                    if kind == "subtask-of" && to == epic_id =>
+                {
+                    if let Some(name) = pending_names.remove(from) {
+                        task_names.insert(from.clone(), name.clone());
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // No task should be in task_names since no LinkAdded confirmed it
+        assert!(task_names.is_empty());
+        assert_eq!(pending_names.len(), 1);
     }
 }

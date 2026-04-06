@@ -306,7 +306,7 @@ pub(crate) fn create_epic_with_decompose(
         agent: agent_type,
         instructions,
     };
-    run_decompose(cwd, plan_path, &epic_id, options, show_tui)?;
+    run_decompose(cwd, plan_path, &epic_id, options, show_tui, None)?;
 
     Ok(epic_id)
 }

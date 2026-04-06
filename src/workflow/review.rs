@@ -88,6 +88,8 @@ fn workflow(cwd: &Path, opts: &ReviewOpts) -> Workflow {
             scope: None,
             assignee: None,
             iteration: 0,
+            event_rx: None,
+            task_names: std::collections::HashMap::new(),
         },
     }
 }

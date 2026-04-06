@@ -127,11 +127,11 @@ fn resolve_agent_type(
 // ---------------------------------------------------------------------------
 
 /// Validated and prepared state for running a task.
-struct PreparedTaskRun {
-    task_id: String,
-    agent_type: AgentType,
-    runtime: Box<dyn AgentRuntime>,
-    spawn_options: AgentSpawnOptions,
+pub(crate) struct PreparedTaskRun {
+    pub(crate) task_id: String,
+    pub(crate) agent_type: AgentType,
+    pub(crate) runtime: Box<dyn AgentRuntime>,
+    pub(crate) spawn_options: AgentSpawnOptions,
 }
 
 /// Roll back a task claim if spawn failed and the task is still in Reserved status.
@@ -143,7 +143,7 @@ struct PreparedTaskRun {
 /// If reading the event log fails, assumes the task may still be Reserved and
 /// emits a Released event as a safe default (a spurious Released on a
 /// non-Reserved task is a harmless no-op).
-fn rollback_if_still_reserved(cwd: &Path, task_id: &str, error: &crate::error::AikiError) {
+pub(crate) fn rollback_if_still_reserved(cwd: &Path, task_id: &str, error: &crate::error::AikiError) {
     let reason = format!("Spawn failed: {}", error);
     crate::commands::run::try_rollback_reserved(cwd, task_id, &reason);
 }
@@ -195,7 +195,7 @@ impl LoadingPhase {
 /// Validate a task, resolve the agent, emit a Started event, and build spawn options.
 ///
 /// Calls `on_phase` at each preparation step so callers can show loading progress.
-fn prepare_task_run(
+pub(crate) fn prepare_task_run(
     cwd: &Path,
     task_id: &str,
     options: &TaskRunOptions,
@@ -580,6 +580,46 @@ pub fn handle_session_result(
     }
 
     Ok(())
+}
+
+/// Derive AgentSessionResult from final task state and delegate to
+/// handle_session_result(). Must be called after the drain loop exits
+/// (i.e., after the agent process has been reaped by try_wait()).
+///
+/// This is the non-TUI equivalent of map_tui_effect(Effect::Done) +
+/// handle_session_result() — it reads the task's final state from JJ
+/// to determine success/stopped/failed, then runs the same cleanup
+/// logic (Stopped event emission, cascade-close) that the TUI path uses.
+pub fn finalize_agent_run(cwd: &Path, task_id: &str) -> Result<()> {
+    let events = read_events(cwd)?;
+    let tasks = materialize_graph(&events).tasks;
+
+    let result = if let Some(task) = tasks.get(task_id) {
+        match task.status {
+            TaskStatus::Closed => {
+                let summary = task.effective_summary().unwrap_or_default().to_string();
+                AgentSessionResult::Completed { summary }
+            }
+            TaskStatus::Stopped => {
+                let reason = task
+                    .stopped_reason
+                    .clone()
+                    .unwrap_or_else(|| "Task stopped".to_string());
+                AgentSessionResult::Stopped { reason }
+            }
+            _ => AgentSessionResult::Failed {
+                error: "Agent process exited without completing task".to_string(),
+            },
+        }
+    } else {
+        AgentSessionResult::Failed {
+            error: "Task not found after completion".to_string(),
+        }
+    };
+
+    // quiet=true: the workflow step handles its own output via ctx.emit(),
+    // so suppress handle_session_result()'s stderr printing.
+    handle_session_result(cwd, task_id, result, /* quiet */ true)
 }
 
 /// Run a task and output result

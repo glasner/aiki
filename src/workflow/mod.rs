@@ -4,10 +4,17 @@ pub mod fix;
 pub mod review;
 pub mod steps;
 
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use anyhow::Result;
+use crossbeam_channel::Receiver;
 use serde::{Deserialize, Serialize};
+
+use crate::tasks::listener::TaskEventListener;
+use crate::tasks::types::TaskEvent;
 
 use crate::agents::AgentType;
 use crate::reviews::ReviewScope;
@@ -64,6 +71,12 @@ pub struct WorkflowContext {
     pub assignee: Option<String>,
     /// Current iteration of the quality loop. Starts at 0.
     pub iteration: usize,
+    /// Receiver for raw task events. Present when a listener is active.
+    /// Started by the workflow runner, stopped when the workflow completes.
+    pub event_rx: Option<Receiver<TaskEvent>>,
+    /// Best-effort task-id -> task-name cache built from Created events
+    /// so later steps can render names without re-reading JJ state.
+    pub task_names: HashMap<String, String>,
 }
 
 impl WorkflowContext {
@@ -243,6 +256,26 @@ impl Workflow {
     pub fn run(mut self) -> Result<WorkflowContext> {
         let verbose = matches!(self.ctx.output.kind(), OutputKind::Text);
 
+        // Start listener for text-mode foreground runs so steps can observe
+        // task events in real-time via ctx.event_rx.
+        let stop = Arc::new(AtomicBool::new(false));
+        if verbose {
+            let listener = TaskEventListener::new(&self.ctx.cwd, Arc::clone(&stop));
+            self.ctx.event_rx = Some(listener.start());
+        }
+
+        let result = self.run_step_loop(verbose);
+
+        // Signal the listener thread to stop.
+        stop.store(true, Ordering::Relaxed);
+
+        match result {
+            Ok(()) => Ok(self.ctx),
+            Err(e) => Err(e),
+        }
+    }
+
+    fn run_step_loop(&mut self, verbose: bool) -> Result<()> {
         while !self.steps.is_empty() {
             let step = self.steps.remove(0);
 
@@ -269,7 +302,7 @@ impl Workflow {
             }
         }
 
-        Ok(self.ctx)
+        Ok(())
     }
 }
 
@@ -397,6 +430,8 @@ mod tests {
                     scope: None,
                     assignee: None,
                     iteration: 0,
+                    event_rx: None,
+                    task_names: std::collections::HashMap::new(),
                 };
                 ctx.emit("workflow-emit-line");
                 ctx.warn("workflow-warn-line");
@@ -422,6 +457,8 @@ mod tests {
                     scope: None,
                     assignee: None,
                     iteration: 0,
+                    event_rx: None,
+                    task_names: std::collections::HashMap::new(),
                 },
             },
             "text-basic" => Workflow {
@@ -436,6 +473,8 @@ mod tests {
                     scope: None,
                     assignee: None,
                     iteration: 0,
+                    event_rx: None,
+                    task_names: std::collections::HashMap::new(),
                 },
             },
             "quiet-basic" => Workflow {
@@ -450,6 +489,8 @@ mod tests {
                     scope: None,
                     assignee: None,
                     iteration: 0,
+                    event_rx: None,
+                    task_names: std::collections::HashMap::new(),
                 },
             },
             "text-shared" | "quiet-shared" => Workflow {
@@ -464,6 +505,8 @@ mod tests {
                     scope: None,
                     assignee: None,
                     iteration: 0,
+                    event_rx: None,
+                    task_names: std::collections::HashMap::new(),
                 },
             },
             other => panic!("unknown probe case: {other}"),
@@ -497,6 +540,8 @@ mod tests {
                 scope: None,
                 assignee: None,
                 iteration: 0,
+                event_rx: None,
+                task_names: std::collections::HashMap::new(),
             },
         };
 
@@ -525,6 +570,8 @@ mod tests {
                 scope: None,
                 assignee: None,
                 iteration: 0,
+                event_rx: None,
+                task_names: std::collections::HashMap::new(),
             },
         };
 
@@ -554,6 +601,8 @@ mod tests {
                 scope: None,
                 assignee: None,
                 iteration: 0,
+                event_rx: None,
+                task_names: std::collections::HashMap::new(),
             },
         };
 
@@ -599,6 +648,8 @@ mod tests {
                 scope: None,
                 assignee: None,
                 iteration: 0,
+                event_rx: None,
+                task_names: std::collections::HashMap::new(),
             },
         }
         .run()
@@ -619,6 +670,8 @@ mod tests {
                 scope: None,
                 assignee: None,
                 iteration: 0,
+                event_rx: None,
+                task_names: std::collections::HashMap::new(),
             },
         }
         .run()
@@ -691,6 +744,8 @@ mod tests {
                 scope: None,
                 assignee: None,
                 iteration: 0,
+                event_rx: None,
+                task_names: std::collections::HashMap::new(),
             },
         };
 
@@ -725,6 +780,8 @@ mod tests {
                 scope: None,
                 assignee: None,
                 iteration: 0,
+                event_rx: None,
+                task_names: std::collections::HashMap::new(),
             },
         };
 
@@ -757,6 +814,8 @@ mod tests {
                 scope: None,
                 assignee: None,
                 iteration: 0,
+                event_rx: None,
+                task_names: std::collections::HashMap::new(),
             },
         };
 

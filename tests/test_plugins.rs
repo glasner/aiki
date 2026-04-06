@@ -566,68 +566,8 @@ fn test_scan_uses_tasks_dir_not_templates() {
 }
 
 // ---------------------------------------------------------------------------
-// Hook resolver — installed plugin and repo-root plugin lookup
+// Hook resolver — installed plugin lookup
 // ---------------------------------------------------------------------------
-
-/// Installed-plugin lookup uses ~/.aiki/plugins/{ns}/{name}/hooks.yaml.
-/// This requires manipulating HOME which is unreliable in parallel tests,
-/// so we test the repo-root plugin path (step 4) as a proxy — both use
-/// the same resolution logic in resolve_namespaced_flow().
-/// The unit tests in hook_resolver.rs cover the full search order.
-
-#[test]
-fn test_hook_resolver_repo_root_plugin_lookup() {
-    use aiki::flows::hook_resolver::HookResolver;
-
-    let tmp = TempDir::new().unwrap();
-
-    // Create minimal .aiki dir
-    fs::create_dir_all(tmp.path().join(".aiki/hooks")).unwrap();
-
-    // Create repo-root plugin: {project}/plugins/myns/myplugin/hooks.yaml
-    let plugin_dir = tmp.path().join("plugins/myns/myplugin");
-    fs::create_dir_all(&plugin_dir).unwrap();
-    let hooks_path = plugin_dir.join("hooks.yaml");
-    fs::write(&hooks_path, "name: test\nversion: \"1\"\n").unwrap();
-
-    let resolver = HookResolver::with_start_dir(tmp.path()).unwrap();
-    let resolved = resolver.resolve("myns/myplugin").unwrap();
-
-    assert_eq!(
-        resolved.canonicalize().unwrap(),
-        hooks_path.canonicalize().unwrap()
-    );
-}
-
-#[test]
-fn test_hook_resolver_priority_project_over_repo_root() {
-    use aiki::flows::hook_resolver::HookResolver;
-
-    let tmp = TempDir::new().unwrap();
-
-    // Create project hook
-    fs::create_dir_all(tmp.path().join(".aiki/hooks/myns")).unwrap();
-    let project_path = tmp.path().join(".aiki/hooks/myns/myplugin.yml");
-    fs::write(&project_path, "name: project\nversion: \"1\"\n").unwrap();
-
-    // Create repo-root plugin
-    let plugin_dir = tmp.path().join("plugins/myns/myplugin");
-    fs::create_dir_all(&plugin_dir).unwrap();
-    fs::write(
-        plugin_dir.join("hooks.yaml"),
-        "name: repo-root\nversion: \"1\"\n",
-    )
-    .unwrap();
-
-    let resolver = HookResolver::with_start_dir(tmp.path()).unwrap();
-    let resolved = resolver.resolve("myns/myplugin").unwrap();
-
-    // Project should win
-    assert_eq!(
-        resolved.canonicalize().unwrap(),
-        project_path.canonicalize().unwrap()
-    );
-}
 
 #[test]
 fn test_hook_resolver_not_found_error() {

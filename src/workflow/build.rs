@@ -101,6 +101,8 @@ fn build_context(cwd: &Path, opts: &BuildOpts) -> WorkflowContext {
         scope: None,
         assignee: None,
         iteration: 0,
+        event_rx: None,
+        task_names: std::collections::HashMap::new(),
     }
 }
 

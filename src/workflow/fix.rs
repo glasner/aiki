@@ -130,6 +130,8 @@ pub(crate) fn workflow(
             scope: Some(scope.clone()),
             assignee: assignee.map(|s| s.to_string()),
             iteration: 0,
+            event_rx: None,
+            task_names: std::collections::HashMap::new(),
         },
     }
 }
@@ -151,6 +153,8 @@ fn setup_workflow(cwd: &Path, opts: &FixOpts) -> Workflow {
             scope: None,
             assignee: None,
             iteration: 0,
+            event_rx: None,
+            task_names: std::collections::HashMap::new(),
         },
     }
 }
@@ -294,6 +298,8 @@ fn run_pair(cwd: &Path, opts: &FixOpts) -> Result<WorkflowContext> {
             scope: Some(scope),
             assignee,
             iteration: 0,
+            event_rx: None,
+            task_names: std::collections::HashMap::new(),
         });
     }
 
@@ -449,6 +455,8 @@ fn run_pair(cwd: &Path, opts: &FixOpts) -> Result<WorkflowContext> {
         scope: Some(scope),
         assignee,
         iteration: 0,
+        event_rx: None,
+        task_names: std::collections::HashMap::new(),
     })
 }
 

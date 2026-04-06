@@ -160,6 +160,8 @@ mod tests {
             scope: None,
             assignee: None,
             iteration: 0,
+            event_rx: None,
+            task_names: std::collections::HashMap::new(),
         };
 
         let result = run(&mut ctx).unwrap();
