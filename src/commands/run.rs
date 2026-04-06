@@ -411,10 +411,11 @@ fn spawn_and_discover(
     if codex_fallback {
         if is_async {
             if output_id {
+                // Codex session discovery not yet supported — no session ID available
                 println!("{}", head_id);
             } else {
                 let md = MdBuilder::new().build(&format!(
-                    "## Run Started\n- **Task:** {}\n- **Session:** pending Codex hook-based discovery\n- Task started asynchronously using temporary task-based fallback.\n",
+                    "## Run Started\n- **Session:** pending (Codex hook-based discovery)\n- **Task:** {}\n- Task started asynchronously.\n",
                     short_id(head_id),
                 ));
                 println!("{}", md);
@@ -422,27 +423,22 @@ fn spawn_and_discover(
             return Ok(());
         }
 
-        if output_id {
-            println!("{}", head_id);
-        } else {
+        if !output_id {
             let md = MdBuilder::new().build(&format!(
-                "## Running\n- **Task:** {}\n- **Session:** pending Codex hook-based discovery\n- Using temporary task-based fallback while Codex session start is unavailable.\n",
+                "## Running\n- **Session:** pending (Codex hook-based discovery)\n- **Task:** {}\n",
                 short_id(head_id),
             ));
             eprintln!("{}", md);
         }
 
-        return wait_for_task_completion(cwd, head_id);
+        return wait_for_task_completion(cwd, head_id, None);
     }
 
     // Discover session UUID
     let session_id = match discover_session_id(&handle.thread) {
         Ok(sid) => sid,
         Err(_) if output_id => {
-            // If we can't discover session ID but user wants bare ID, output task ID
-            if output_id {
-                println!("{}", head_id);
-            }
+            // Session discovery failed — no session ID to output
             if is_async {
                 return Ok(());
             }
@@ -458,7 +454,8 @@ fn spawn_and_discover(
             println!("{}", session_id);
         } else {
             let md = MdBuilder::new().build(&format!(
-                "## Run Started\n- **Task:** {}\n- **Session:** {}\n- Task started asynchronously.\n",
+                "## Run Started\n- **Session:** {}\n- **Task:** {}\n\n**Tip:** Use `aiki session wait {}` to block until complete.\n",
+                session_id,
                 short_id(head_id),
                 session_id,
             ));
@@ -467,23 +464,21 @@ fn spawn_and_discover(
         Ok(())
     } else {
         // Blocking: print session ID, then wait for task completion
-        if output_id {
-            println!("{}", session_id);
-        } else {
+        if !output_id {
             let md = MdBuilder::new().build(&format!(
-                "## Running\n- **Task:** {}\n- **Session:** {}\n",
-                short_id(head_id),
+                "## Running\n- **Session:** {}\n- **Task:** {}\n",
                 session_id,
+                short_id(head_id),
             ));
             eprintln!("{}", md);
         }
         // Wait for the task to reach terminal status
-        wait_for_task_completion(cwd, head_id)
+        wait_for_task_completion(cwd, head_id, Some(&session_id))
     }
 }
 
 /// Poll until task reaches a terminal status (Closed).
-fn wait_for_task_completion(cwd: &Path, task_id: &str) -> Result<()> {
+fn wait_for_task_completion(cwd: &Path, task_id: &str, session_id: Option<&str>) -> Result<()> {
     use std::thread;
     use std::time::Duration;
 
@@ -495,8 +490,14 @@ fn wait_for_task_completion(cwd: &Path, task_id: &str) -> Result<()> {
 
         if let Some(task) = graph.tasks.get(task_id) {
             if task.status == TaskStatus::Closed {
+                let session_line = session_id
+                    .map(|s| format!("- **Session:** {}\n", s))
+                    .unwrap_or_default();
                 let md = MdBuilder::new().build(&format!(
-                    "## Run Completed\n- **Task:** {}\n",
+                    "## Run Completed\n{}- **Task:** {}\n- **Summary:** {}\n\n**Tip:** Use `aiki task show {}` for full details.\n",
+                    session_line,
+                    short_id(task_id),
+                    task.display_summary(),
                     short_id(task_id),
                 ));
                 println!("{}", md);
