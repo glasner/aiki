@@ -8,10 +8,12 @@ use std::path::Path;
 
 use crate::error::{AikiError, Result};
 use crate::plugins::deps::{install_with_deps, resolve_deps, InstallReport};
+use crate::plugins::graph::PluginGraph;
 use crate::plugins::git::{pull_plugin, remove_plugin};
-use crate::plugins::manifest::load_manifest;
 use crate::plugins::scanner::derive_plugin_refs;
-use crate::plugins::{check_install_status, plugins_base_dir, InstallStatus, PluginRef};
+use crate::plugins::{
+    check_install_status, list_installed_plugins, plugins_base_dir, InstallStatus, PluginRef,
+};
 use crate::tasks::templates::TASKS_DIR_NAME;
 
 #[derive(Subcommand)]
@@ -130,10 +132,7 @@ fn run_update(reference: Option<String>) -> Result<()> {
 fn update_single(plugin: &PluginRef, plugins_base: &Path) -> Result<()> {
     // 1. Pull the root plugin
     pull_plugin(plugin, plugins_base)?;
-    match plugin.display_name(plugins_base) {
-        Some(name) => println!("Updated: {} ({})", plugin, name),
-        None => println!("Updated: {}", plugin),
-    }
+    println!("Updated: {}", plugin.display_name(plugins_base));
 
     let mut failures: Vec<String> = Vec::new();
 
@@ -168,10 +167,7 @@ fn update_single(plugin: &PluginRef, plugins_base: &Path) -> Result<()> {
                 // New dep — install with its own deps
                 let report = install_with_deps(dep, plugins_base)?;
                 for (installed, _manifest) in &report.installed {
-                    match installed.display_name(plugins_base) {
-                        Some(name) => println!("Installed (dependency): {} ({})", installed, name),
-                        None => println!("Installed (dependency): {}", installed),
-                    }
+                    println!("Installed (dependency): {}", installed.display_name(plugins_base));
                 }
                 for (failed, err) in &report.failed {
                     eprintln!("Error: failed to install {}: {}", failed, err);
@@ -213,18 +209,15 @@ fn run_list(number: Option<usize>) -> Result<()> {
             if project_refs.is_empty() {
                 println!("No plugin references found in project.");
             } else {
+                let graph = PluginGraph::build(&plugins_base);
                 println!("Plugins:");
                 for plugin in &project_refs {
                     let status = check_install_status(plugin, &plugins_base);
                     match status {
                         InstallStatus::Installed => {
-                            match plugin.display_name(&plugins_base) {
-                                Some(name) => println!("  {}    {}    installed", plugin, name),
-                                None => println!("  {}    installed", plugin),
-                            }
+                            println!("  {}    installed", graph.display_name(plugin));
                             // Show deps
-                            let deps = resolve_deps(plugin, &plugins_base);
-                            for dep in &deps {
+                            for dep in &graph.dependencies(plugin) {
                                 let dep_status = check_install_status(dep, &plugins_base);
                                 match dep_status {
                                     InstallStatus::Installed => {
@@ -273,34 +266,24 @@ fn run_list(number: Option<usize>) -> Result<()> {
                 return Ok(());
             }
 
-            // Collect all deps so we can exclude them from top-level listing.
-            // A plugin is a "root" (top-level) if no root plugin depends on it.
-            // To handle cycles: only exclude a plugin from top-level if it is a
-            // dependency of another plugin that is itself NOT a dependency of anyone.
-            let mut plugin_deps: Vec<(PluginRef, Vec<PluginRef>)> = Vec::new();
-            for plugin in &installed {
-                let deps = resolve_deps(plugin, &plugins_base);
-                plugin_deps.push((plugin.clone(), deps));
-            }
+            let graph = PluginGraph::build(&plugins_base);
 
-            // First pass: deps of all plugins
-            let all_deps: HashSet<PluginRef> = plugin_deps
+            // Build (plugin, deps) pairs from the graph
+            let mut plugin_deps: Vec<(PluginRef, Vec<PluginRef>)> = installed
                 .iter()
-                .flat_map(|(_, deps)| deps.iter().cloned())
+                .map(|p| (p.clone(), graph.dependencies(p)))
                 .collect();
 
-            // A plugin is a root if it's not in all_deps. If there are no roots
-            // (e.g. cycles where every plugin is someone's dependency), then deps
-            // contributed only by non-root plugins shouldn't suppress top-level
-            // display. Recompute: only deps of root plugins count as "hidden".
-            let roots: HashSet<&PluginRef> =
-                installed.iter().filter(|p| !all_deps.contains(p)).collect();
+            // A plugin is a root if nothing depends on it.
+            // If no roots exist (all in cycles), show everything as top-level.
+            let roots: HashSet<&PluginRef> = installed
+                .iter()
+                .filter(|p| graph.dependents(p).is_empty())
+                .collect();
 
             let hidden: HashSet<PluginRef> = if roots.is_empty() {
-                // No roots means all plugins are in cycles — show all as top-level
                 HashSet::new()
             } else {
-                // Only deps reachable from root plugins are hidden from top-level
                 plugin_deps
                     .iter()
                     .filter(|(p, _)| roots.contains(p))
@@ -316,10 +299,7 @@ fn run_list(number: Option<usize>) -> Result<()> {
                 if hidden.contains(plugin) {
                     continue; // Only show as dependency under its parent
                 }
-                match plugin.display_name(&plugins_base) {
-                    Some(name) => println!("  {}    {}", plugin, name),
-                    None => println!("  {}", plugin),
-                }
+                println!("  {}", graph.display_name(plugin));
                 for dep in deps {
                     println!("    └ {}    (dependency)", dep);
                 }
@@ -334,11 +314,8 @@ fn run_remove(reference: String, force: bool) -> Result<()> {
     let plugins_base = plugins_base_dir()?;
     let plugin: PluginRef = reference.parse()?;
 
-    // Try to load display name before removing
-    let install_dir = plugin.install_dir(&plugins_base);
-    let display_name = load_manifest(&install_dir)
-        .ok()
-        .and_then(|m| m.name);
+    // Capture display name before removing (removal deletes the directory)
+    let display_name = plugin.display_name(&plugins_base);
 
     // Error if other installed plugins depend on this one (unless --force)
     let dependents = find_dependents(&plugin, &plugins_base);
@@ -366,10 +343,7 @@ fn run_remove(reference: String, force: bool) -> Result<()> {
         remove_from_hooks_yml(&aiki_dir, &plugin);
     }
 
-    match display_name {
-        Some(name) => println!("Removed: {} ({})", plugin, name),
-        None => println!("Removed: {}", plugin),
-    }
+    println!("Removed: {}", display_name);
     Ok(())
 }
 
@@ -392,16 +366,9 @@ fn find_aiki_dir_optional(start: &Path) -> Option<std::path::PathBuf> {
     }
 }
 
-/// Find installed plugins that depend on the given plugin.
-// TODO: O(n²) — replace with PluginGraph once built (see ops/now/plugins/dependency-graph.md)
-fn find_dependents(plugin: &PluginRef, plugins_base: &Path) -> Vec<PluginRef> {
-    let installed = list_installed_plugins(plugins_base);
-    installed
-        .into_iter()
-        .filter(|p| {
-            p != plugin && resolve_deps(p, plugins_base).contains(plugin)
-        })
-        .collect()
+/// Find installed plugins that depend on the given plugin (direct dependents only).
+pub(crate) fn find_dependents(plugin: &PluginRef, plugins_base: &Path) -> Vec<PluginRef> {
+    PluginGraph::build(plugins_base).dependents(plugin)
 }
 
 /// Print install report.
@@ -484,58 +451,6 @@ fn remove_from_hooks_yml(aiki_dir: &Path, plugin: &PluginRef) {
     }
 }
 
-/// List all installed plugins by scanning the plugins directory.
-fn list_installed_plugins(plugins_base: &Path) -> Vec<PluginRef> {
-    let mut plugins = Vec::new();
-
-    if !plugins_base.is_dir() {
-        return plugins;
-    }
-
-    let ns_entries = match fs::read_dir(plugins_base) {
-        Ok(e) => e,
-        Err(_) => return plugins,
-    };
-
-    for ns_entry in ns_entries.flatten() {
-        let ns_path = ns_entry.path();
-        if !ns_path.is_dir() {
-            continue;
-        }
-
-        let namespace = match ns_path.file_name().and_then(|n| n.to_str()) {
-            Some(n) => n.to_string(),
-            None => continue,
-        };
-
-        let name_entries = match fs::read_dir(&ns_path) {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
-
-        for name_entry in name_entries.flatten() {
-            let name_path = name_entry.path();
-            if !name_path.is_dir() {
-                continue;
-            }
-
-            let name = match name_path.file_name().and_then(|n| n.to_str()) {
-                Some(n) => n.to_string(),
-                None => continue,
-            };
-
-            // Only count as installed if .git/ exists
-            if name_path.join(".git").is_dir() {
-                if let Ok(plugin) = format!("{}/{}", namespace, name).parse::<PluginRef>() {
-                    plugins.push(plugin);
-                }
-            }
-        }
-    }
-
-    plugins.sort_by(|a, b| a.to_string().cmp(&b.to_string()));
-    plugins
-}
 
 /// Find project-level template overrides of plugin templates.
 fn find_overrides(templates_dir: &Path, project_refs: &[PluginRef]) -> Vec<(String, String)> {
@@ -672,5 +587,93 @@ mod tests {
         let result = fs::read_to_string(aiki_dir.join("hooks.yml")).unwrap();
         assert!(!result.contains("eslint/standard"));
         assert!(result.contains("aiki/way"));
+    }
+
+    /// Helper: create a fake installed plugin with optional deps declared via hooks.yaml.
+    fn create_fake_plugin(base: &Path, ns: &str, name: &str, deps: &[&str]) {
+        let dir = base.join(ns).join(name);
+        fs::create_dir_all(dir.join(".git")).unwrap();
+
+        if !deps.is_empty() {
+            let yaml: Vec<String> = deps
+                .iter()
+                .enumerate()
+                .map(|(i, d)| format!("hook{}:\n  template: {}", i, d))
+                .collect();
+            fs::write(dir.join("hooks.yaml"), yaml.join("\n")).unwrap();
+        }
+    }
+
+    #[test]
+    fn test_find_dependents_no_dependents() {
+        let tmp = TempDir::new().unwrap();
+        create_fake_plugin(tmp.path(), "aiki", "alpha", &[]);
+
+        let plugin: PluginRef = "aiki/alpha".parse().unwrap();
+        let deps = find_dependents(&plugin, tmp.path());
+        assert!(deps.is_empty());
+    }
+
+    #[test]
+    fn test_find_dependents_direct_dependent() {
+        let tmp = TempDir::new().unwrap();
+        create_fake_plugin(tmp.path(), "aiki", "alpha", &[]);
+        create_fake_plugin(tmp.path(), "aiki", "beta", &["aiki/alpha/tmpl"]);
+
+        let plugin: PluginRef = "aiki/alpha".parse().unwrap();
+        let deps = find_dependents(&plugin, tmp.path());
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0].to_string(), "aiki/beta");
+    }
+
+    #[test]
+    fn test_find_dependents_not_a_dependent() {
+        let tmp = TempDir::new().unwrap();
+        create_fake_plugin(tmp.path(), "aiki", "alpha", &[]);
+        create_fake_plugin(tmp.path(), "aiki", "beta", &["aiki/gamma/tmpl"]);
+        create_fake_plugin(tmp.path(), "aiki", "gamma", &[]);
+
+        let plugin: PluginRef = "aiki/alpha".parse().unwrap();
+        let deps = find_dependents(&plugin, tmp.path());
+        assert!(deps.is_empty());
+    }
+
+    #[test]
+    fn test_find_dependents_multiple_dependents() {
+        let tmp = TempDir::new().unwrap();
+        create_fake_plugin(tmp.path(), "aiki", "alpha", &[]);
+        create_fake_plugin(tmp.path(), "aiki", "beta", &["aiki/alpha/tmpl"]);
+        create_fake_plugin(tmp.path(), "aiki", "gamma", &["aiki/alpha/tmpl"]);
+
+        let plugin: PluginRef = "aiki/alpha".parse().unwrap();
+        let deps = find_dependents(&plugin, tmp.path());
+        let names: Vec<String> = deps.iter().map(|d| d.to_string()).collect();
+        assert_eq!(names.len(), 2);
+        assert!(names.contains(&"aiki/beta".to_string()));
+        assert!(names.contains(&"aiki/gamma".to_string()));
+    }
+
+    #[test]
+    fn test_find_dependents_direct_only() {
+        let tmp = TempDir::new().unwrap();
+        // A depends on B, B depends on C
+        create_fake_plugin(tmp.path(), "aiki", "a", &["aiki/b/tmpl"]);
+        create_fake_plugin(tmp.path(), "aiki", "b", &["aiki/c/tmpl"]);
+        create_fake_plugin(tmp.path(), "aiki", "c", &[]);
+
+        // find_dependents(C) should return only B (direct dependent)
+        let plugin: PluginRef = "aiki/c".parse().unwrap();
+        let deps = find_dependents(&plugin, tmp.path());
+        let names: Vec<String> = deps.iter().map(|d| d.to_string()).collect();
+        assert_eq!(names, vec!["aiki/b".to_string()]);
+    }
+
+    #[test]
+    fn test_find_dependents_plugin_not_installed() {
+        let tmp = TempDir::new().unwrap();
+        // No plugins installed at all
+        let plugin: PluginRef = "aiki/nonexistent".parse().unwrap();
+        let deps = find_dependents(&plugin, tmp.path());
+        assert!(deps.is_empty());
     }
 }
