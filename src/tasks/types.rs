@@ -318,6 +318,58 @@ impl TaskEvent {
             | TaskEvent::Absorbed { timestamp, .. } => *timestamp,
         }
     }
+
+    /// Variant name for deduplication (e.g., "Created", "Started").
+    fn variant_name(&self) -> &'static str {
+        match self {
+            TaskEvent::Created { .. } => "Created",
+            TaskEvent::Started { .. } => "Started",
+            TaskEvent::Stopped { .. } => "Stopped",
+            TaskEvent::Closed { .. } => "Closed",
+            TaskEvent::Reopened { .. } => "Reopened",
+            TaskEvent::CommentAdded { .. } => "CommentAdded",
+            TaskEvent::Updated { .. } => "Updated",
+            TaskEvent::FieldsCleared { .. } => "FieldsCleared",
+            TaskEvent::LinkAdded { .. } => "LinkAdded",
+            TaskEvent::LinkRemoved { .. } => "LinkRemoved",
+            TaskEvent::Reserved { .. } => "Reserved",
+            TaskEvent::Released { .. } => "Released",
+            TaskEvent::Absorbed { .. } => "Absorbed",
+        }
+    }
+
+    /// Primary task ID for this event (first task_id from single or batch events).
+    fn primary_task_id(&self) -> &str {
+        match self {
+            TaskEvent::Created { task_id, .. }
+            | TaskEvent::Reopened { task_id, .. }
+            | TaskEvent::Updated { task_id, .. }
+            | TaskEvent::FieldsCleared { task_id, .. }
+            | TaskEvent::LinkAdded { from: task_id, .. }
+            | TaskEvent::LinkRemoved { from: task_id, .. } => task_id,
+            TaskEvent::Started { task_ids, .. }
+            | TaskEvent::Stopped { task_ids, .. }
+            | TaskEvent::Closed { task_ids, .. }
+            | TaskEvent::CommentAdded { task_ids, .. }
+            | TaskEvent::Reserved { task_ids, .. }
+            | TaskEvent::Released { task_ids, .. }
+            | TaskEvent::Absorbed { task_ids, .. } => {
+                task_ids.first().map(|s| s.as_str()).unwrap_or("")
+            }
+        }
+    }
+
+    /// Deduplication key: (task_id, variant_name, timestamp).
+    ///
+    /// The same logical event read from different JJ workspaces produces the
+    /// same key, enabling cross-workspace dedup in the drain loop.
+    pub fn dedup_key(&self) -> (String, &'static str, DateTime<Utc>) {
+        (
+            self.primary_task_id().to_string(),
+            self.variant_name(),
+            self.timestamp(),
+        )
+    }
 }
 
 /// A comment on a task
