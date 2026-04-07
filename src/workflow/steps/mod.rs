@@ -1,9 +1,10 @@
-use std::collections::HashMap;
-use std::path::Path;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::Duration;
 
 use anyhow::Result;
+use chrono::{DateTime, Utc};
 use crossbeam_channel::Receiver;
 
 pub(crate) use super::WorkflowContext;
@@ -14,6 +15,7 @@ use crate::tasks::runner::{
     task_run, task_run_on_session, TaskRunOptions,
 };
 use crate::tasks::listener::POLL_INTERVAL;
+use crate::tasks::storage::read_events;
 use crate::tasks::TaskEvent;
 
 pub(crate) mod decompose;
@@ -240,6 +242,13 @@ pub(crate) trait DrainHandler {
 /// agent run. The `event_rx` channel is shared across all workflow steps
 /// (see `WorkflowContext::event_rx`), but only one step's drain loop runs
 /// at a time, so each handler only consumes events from its own agent.
+///
+/// When workspace isolation is active, the spawned agent writes events in its
+/// own JJ workspace. This function discovers that workspace and polls
+/// `read_events` directly from it, deduplicating against events from the
+/// shared listener. Errors from `read_events` use a backoff-then-disable
+/// strategy: after `MAX_CONSECUTIVE_ERRORS` failures the agent-workspace
+/// polling is silently disabled for the remainder of the drain loop.
 pub(crate) fn spawn_drain_finalize(
     cwd: &Path,
     task_id: &str,
@@ -259,12 +268,28 @@ pub(crate) fn spawn_drain_finalize(
     };
 
     if let Some(rx) = event_rx {
+        // --- Agent workspace discovery ---
+        // Try to discover the agent's isolated workspace for direct event
+        // polling. Falls back to shared-listener-only if discovery fails
+        // (e.g., workspace isolation disabled, timeout).
+        let agent_cwd = discover_agent_workspace(cwd, &prepared.spawn_options.thread);
+
+        let mut agent_poller = agent_cwd.map(AgentWorkspacePoller::new);
+
         while agent_handle
             .try_wait()
             .map_err(|e| AikiError::AgentSpawnFailed(format!("try_wait failed: {}", e)))?
             .is_none()
         {
-            handler.drain(rx);
+            // Poll agent workspace for new events (cross-workspace).
+            if let Some(poller) = agent_poller.as_mut() {
+                poller.poll(handler);
+            }
+
+            // Drain shared listener, skipping events already seen from the
+            // agent workspace.
+            drain_shared_with_dedup(rx, handler, agent_poller.as_ref());
+
             thread::sleep(Duration::from_millis(250));
         }
         // The listener thread polls JJ at POLL_INTERVAL. After the agent
@@ -273,8 +298,12 @@ pub(crate) fn spawn_drain_finalize(
         // draining as new events arrive, so we don't lose tail events.
         let tail_drain = POLL_INTERVAL + Duration::from_millis(200);
         let deadline = std::time::Instant::now() + tail_drain;
+
         loop {
-            handler.drain(rx);
+            if let Some(poller) = agent_poller.as_mut() {
+                poller.poll(handler);
+            }
+            drain_shared_with_dedup(rx, handler, agent_poller.as_ref());
             if std::time::Instant::now() >= deadline {
                 break;
             }
@@ -298,6 +327,122 @@ pub(crate) fn spawn_drain_finalize(
     finalize_agent_run(cwd, task_id)?;
 
     Ok(())
+}
+
+// ── Agent workspace polling ─────────────────────────────────────────
+
+/// Maximum consecutive `read_events` errors before disabling agent-workspace
+/// polling for the remainder of the drain loop.
+const MAX_CONSECUTIVE_ERRORS: u32 = 3;
+
+/// Polls `read_events` from the agent's isolated workspace, tracking a
+/// high-water mark and a seen-set for deduplication. Uses a
+/// backoff-then-disable strategy on errors.
+struct AgentWorkspacePoller {
+    cwd: PathBuf,
+    high_water: usize,
+    seen: HashSet<(String, &'static str, DateTime<Utc>)>,
+    consecutive_errors: u32,
+    disabled: bool,
+}
+
+impl AgentWorkspacePoller {
+    fn new(cwd: PathBuf) -> Self {
+        Self {
+            cwd,
+            high_water: 0,
+            seen: HashSet::new(),
+            consecutive_errors: 0,
+            disabled: false,
+        }
+    }
+
+    /// Poll for new events from the agent workspace, feeding them to the
+    /// handler. On error, increments the consecutive error counter and
+    /// disables polling after `MAX_CONSECUTIVE_ERRORS`.
+    fn poll(&mut self, handler: &mut dyn DrainHandler) {
+        if self.disabled {
+            return;
+        }
+
+        match read_events(&self.cwd) {
+            Ok(events) => {
+                self.consecutive_errors = 0;
+                // Process only events after our high-water mark using a
+                // temporary channel so we can reuse the DrainHandler trait.
+                let (tx, tmp_rx) = crossbeam_channel::unbounded();
+                for event in events.into_iter().skip(self.high_water) {
+                    let key = event.dedup_key();
+                    self.seen.insert(key);
+                    let _ = tx.send(event);
+                    self.high_water += 1;
+                }
+                drop(tx);
+                handler.drain(&tmp_rx);
+            }
+            Err(_) => {
+                self.consecutive_errors += 1;
+                if self.consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
+                    self.disabled = true;
+                }
+            }
+        }
+    }
+}
+
+/// Drain events from the shared listener, skipping any already seen via the
+/// agent workspace poller.
+fn drain_shared_with_dedup(
+    rx: &Receiver<TaskEvent>,
+    handler: &mut dyn DrainHandler,
+    poller: Option<&AgentWorkspacePoller>,
+) {
+    let seen = poller.map(|p| &p.seen);
+
+    // If there's no poller (or no seen-set), just drain normally.
+    let Some(seen) = seen else {
+        handler.drain(rx);
+        return;
+    };
+
+    if seen.is_empty() {
+        handler.drain(rx);
+        return;
+    }
+
+    // Manually drain, filtering out duplicates.
+    let (tx, tmp_rx) = crossbeam_channel::unbounded();
+    for event in rx.try_iter() {
+        let key = event.dedup_key();
+        if !seen.contains(&key) {
+            let _ = tx.send(event);
+        }
+    }
+    drop(tx);
+    handler.drain(&tmp_rx);
+}
+
+/// Attempt to discover the agent's isolated workspace path.
+///
+/// Returns `None` if session discovery fails (timeout, workspace isolation
+/// disabled) or the workspace directory doesn't exist.
+fn discover_agent_workspace(
+    cwd: &Path,
+    thread: &crate::tasks::lanes::ThreadId,
+) -> Option<PathBuf> {
+    use crate::agents::runtime::discover_session_id;
+    use crate::repos::id::ensure_repo_id;
+    use crate::session::isolation::workspaces_dir;
+
+    let repo_id = ensure_repo_id(cwd).ok()?;
+    let session_id = discover_session_id(thread).ok()?;
+
+    let agent_cwd = workspaces_dir().join(&repo_id).join(&session_id);
+    if agent_cwd.is_dir() {
+        Some(agent_cwd)
+    } else {
+        None
+    }
 }
 
 /// Drain handler for steps that track subtask creation under a parent task.
