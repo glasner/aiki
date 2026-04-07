@@ -224,7 +224,7 @@ turn.completed:
     # Skipped when an autoreply is pending (e.g. conflict resolution) — the
     # follow-up turn will re-evaluate this condition after the agent responds.
     # Fires for both interactive sessions and orchestrator tasks (--print agents).
-    - if: !has_pending_autoreply && session.task.status == "closed" && (session.mode == "interactive" || session.task.type == "orchestrator")
+    - if: '!has_pending_autoreply && session.task.status == "closed" && (session.mode == "interactive" || session.task.type == "orchestrator")'
       then:
           - log: "Task {{session.task.id}} closed (thread tail), ending session"
           - session.end: "Task completed"
