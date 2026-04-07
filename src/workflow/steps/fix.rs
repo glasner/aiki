@@ -135,7 +135,7 @@ pub(crate) fn create_plan_fix_task(
         data,
         sources: vec![format!("task:{}", review_id)],
         assignee: assignee.clone(),
-        parent_id: Some(fix_parent_id.to_string()),
+        parent_id: None,
         ..Default::default()
     };
 
@@ -191,7 +191,10 @@ pub(crate) fn run(ctx: &mut WorkflowContext) -> anyhow::Result<StepResult> {
         Some(template_name),
     )?;
     ctx.status("running fix agent");
-    let run_options = TaskRunOptions::new();
+    let run_options = match ctx.opts.agent {
+        Some(agent) => TaskRunOptions::new().with_agent(agent),
+        None => TaskRunOptions::new(),
+    };
     if ctx.event_rx.is_some() {
         let output = ctx.output;
         let mut handler = super::SubtaskDrainHandler::new(
