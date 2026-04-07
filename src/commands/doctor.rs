@@ -491,6 +491,9 @@ pub fn run(fix: bool) -> Result<()> {
             }
         }
 
+        // Plugin dependency graph health checks
+        issues_found += check_plugin_graph(&project_root);
+
         println!();
     }
 
@@ -864,6 +867,100 @@ fn check_templates(project_root: &std::path::Path, fix: bool) -> usize {
     }
 
     issues
+}
+
+/// Check plugin dependency graph health: missing deps, cycles, orphans.
+///
+/// Returns the number of issues found.
+fn check_plugin_graph(project_root: &std::path::Path) -> usize {
+    let plugins_base = match crate::plugins::plugins_base_dir() {
+        Ok(p) => p,
+        Err(_) => return 0,
+    };
+
+    let graph = crate::plugins::graph::PluginGraph::build(&plugins_base);
+
+    // Collect hooks.yml include references for orphan detection
+    let hooks_yml_refs = collect_hooks_yml_plugin_refs(project_root);
+
+    let mut issues = 0;
+
+    // Check for missing dependencies
+    let missing = graph.missing_dependencies();
+    if !missing.is_empty() {
+        for dep in missing {
+            println!("  ✗ Missing dependency: {} (referenced but not installed)", dep);
+            println!("    → Run: aiki plugin install {}", dep);
+            issues += 1;
+        }
+    }
+
+    // Check for dependency cycles
+    let cycles = graph.cycles();
+    if !cycles.is_empty() {
+        for cycle in &cycles {
+            let names: Vec<String> = cycle.iter().map(|r| r.to_string()).collect();
+            println!("  ✗ Dependency cycle detected: {}", names.join(" → "));
+            issues += 1;
+        }
+    }
+
+    // Check for orphaned plugins
+    let orphans = graph.orphaned(&hooks_yml_refs);
+    if !orphans.is_empty() {
+        for orphan in &orphans {
+            println!("  ⚠ Orphaned plugin: {} (not referenced by any plugin or hooks.yml)", orphan);
+        }
+    }
+
+    issues
+}
+
+/// Collect plugin references from hooks.yml includes (top-level and before/after blocks).
+fn collect_hooks_yml_plugin_refs(
+    project_root: &std::path::Path,
+) -> std::collections::HashSet<crate::plugins::PluginRef> {
+    let mut refs = std::collections::HashSet::new();
+
+    let hooks_yml_path = project_root.join(".aiki/hooks.yml");
+    let content = match fs::read_to_string(&hooks_yml_path) {
+        Ok(c) => c,
+        Err(_) => return refs,
+    };
+    let yaml: serde_yaml::Value = match serde_yaml::from_str(&content) {
+        Ok(v) => v,
+        Err(_) => return refs,
+    };
+
+    // Extract includes from a mapping
+    let extract = |mapping: &serde_yaml::Mapping, refs: &mut std::collections::HashSet<crate::plugins::PluginRef>| {
+        if let Some(includes) = mapping.get("include").and_then(|v| v.as_sequence()) {
+            for include in includes {
+                if let Some(name) = include.as_str() {
+                    if let Ok(plugin_ref) = name.parse::<crate::plugins::PluginRef>() {
+                        refs.insert(plugin_ref);
+                    }
+                }
+            }
+        }
+    };
+
+    if let Some(mapping) = yaml.as_mapping() {
+        // Top-level includes
+        extract(mapping, &mut refs);
+
+        // before/after block includes
+        for block_key in &["before", "after"] {
+            if let Some(block) = mapping
+                .get(serde_yaml::Value::String(block_key.to_string()))
+                .and_then(|v| v.as_mapping())
+            {
+                extract(block, &mut refs);
+            }
+        }
+    }
+
+    refs
 }
 
 /// Check if a command string invokes aiki hooks stdin with specific agent/event
