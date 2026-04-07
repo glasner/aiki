@@ -169,7 +169,7 @@ pub(crate) fn run(ctx: &mut WorkflowContext) -> anyhow::Result<StepResult> {
             Some(id) => id,
             None => {
                 ctx.status("creating epic");
-                create_epic_task(&ctx.cwd, &plan_path)?
+                create_epic_task(&ctx.cwd, &plan_path, ctx.opts.agent)?
             }
         };
 

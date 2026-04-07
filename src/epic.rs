@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Result};
 
+use crate::agents::{determine_default_coder, AgentType};
 use crate::config::get_aiki_binary_path;
 use crate::error::{AikiError, Result as AikiResult};
 use crate::plans::parse_plan_metadata;
@@ -100,11 +101,20 @@ pub fn resolve_epic_from_plan_path<'a>(graph: &'a TaskGraph, path: &str) -> Resu
 /// Extracts the plan title from the H1 heading (or filename as fallback).
 /// Sets `data.plan` and source. The `implements-plan` link is written by
 /// `run_decompose()` which is called after this function.
-pub(crate) fn create_epic_task(cwd: &Path, plan_path: &str) -> AikiResult<String> {
+pub(crate) fn create_epic_task(
+    cwd: &Path,
+    plan_path: &str,
+    agent_override: Option<AgentType>,
+) -> AikiResult<String> {
     let full_path = resolve_plan_path(cwd, plan_path);
     let metadata = parse_plan_metadata(&full_path);
 
     let plan_title = metadata.title.unwrap_or(metadata.path);
+
+    // Resolve assignee: explicit --agent override, or default coder.
+    let assignee = agent_override
+        .or_else(|| determine_default_coder().ok())
+        .map(|a| a.as_str().to_string());
 
     let epic_name = format!("Epic: {}", plan_title);
     let epic_id = generate_task_id(&epic_name);
@@ -118,7 +128,7 @@ pub(crate) fn create_epic_task(cwd: &Path, plan_path: &str) -> AikiResult<String
         slug: None,
         task_type: Some("epic".to_string()),
         priority: TaskPriority::P2,
-        assignee: None,
+        assignee,
         sources: vec![format!("file:{}", plan_path)],
         template: None,
         instructions: None,
@@ -299,7 +309,7 @@ pub(crate) fn create_epic_with_decompose(
 ) -> AikiResult<String> {
     use crate::commands::decompose::{run_decompose, DecomposeOptions};
 
-    let epic_id = create_epic_task(cwd, plan_path)?;
+    let epic_id = create_epic_task(cwd, plan_path, agent_type)?;
 
     let options = DecomposeOptions {
         template: template_name.map(|s| s.to_string()),

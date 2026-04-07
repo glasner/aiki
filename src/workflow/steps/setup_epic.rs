@@ -92,7 +92,7 @@ fn run_from_plan_path(ctx: &mut WorkflowContext, restart: bool) -> anyhow::Resul
         Some(id) => id,
         None => {
             ctx.status("creating epic");
-            create_epic_task(&ctx.cwd, &plan_path)?
+            create_epic_task(&ctx.cwd, &plan_path, ctx.opts.agent)?
         }
     };
 

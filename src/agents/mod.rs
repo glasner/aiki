@@ -25,6 +25,14 @@ pub fn get_available_agents() -> Vec<AgentType> {
         .collect()
 }
 
+/// Returns the default coder agent — the first available installed agent.
+pub fn determine_default_coder() -> crate::error::Result<AgentType> {
+    get_available_agents()
+        .into_iter()
+        .next()
+        .ok_or(crate::error::AikiError::NoAgentsAvailable)
+}
+
 /// Check if a named agent is available (has runtime + installed).
 pub fn is_agent_available(agent: &str) -> bool {
     AgentType::from_str(agent)
