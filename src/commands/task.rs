@@ -6038,24 +6038,12 @@ fn run_lane(
     Ok(())
 }
 
-/// Extract task ID from input, handling XML output format
+/// Extract a task ID from a line of piped input.
 ///
-/// Supports:
-/// - Plain task ID: "xqrmnpst"
-/// - XML output with task_id attribute: `<started task_id="xqrmnpst" async="true">`
-fn extract_task_id(input: &str) -> String {
-    let trimmed = input.trim();
-
-    // Try to extract from XML task_id attribute
-    if let Some(start) = trimmed.find("task_id=\"") {
-        let after_quote = &trimmed[start + 9..]; // Skip `task_id="`
-        if let Some(end) = after_quote.find('"') {
-            return after_quote[..end].to_string();
-        }
-    }
-
-    // Return as-is (plain task ID)
-    trimmed.to_string()
+/// Trims whitespace and returns the result. Used as the `extract_fn` callback
+/// for `resolve_ref_list` when reading task IDs from stdin.
+pub(crate) fn extract_task_id(input: &str) -> String {
+    input.trim().to_string()
 }
 
 /// Wait for task(s) to reach a terminal state (closed or stopped)
@@ -8177,28 +8165,8 @@ D src/old_file.ts
     }
 
     #[test]
-    fn test_extract_task_id_xml_started() {
-        let xml = r#"<aiki_task cmd="run" status="ok">
-  <started task_id="xqrmnpst" async="true">
-    Task started asynchronously.
-  </started>
-</aiki_task>"#;
-        assert_eq!(extract_task_id(xml), "xqrmnpst");
-    }
-
-    #[test]
-    fn test_extract_task_id_xml_completed() {
-        let xml = r#"<aiki_task cmd="run" status="ok">
-  <completed task_id="abcdefgh"/>
-</aiki_task>"#;
-        assert_eq!(extract_task_id(xml), "abcdefgh");
-    }
-
-    #[test]
-    fn test_extract_task_id_no_xml() {
-        // If no task_id attribute found, return as-is
-        let input = "some random text";
-        assert_eq!(extract_task_id(input), "some random text");
+    fn test_extract_task_id_passthrough() {
+        assert_eq!(extract_task_id("some random text"), "some random text");
     }
 
     #[test]

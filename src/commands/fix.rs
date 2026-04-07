@@ -5,6 +5,7 @@
 
 use std::env;
 
+use super::task::extract_task_id;
 use super::OutputFormat;
 use crate::error::{AikiError, Result};
 use crate::workflow::fix::{self, FixOpts};
@@ -84,21 +85,6 @@ pub fn run(args: FixArgs) -> Result<()> {
     Ok(())
 }
 
-/// Extract task ID from input, handling XML output format
-fn extract_task_id(input: &str) -> String {
-    let trimmed = input.trim();
-
-    // Try to extract from XML task_id attribute
-    if let Some(start) = trimmed.find("task_id=\"") {
-        let after_quote = &trimmed[start + 9..];
-        if let Some(end) = after_quote.find('"') {
-            return after_quote[..end].to_string();
-        }
-    }
-
-    trimmed.to_string()
-}
-
 // ── Tests ────────────────────────────────────────────────────────────
 
 // The workflow test remains here since it tests workflow composition
@@ -153,43 +139,8 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_task_id_xml() {
-        let xml = r#"<aiki_review cmd="review" status="ok">
-  <completed task_id="xqrmnpst" comments="2"/>
-</aiki_review>"#;
-        assert_eq!(extract_task_id(xml), "xqrmnpst");
-    }
-
-    #[test]
-    fn test_extract_task_id_multiline_xml() {
-        let xml = r#"
-            <aiki_review cmd="review" status="ok">
-                <completed task_id="abcdefghijklmnopqrstuvwxyzabcdef" comments="5"/>
-            </aiki_review>
-        "#;
-        assert_eq!(extract_task_id(xml), "abcdefghijklmnopqrstuvwxyzabcdef");
-    }
-
-    #[test]
-    fn test_extract_task_id_no_xml_passthrough() {
+    fn test_extract_task_id_passthrough() {
         assert_eq!(extract_task_id("plain-id-123"), "plain-id-123");
-    }
-
-    #[test]
-    fn test_extract_task_id_xml_no_task_id_attr() {
-        let xml = r#"<aiki status="ok"/>"#;
-        assert_eq!(extract_task_id(xml), xml);
-    }
-
-    #[test]
-    fn test_extract_task_id_from_xml_attribute() {
-        let xml = r#"<completed task_id="abcdefghij"/>"#;
-        assert_eq!(extract_task_id(xml), "abcdefghij");
-    }
-
-    #[test]
-    fn test_extract_task_id_trims_whitespace() {
-        assert_eq!(extract_task_id("  myid  "), "myid");
     }
 
     #[test]
