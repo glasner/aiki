@@ -5,6 +5,7 @@
 
 pub mod deps;
 pub mod git;
+pub mod graph;
 pub mod manifest;
 pub mod project;
 pub mod scanner;
@@ -12,6 +13,8 @@ pub mod scanner;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+
+use std::fs;
 
 use crate::error::{AikiError, Result};
 use crate::plugins::manifest::resolve_display_name;
@@ -52,22 +55,17 @@ impl PluginRef {
         plugins_base.join(&self.namespace).join(&self.name)
     }
 
-    /// Returns a human-readable display name if one differs from the `namespace/name` path.
+    /// Returns a human-readable display name for this plugin.
     ///
-    /// Returns `Some(name)` when plugin.yaml or hooks.yaml provides a distinct name,
-    /// `None` when the display name would be identical to `self.to_string()`.
-    // TODO: Reads plugin.yaml from disk on every call. Cache display names in
-    // PluginGraph when it lands (see ops/now/plugins/dependency-graph.md).
+    /// Returns the name from plugin.yaml or hooks.yaml if one exists,
+    /// otherwise falls back to the `namespace/name` path.
+    // Note: Reads plugin.yaml from disk. Prefer `PluginGraph::display_name()`
+    // when a graph is already built (e.g. in `plugin list`).
     #[must_use]
-    pub fn display_name(&self, plugins_base: &Path) -> Option<String> {
+    pub fn display_name(&self, plugins_base: &Path) -> String {
         let install_dir = self.install_dir(plugins_base);
         let plugin_path = self.to_string();
-        let display = resolve_display_name(&install_dir, &plugin_path);
-        if display != plugin_path {
-            Some(display)
-        } else {
-            None
-        }
+        resolve_display_name(&install_dir, &plugin_path)
     }
 }
 
@@ -169,6 +167,58 @@ pub fn check_install_status(plugin: &PluginRef, plugins_base: &Path) -> InstallS
     } else {
         InstallStatus::NotInstalled
     }
+}
+
+/// List all installed plugins (directories with `.git/`) under `plugins_base`.
+pub fn list_installed_plugins(plugins_base: &Path) -> Vec<PluginRef> {
+    let mut plugins = Vec::new();
+
+    if !plugins_base.is_dir() {
+        return plugins;
+    }
+
+    let ns_entries = match fs::read_dir(plugins_base) {
+        Ok(e) => e,
+        Err(_) => return plugins,
+    };
+
+    for ns_entry in ns_entries.flatten() {
+        let ns_path = ns_entry.path();
+        if !ns_path.is_dir() {
+            continue;
+        }
+
+        let namespace = match ns_path.file_name().and_then(|n| n.to_str()) {
+            Some(n) => n.to_string(),
+            None => continue,
+        };
+
+        let name_entries = match fs::read_dir(&ns_path) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+
+        for name_entry in name_entries.flatten() {
+            let name_path = name_entry.path();
+            if !name_path.is_dir() {
+                continue;
+            }
+
+            let name = match name_path.file_name().and_then(|n| n.to_str()) {
+                Some(n) => n.to_string(),
+                None => continue,
+            };
+
+            if name_path.join(".git").is_dir() {
+                if let Ok(plugin) = format!("{}/{}", namespace, name).parse::<PluginRef>() {
+                    plugins.push(plugin);
+                }
+            }
+        }
+    }
+
+    plugins.sort_by(|a, b| a.to_string().cmp(&b.to_string()));
+    plugins
 }
 
 #[cfg(test)]
@@ -297,14 +347,14 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("plugin.yaml"), "name: The Way\n").unwrap();
 
-        assert_eq!(r.display_name(tmp.path()), Some("The Way".to_string()));
+        assert_eq!(r.display_name(tmp.path()), "The Way");
     }
 
     #[test]
-    fn test_display_name_returns_none_when_no_distinct_name() {
+    fn test_display_name_falls_back_to_path() {
         let tmp = TempDir::new().unwrap();
         let r: PluginRef = "aiki/way".parse().unwrap();
-        // No plugin dir, no manifest — fallback equals to_string()
-        assert_eq!(r.display_name(tmp.path()), None);
+        // No plugin dir, no manifest — falls back to namespace/name
+        assert_eq!(r.display_name(tmp.path()), "aiki/way");
     }
 }
