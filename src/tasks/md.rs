@@ -101,26 +101,61 @@ pub fn build_context(in_progress: &[&Task], ready_queue: &[&Task]) -> String {
 ///
 /// Returns: `---\nTasks (N ready)\nRun `aiki task start <id>` to begin work.\n`
 #[must_use]
-fn build_footer(ready_queue: &[&Task]) -> String {
+fn build_footer(
+    in_progress: &[&Task],
+    ready_queue: &[&Task],
+    graph: Option<&super::graph::TaskGraph>,
+) -> String {
     let hint = if let Some(first) = ready_queue.first() {
-        format!(
-            "Run `aiki task start {}` to begin work.",
-            short_id(&first.id)
-        )
+        // Ready tasks → start hint
+        format!("Run `aiki task start {}` to begin.", short_id(&first.id))
+    } else if let Some(parent) = in_progress.first() {
+        // Nothing ready, something in-progress
+        let all_subtasks_done = graph
+            .map(|g| super::manager::all_subtasks_closed(g, &parent.id))
+            .unwrap_or(false);
+        if all_subtasks_done {
+            // Parent with all subtasks done → close hint
+            format!(
+                "All subtasks done. Run `aiki task close {} --confidence <1-4> --summary \"...\"` to finish.",
+                short_id(&parent.id)
+            )
+        } else if graph.map_or(false, |g| super::manager::has_subtasks(g, &parent.id)) {
+            // Parent with subtasks still in progress → nav hint
+            NAV_HINT.to_string()
+        } else {
+            // Leaf task in progress → close hint
+            format!(
+                "If done, run `aiki task close {} --confidence <1-4> --summary \"...\"` to finish.",
+                short_id(&parent.id)
+            )
+        }
     } else {
         NAV_HINT.to_string()
     };
-    format!("---\nTasks ({} ready)\n{}\n", ready_queue.len(), hint)
+    let summary = match (in_progress.len(), ready_queue.len()) {
+        (0, r) => format!("Tasks ({} ready)", r),
+        (p, 0) => format!("Tasks ({} in progress)", p),
+        (p, r) => format!("Tasks ({} in progress, {} ready)", p, r),
+    };
+    format!("---\n{}\n{}\n", summary, hint)
 }
 
 /// Build the task list output for read commands (`task` / `task list`).
 ///
 /// Context sections + footer with nav hint when tasks exist.
+/// Pass `graph` to enable subtask-aware hints in the footer.
 #[must_use]
-pub fn build_list_output(in_progress: &[&Task], ready_queue: &[&Task]) -> String {
+pub fn build_list_output(
+    in_progress: &[&Task],
+    ready_queue: &[&Task],
+    graph: Option<&super::graph::TaskGraph>,
+) -> String {
     let mut out = build_context(in_progress, ready_queue);
     if !in_progress.is_empty() || !ready_queue.is_empty() {
-        out.push_str(&build_footer(ready_queue));
+        out.push_str(&build_footer(in_progress, ready_queue, graph));
+    } else {
+        out.push_str("Done. No remaining tasks.\n");
     }
     out
 }
@@ -173,7 +208,11 @@ pub fn format_action_added(task: &Task) -> String {
 /// When false, omits the name to avoid duplicating what the user just typed (quick-start).
 /// Includes instructions section if present.
 #[must_use]
-pub fn format_action_started(task: &Task, show_name: bool) -> String {
+pub fn format_action_started(
+    task: &Task,
+    show_name: bool,
+    graph: Option<&super::graph::TaskGraph>,
+) -> String {
     let header = if show_name {
         format!("Started {} — {}", short_id(&task.id), task.name)
     } else {
@@ -184,6 +223,40 @@ pub fn format_action_started(task: &Task, show_name: bool) -> String {
     if let Some(ref instructions) = task.instructions {
         md.push('\n');
         md.push_str(&format_instructions(instructions));
+    }
+
+    if let Some(graph) = graph {
+        let subtasks = super::manager::get_subtasks(graph, &task.id);
+        if !subtasks.is_empty() {
+            let total = subtasks.len();
+            let completed = subtasks
+                .iter()
+                .filter(|t| t.status == super::types::TaskStatus::Closed)
+                .count();
+            let percentage = if total > 0 {
+                (completed * 100) / total
+            } else {
+                0
+            };
+            md.push_str(&format!(
+                "\nSubtasks ({}/{} — {}%):\n",
+                completed, total, percentage
+            ));
+            for subtask in &subtasks {
+                let check = match subtask.status {
+                    super::types::TaskStatus::Closed => "[x]",
+                    super::types::TaskStatus::InProgress => "[>]",
+                    super::types::TaskStatus::Reserved => "[~]",
+                    _ => "[ ]",
+                };
+                let label = if let Some(ref slug) = subtask.slug {
+                    slug.clone()
+                } else {
+                    short_id(&subtask.id).to_string()
+                };
+                md.push_str(&format!("{} {} {}\n", check, label, subtask.name));
+            }
+        }
     }
 
     md
@@ -327,11 +400,11 @@ mod tests {
             TaskPriority::P2,
             TaskStatus::InProgress,
         );
-        let md = format_action_started(&task, true);
+        let md = format_action_started(&task, true, None);
         assert!(md.starts_with("Started abcdefg"));
         assert!(md.contains("Test task"));
 
-        let md_no_name = format_action_started(&task, false);
+        let md_no_name = format_action_started(&task, false, None);
         assert!(md_no_name.starts_with("Started abcdefg"));
         assert!(!md_no_name.contains("Test task"));
     }
@@ -345,7 +418,7 @@ mod tests {
             TaskStatus::InProgress,
         );
         task.instructions = Some("Do the thing".to_string());
-        let md = format_action_started(&task, true);
+        let md = format_action_started(&task, true, None);
         assert!(md.contains("Started abcdefg"));
         assert!(md.contains("### Instructions\nDo the thing\n"));
     }
@@ -457,7 +530,7 @@ mod tests {
             TaskPriority::P2,
             TaskStatus::Open,
         );
-        let md = build_list_output(&[], &[&task]);
+        let md = build_list_output(&[], &[&task], None);
         assert!(md.contains("Ready (1):"));
         assert!(md.contains("---\nTasks (1 ready)"));
         assert!(md.contains("aiki task start abcdefg"));
@@ -465,8 +538,8 @@ mod tests {
 
     #[test]
     fn test_list_output_empty() {
-        let md = build_list_output(&[], &[]);
-        assert_eq!(md, "Ready (0):\n");
+        let md = build_list_output(&[], &[], None);
+        assert!(md.contains("Done. No remaining tasks."));
         assert!(!md.contains("---"));
     }
 

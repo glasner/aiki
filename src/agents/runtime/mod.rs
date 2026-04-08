@@ -177,6 +177,8 @@ pub struct AgentSpawnOptions {
     pub thread: ThreadId,
     /// Parent session UUID for workspace isolation chaining
     pub parent_session_uuid: Option<String>,
+    /// Path to the event FIFO pipe for push-based event streaming
+    pub event_pipe: Option<std::path::PathBuf>,
 }
 
 impl AgentSpawnOptions {
@@ -187,6 +189,7 @@ impl AgentSpawnOptions {
             cwd: cwd.as_ref().to_path_buf(),
             thread,
             parent_session_uuid: None,
+            event_pipe: None,
         }
     }
 
@@ -194,6 +197,13 @@ impl AgentSpawnOptions {
     #[must_use]
     pub fn with_parent_session_uuid(mut self, uuid: Option<String>) -> Self {
         self.parent_session_uuid = uuid;
+        self
+    }
+
+    /// Set the event pipe path for push-based event streaming
+    #[must_use]
+    pub fn with_event_pipe(mut self, path: Option<std::path::PathBuf>) -> Self {
+        self.event_pipe = path;
         self
     }
 
@@ -207,8 +217,7 @@ SCOPE: Only tasks in this thread. Do not pick up other work.
 START: Run `aiki task list` to see your backlog. Start the next task with
        `aiki task start <task-id>`. The start output includes the task's
        instructions and context; review that output, then begin working immediately.
-EXIT: When `aiki task list` returns no tasks, you are done — exit immediately.
-     Do not close parent/sibling tasks.
+EXIT: When `aiki task list` returns "Done. No remaining tasks", you are finished — exit immediately.
 "#,
             thread = self.thread,
         )
@@ -260,6 +269,12 @@ pub(crate) fn build_spawn_env(options: &AgentSpawnOptions, mode: &str) -> Vec<(S
     ];
     if let Some(ref uuid) = options.parent_session_uuid {
         env.push(("AIKI_PARENT_SESSION_UUID".to_string(), uuid.clone()));
+    }
+    if let Some(ref pipe) = options.event_pipe {
+        env.push((
+            "AIKI_EVENT_PIPE".to_string(),
+            pipe.to_string_lossy().into_owned(),
+        ));
     }
     env
 }

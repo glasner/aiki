@@ -260,6 +260,10 @@ pub fn get_current_scope_set(graph: &super::graph::TaskGraph) -> ScopeSet {
     for task in in_progress {
         if let Some(parent_id) = graph.edges.target(&task.id, "subtask-of") {
             scopes.push(parent_id.to_string());
+        } else if has_subtasks(graph, &task.id) {
+            // In-progress root task with subtasks: scope into its children
+            // instead of showing root-level tasks (scoped view)
+            scopes.push(task.id.clone());
         } else {
             include_root = true;
         }
@@ -548,6 +552,7 @@ mod tests {
             session_id: None,
             turn_id: None,
             working_copy: None,
+            instructions: None,
             timestamp: Utc::now(),
         }
     }
@@ -840,6 +845,7 @@ mod tests {
                 session_id: None,
                 turn_id: None,
                 working_copy: None,
+                instructions: None,
                 timestamp: Utc::now(),
             },
         ];
@@ -865,6 +871,7 @@ mod tests {
                 session_id: None,
                 turn_id: None,
                 working_copy: None,
+                instructions: None,
                 timestamp: Utc::now(),
             },
         ];
@@ -1040,6 +1047,32 @@ mod tests {
 
         assert!(scope_set.include_root);
         assert!(scope_set.scopes.is_empty());
+    }
+
+    #[test]
+    fn test_scope_set_root_with_subtasks() {
+        // Root task in-progress WITH subtasks → scoped view
+        // include_root=false, scopes=[root1] so subtasks appear in ready queue
+        let events = vec![
+            make_created_event("root1", "Root task", TaskPriority::P2, 3),
+            make_created_event("child1", "Child 1", TaskPriority::P2, 2),
+            make_link("child1", "root1", "subtask-of"),
+            make_created_event("child2", "Child 2", TaskPriority::P2, 1),
+            make_link("child2", "root1", "subtask-of"),
+            make_started_event("root1"),
+        ];
+        let graph = make_graph(&events);
+        let scope_set = get_current_scope_set(&graph);
+
+        assert!(!scope_set.include_root); // Scoped view, not root
+        assert_eq!(scope_set.scopes, vec!["root1".to_string()]);
+
+        // Subtasks should appear in ready queue
+        let ready = get_ready_queue_for_scope_set(&graph, &scope_set);
+        let ids: Vec<_> = ready.iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains(&"child1"));
+        assert!(ids.contains(&"child2"));
     }
 
     #[test]
@@ -1758,6 +1791,7 @@ mod tests {
                 session_id: None,
                 turn_id: None,
                 working_copy: None,
+                instructions: None,
                 timestamp: base_time + chrono::Duration::seconds(1),
             },
             // Add comment
@@ -2070,6 +2104,7 @@ mod tests {
             session_id: Some(session_id.to_string()),
             turn_id: None,
             working_copy: None,
+            instructions: None,
             timestamp: Utc::now(),
         }
     }
@@ -2081,6 +2116,7 @@ mod tests {
             session_id: Some(session_id.to_string()),
             turn_id: None,
             working_copy: None,
+            instructions: None,
             timestamp: Utc::now() - chrono::Duration::hours(hours_ago),
         }
     }
@@ -2815,6 +2851,7 @@ mod tests {
                 session_id: None,
                 turn_id: Some("turn-aaa".to_string()),
                 working_copy: None,
+                instructions: None,
                 timestamp: Utc::now(),
             },
         ];
@@ -2839,6 +2876,7 @@ mod tests {
                 session_id: None,
                 turn_id: Some("turn-aaa".to_string()),
                 working_copy: None,
+                instructions: None,
                 timestamp: Utc::now(),
             },
             TaskEvent::Started {
@@ -2847,6 +2885,7 @@ mod tests {
                 session_id: None,
                 turn_id: Some("turn-bbb".to_string()),
                 working_copy: None,
+                instructions: None,
                 timestamp: Utc::now(),
             },
         ];
@@ -2870,6 +2909,7 @@ mod tests {
                 session_id: None,
                 turn_id: Some("turn-aaa".to_string()),
                 working_copy: None,
+                instructions: None,
                 timestamp: Utc::now(),
             },
             TaskEvent::Closed {
@@ -2901,6 +2941,7 @@ mod tests {
                 session_id: None,
                 turn_id: Some("turn-aaa".to_string()),
                 working_copy: None,
+                instructions: None,
                 timestamp: Utc::now(),
             },
             TaskEvent::Stopped {
@@ -2931,6 +2972,7 @@ mod tests {
                 session_id: None,
                 turn_id: Some("turn-x".to_string()),
                 working_copy: None,
+                instructions: None,
                 timestamp: Utc::now(),
             },
             TaskEvent::Closed {

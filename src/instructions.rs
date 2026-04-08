@@ -2,7 +2,7 @@
 ///
 /// Handles detecting which instruction file (AGENTS.md or CLAUDE.md) is canonical,
 /// ensuring the <aiki> block is present, and managing symlinks between them.
-use crate::commands::agents_template::{aiki_block_template, AIKI_BLOCK_VERSION};
+use crate::commands::agents_template::{aiki_block_hash, aiki_block_template};
 use crate::error::Result;
 use anyhow::Context;
 use std::fs;
@@ -184,8 +184,8 @@ pub fn ensure_aiki_block(repo_root: &Path, filename: &str, quiet: bool) -> Resul
             if !quiet {
                 println!("✓ Added <aiki> block to {}", filename);
             }
-        } else if !content.contains(&format!("<aiki version=\"{}\">", AIKI_BLOCK_VERSION)) {
-            // Version is outdated — replace the old block
+        } else if !content.contains(&format!("hash=\"{}\"", aiki_block_hash())) {
+            // Content is outdated — replace the old block
             let start = content
                 .find("<aiki version=")
                 .expect("already checked content contains <aiki version=");

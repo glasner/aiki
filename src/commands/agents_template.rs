@@ -6,12 +6,37 @@
 /// Current version of the AIKI block — derived from Cargo.toml at compile time
 pub const AIKI_BLOCK_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// Returns the full <aiki> block template with the current version
+/// Content hash of the block body, computed at compile time via FNV-1a.
+/// Doctor and init compare this hash to detect stale blocks even within the
+/// same package version (e.g. during development).
+const AIKI_BLOCK_HASH_RAW: u64 = const_fnv1a(AIKI_BLOCK_INNER);
+
+/// Hex string of the content hash.
+pub fn aiki_block_hash() -> String {
+    format!("{:x}", AIKI_BLOCK_HASH_RAW)
+}
+
+/// Returns the full <aiki> block template with the current version and content hash
 pub fn aiki_block_template() -> String {
     format!(
-        "<aiki version=\"{}\">{}",
-        AIKI_BLOCK_VERSION, AIKI_BLOCK_INNER
+        "<aiki version=\"{}\" hash=\"{}\">{}",
+        AIKI_BLOCK_VERSION,
+        aiki_block_hash(),
+        AIKI_BLOCK_INNER
     )
+}
+
+/// FNV-1a hash at compile time
+const fn const_fnv1a(s: &str) -> u64 {
+    let bytes = s.as_bytes();
+    let mut hash: u64 = 0xcbf29ce484222325;
+    let mut i = 0;
+    while i < bytes.len() {
+        hash ^= bytes[i] as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+        i += 1;
+    }
+    hash
 }
 
 /// Template body (everything after the opening tag)
@@ -294,6 +319,9 @@ aiki task
 
 # Quick-start: create and start a new task (RECOMMENDED)
 aiki task start "Task description"
+
+# Quick-start with instructions (for tasks you'll delegate)
+aiki task start "Fix auth bug" -i "Check token validation in login_handler"
 
 # Quick-start with priority
 aiki task start "Urgent fix" --p0

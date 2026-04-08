@@ -1,4 +1,4 @@
-use crate::commands::agents_template::AIKI_BLOCK_VERSION;
+use crate::commands::agents_template::aiki_block_hash;
 use crate::commands::zed_detection;
 use crate::config;
 use crate::editors::zed as ide_config;
@@ -578,7 +578,10 @@ fn check_instruction_files(project_root: &std::path::Path, fix: bool) -> usize {
         let file_path = project_root.join(filename);
         match std::fs::read_to_string(&file_path) {
             Ok(content) => {
-                if content.contains(&format!("<aiki version=\"{}\">", AIKI_BLOCK_VERSION)) {
+                let expected_hash = aiki_block_hash();
+                let has_current_hash =
+                    content.contains(&format!("hash=\"{}\"", expected_hash));
+                if content.contains("<aiki version=") && has_current_hash {
                     println!("  ✓ {} has current <aiki> block", filename);
                 } else if content.contains("<aiki version=") {
                     println!("  ⚠ {} has outdated <aiki> block", filename);

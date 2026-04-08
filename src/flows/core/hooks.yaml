@@ -219,15 +219,16 @@ turn.completed:
                 to side #2's content to produce the merged result.
 
     # Auto-end session when the driving task (thread tail) has been closed.
-    # Uses session.task.* (looked up from the task graph) instead of event.task.*
-    # since turn.completed doesn't carry task info.
-    # Skipped when an autoreply is pending (e.g. conflict resolution) — the
-    # follow-up turn will re-evaluate this condition after the agent responds.
-    # Fires for both interactive sessions and orchestrator tasks (--print agents).
-    - if: '!has_pending_autoreply && session.task.status == "closed" && (session.mode == "interactive" || session.task.type == "orchestrator")'
+    - if: session.thread.tail.status == "closed"
       then:
-          - log: "Task {{session.task.id}} closed (thread tail), ending session"
+          - log: "Thread tail {{session.thread.tail}} closed, ending session"
           - session.end: "Task completed"
+
+    # Legacy session.task.* version (uses same graph lookup but different variable path)
+    # - if: 'session.task.status == "closed" && (session.mode == "interactive" || session.task.type == "orchestrator")'
+    #   then:
+    #       - log: "Task {{session.task.id}} closed (thread tail), ending session"
+    #       - session.end: "Task completed"
 
 # ==============================================================================
 # Change Operation Events (unified mutations: write, delete, move)

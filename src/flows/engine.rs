@@ -619,13 +619,27 @@ impl HookEngine {
                     let tail = thread.tail.clone();
                     let head = thread.head.clone();
                     let serialized = thread.serialize();
-                    resolver.add_var("session.thread.tail".to_string(), tail);
+                    resolver.add_var("session.thread.tail".to_string(), tail.clone());
                     resolver.add_var("session.thread.head".to_string(), head);
                     resolver.add_var("session.thread".to_string(), serialized);
+
+                    // session.thread.tail.status — lazy lookup from task graph
+                    let tail_for_status = tail;
+                    let cwd_for_status = state.cwd().to_path_buf();
+                    resolver.add_lazy_var("session.thread.tail.status", move || {
+                        crate::tasks::read_events(&cwd_for_status)
+                            .ok()
+                            .and_then(|events| {
+                                let graph = crate::tasks::materialize_graph(&events);
+                                graph.tasks.get(&tail_for_status).map(|t| t.status.to_string())
+                            })
+                            .unwrap_or_default()
+                    });
                 } else {
                     resolver.add_var("session.thread.tail".to_string(), String::new());
                     resolver.add_var("session.thread.head".to_string(), String::new());
                     resolver.add_var("session.thread".to_string(), String::new());
+                    resolver.add_var("session.thread.tail.status".to_string(), String::new());
                 }
 
                 // session.task.* — lazy lookup of the thread tail task from the task graph
@@ -1366,25 +1380,18 @@ impl HookEngine {
 
         debug_log(|| format!("session.end: {}", reason));
 
-        // Get the session's parent PID (the agent process)
-        let parent_pid = match &state.event {
-            crate::events::AikiEvent::TaskClosed(e) => {
-                // For task.closed events, we need to find the session that matches the task
-                // Look up the session for this task
-                if let Some(session_info) = state.resolve_task_closed_thread_session() {
-                    Some(session_info.pid)
-                } else {
-                    debug_log(|| {
-                        format!("session.end: No task session found for task {}", e.task.id)
-                    });
-                    None
-                }
-            }
-            _ => {
-                debug_log(|| "session.end: Can only be used in task.closed events".to_string());
-                None
-            }
-        };
+        // Get the session's parent PID (the agent process).
+        // Most events carry a session directly; task.closed is the exception
+        // (task events represent lifecycle, not agent sessions) and needs a
+        // reverse lookup from session files.
+        let parent_pid = extract_session(&state.event)
+            .ok()
+            .and_then(|s| s.parent_pid())
+            .or_else(|| {
+                state
+                    .resolve_task_closed_thread_session()
+                    .map(|info| info.pid)
+            });
 
         if let Some(pid) = parent_pid {
             // Defer SIGTERM until after all hooks complete

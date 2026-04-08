@@ -10,6 +10,7 @@
 //! Run one suite:      `cargo test --test e2e -- --ignored provenance`
 
 mod provenance;
+mod task_lifecycle;
 
 use assert_cmd::Command;
 use std::path::Path;

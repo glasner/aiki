@@ -608,6 +608,10 @@ pub enum TaskCommands {
         /// Skip loop iterations (sets data.options.once = true)
         #[arg(long)]
         once: bool,
+
+        /// Set instructions (inline, from file, or stdin with bare flag)
+        #[arg(long, short = 'i', num_args = 0..=1, default_missing_value = "")]
+        instructions: Option<String>,
     },
 
     /// Stop task(s)
@@ -1172,6 +1176,7 @@ pub fn run(command: Option<TaskCommands>) -> Result<()> {
             needs_context,
             autorun,
             once,
+            instructions,
         } => run_start(
             &cwd,
             ids,
@@ -1200,6 +1205,7 @@ pub fn run(command: Option<TaskCommands>) -> Result<()> {
             needs_context,
             autorun,
             once,
+            instructions,
         ),
         TaskCommands::Stop {
             ids,
@@ -1832,7 +1838,7 @@ fn run_list(
         out
     } else {
         // Default view: nav hint header + context
-        build_list_output(&in_progress, &ready_queue)
+        build_list_output(&in_progress, &ready_queue, Some(&graph))
     };
 
     aiki_print(&output);
@@ -2260,8 +2266,12 @@ fn run_start(
     needs_context: Option<String>,
     autorun: bool,
     once: bool,
+    instructions_arg: Option<String>,
 ) -> Result<()> {
     use crate::session::find_active_session;
+
+    // Resolve instructions from inline text, file path, or stdin
+    let resolved_instructions = super::input::resolve_text(instructions_arg.as_deref())?;
 
     // Validate --autorun requires at least one blocking link flag
     if autorun
@@ -2273,6 +2283,13 @@ fn run_start(
     {
         return Err(AikiError::InvalidArgument(
             "--autorun requires a blocking link flag (--blocked-by, --depends-on, --validates, --remediates, or --needs-context)".to_string()
+        ));
+    }
+
+    // Reject --instructions when --template is used (templates provide their own instructions)
+    if template_name.is_some() && resolved_instructions.is_some() {
+        return Err(AikiError::InvalidArgument(
+            "--instructions cannot be used with --template (templates provide their own instructions)".to_string()
         ));
     }
 
@@ -2352,6 +2369,7 @@ fn run_start(
             None, // needs_context
             false,
             false, // once
+            None,  // instructions (already handled via template)
         );
     }
 
@@ -2434,7 +2452,7 @@ fn run_start(
                 assignee: None,
                 sources: sources.clone(),
                 template: None,
-                instructions: None,
+                instructions: resolved_instructions.clone(),
                 data: std::collections::HashMap::new(),
                 timestamp,
             };
@@ -2480,7 +2498,7 @@ fn run_start(
                 assignee: None,
                 sources: sources.clone(),
                 template: None,
-                instructions: None,
+                instructions: resolved_instructions.clone(),
                 data: std::collections::HashMap::new(),
                 created_at: timestamp,
                 started_at: None,
@@ -2643,12 +2661,21 @@ fn run_start(
 
     let timestamp = chrono::Utc::now();
     let working_copy = get_working_copy_snapshot_rev(cwd);
+    // Include instructions in the Started event for existing tasks (quick-start
+    // already wrote them in the Created event, so only pass them here for
+    // existing-task starts).
+    let start_instructions = if created_new_task.is_none() {
+        resolved_instructions.clone()
+    } else {
+        None
+    };
     let start_event = TaskEvent::Started {
         task_ids: actual_ids_to_start.clone(),
         agent_type: agent_type_str,
         session_id: session_id.clone(),
         turn_id: turn_id.clone(),
         working_copy,
+        instructions: start_instructions,
         timestamp,
     };
     write_event(cwd, &start_event)?;
@@ -2715,15 +2742,75 @@ fn run_start(
         task.claimed_by_session = session_id.clone();
     }
 
-    // Build slim output: no context footer for start
     let mut output = String::new();
 
-    for task in &started_tasks {
-        // Hide name on quick-start (user just typed it), show on start-by-ID
-        let show_name = created_new_task
-            .as_ref()
-            .map_or(true, |ct| ct.id != task.id);
-        output.push_str(&format_action_started(task, show_name));
+    let is_start_by_id = created_new_task.is_none();
+
+    if is_start_by_id {
+        // Start-by-ID: full task show output (instructions, subtasks, context)
+        // Re-read graph to pick up the start event we just wrote
+        let events = read_events(cwd)?;
+        let graph = materialize_graph(&events);
+
+        for task in &started_tasks {
+            output.push_str(&format!(
+                "Started {} — {}\n",
+                short_id(&task.id),
+                task.name
+            ));
+
+            // Instructions
+            if let Some(ref instructions) = task.instructions {
+                output.push('\n');
+                output.push_str(&format_instructions(instructions));
+            }
+
+            // Subtask listing
+            let subtasks = get_subtasks(&graph, &task.id);
+            if !subtasks.is_empty() {
+                let total = subtasks.len();
+                let completed = subtasks
+                    .iter()
+                    .filter(|t| t.status == TaskStatus::Closed)
+                    .count();
+                let percentage = if total > 0 {
+                    (completed * 100) / total
+                } else {
+                    0
+                };
+                output.push_str(&format!(
+                    "\nSubtasks ({}/{} — {}%):\n",
+                    completed, total, percentage
+                ));
+                for subtask in &subtasks {
+                    let check = match subtask.status {
+                        TaskStatus::Closed => "[x]",
+                        TaskStatus::InProgress => "[>]",
+                        TaskStatus::Reserved => "[~]",
+                        _ => "[ ]",
+                    };
+                    let label = if let Some(ref slug) = subtask.slug {
+                        slug.clone()
+                    } else {
+                        short_id(&subtask.id).to_string()
+                    };
+                    output.push_str(&format!("{} {} {}\n", check, label, subtask.name));
+                }
+
+                // Tip: point agent to first open subtask
+                if let Some(first_open) = subtasks.iter().find(|t| t.status == TaskStatus::Open) {
+                    output.push_str(&format!(
+                        "---\nRun `aiki task start {}` to continue.\n",
+                        short_id(&first_open.id)
+                    ));
+                }
+            }
+        }
+    } else {
+        // Quick-start: slim output (just confirmation)
+        for task in &started_tasks {
+            output.push_str(&format_action_started(task, false, None));
+        }
     }
 
     aiki_print(&output);
@@ -3164,7 +3251,12 @@ fn run_close(
         ));
     }
 
-    if outcome_str == "done" && !confidence_required_for_ids.is_empty() && confidence.is_none() {
+    // Only require --confidence for "done" closes (not --wont-do)
+    if outcome_str == "done"
+        && !(wont_do || outcome_str == "wont_do")
+        && !confidence_required_for_ids.is_empty()
+        && confidence.is_none()
+    {
         return Err(AikiError::InvalidArgument(
             "--confidence is required. Use 1 (low), 2 (medium), 3 (high), or 4 (verified)."
                 .to_string(),
@@ -3477,6 +3569,7 @@ fn run_close(
                                                 session_id: our_session_id.clone(),
                                                 turn_id: turn_id.clone(),
                                                 working_copy: get_working_copy_snapshot_rev(cwd),
+                                                instructions: None,
                                                 timestamp: auto_start_ts,
                                             };
                                             if let Err(e) = write_event(cwd, &start_event) {
@@ -3619,6 +3712,7 @@ fn run_close(
                 session_id: our_session_id.clone(),
                 turn_id: turn_id.clone(),
                 working_copy: get_working_copy_snapshot_rev(cwd),
+                instructions: None,
                 timestamp: auto_start_timestamp,
             };
             write_event(cwd, &start_event)?;
@@ -3706,6 +3800,7 @@ fn run_close(
                     session_id: our_session_id.clone(),
                     turn_id: turn_id.clone(),
                     working_copy: auto_start_baseline,
+                    instructions: None,
                     timestamp: auto_start_timestamp,
                 };
                 write_event(cwd, &start_event)?;
@@ -3794,6 +3889,7 @@ fn run_close(
                 session_id: our_session_id.clone(),
                 turn_id: turn_id.clone(),
                 working_copy: get_working_copy_snapshot_rev(cwd),
+                instructions: None,
                 timestamp: auto_start_timestamp,
             };
             write_event(cwd, &start_event)?;
@@ -3856,7 +3952,7 @@ fn run_close(
             output.push_str(&format_action_parent_autostarted(parent));
         }
         for subtask in &auto_started_subtasks {
-            output.push_str(&format_action_started(subtask, true));
+            output.push_str(&format_action_started(subtask, true, None));
         }
     }
 

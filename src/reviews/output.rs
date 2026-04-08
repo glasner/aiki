@@ -7,6 +7,7 @@ use crate::commands::output::{format_command_output, CommandOutput};
 use crate::error::Result;
 use crate::output_utils;
 use crate::tasks::md::MdBuilder;
+use crate::tasks::types::TaskStatus;
 use crate::tasks::{find_task, materialize_graph, read_events};
 
 /// Summarize a review task as a short text line (e.g. "Found 3 issues" or "approved").
@@ -17,6 +18,8 @@ pub fn review_summary(cwd: &Path, review_id: &str) -> Result<String> {
     let ic = issue_count(task);
     if ic > 0 {
         Ok(format!("Found {} issues", ic))
+    } else if task.status != TaskStatus::Closed {
+        Ok("pending".to_string())
     } else {
         Ok("approved".to_string())
     }
