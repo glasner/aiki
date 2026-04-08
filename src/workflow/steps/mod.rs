@@ -1,10 +1,8 @@
 use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
-use std::thread;
+use std::path::Path;
 use std::time::Duration;
 
 use anyhow::Result;
-use chrono::{DateTime, Utc};
 use crossbeam_channel::Receiver;
 
 pub(crate) use super::WorkflowContext;
@@ -14,9 +12,8 @@ use crate::tasks::runner::{
     finalize_agent_run, handle_session_result, prepare_task_run, rollback_if_still_reserved,
     task_run, task_run_on_session, TaskRunOptions,
 };
-use crate::tasks::listener::POLL_INTERVAL;
+use crate::tasks::graph::GraphDelta;
 use crate::tasks::storage::read_events;
-use crate::tasks::TaskEvent;
 
 pub(crate) mod decompose;
 pub(crate) mod fix;
@@ -217,43 +214,40 @@ pub(crate) fn run_task_with_show_tui(
 
 // ── Shared spawn-drain-finalize ─────────────────────────────────────
 
-/// Step-specific event processing during the spawn-drain-finalize loop.
+/// Step-specific processing of task-graph changes during the
+/// spawn-drain-finalize loop.
 ///
-/// Each step gets exclusive access to the shared `event_rx` channel for the
-/// duration of its agent run. Because `rx.try_iter()` destructively consumes
-/// events, implementations only see events produced while their agent is alive.
-/// This is the intended single-consumer-per-step design — see
-/// `WorkflowContext::event_rx` for details.
+/// Each step receives pre-computed `GraphDelta`s describing what changed in
+/// the task graph since the last poll cycle. Implementations inspect the
+/// delta (new tasks, status changes, new comments, new edges) instead of
+/// consuming raw events from a channel.
 pub(crate) trait DrainHandler {
-    /// Process events from the channel. Called repeatedly while the agent is
-    /// running and once after it exits. Consumes all pending events from `rx`
-    /// via `try_iter()` — consumed events are not visible to later steps.
-    fn drain(&mut self, rx: &Receiver<TaskEvent>);
+    /// Called with a pre-computed delta when the task graph has changed.
+    fn on_change(&mut self, delta: &GraphDelta);
 
-    /// Called once after the final drain, before stderr/finalize. Use for
-    /// summary output (e.g. issue counts).
+    /// Called once after the agent exits and final drain completes.
     fn finish(&mut self) {}
 }
 
 /// Shared spawn-drain-finalize loop.
 ///
-/// Spawns a monitored agent process, drains task events through the provided
-/// handler while the agent runs, reads diagnostic output, and finalizes the
-/// agent run. The `event_rx` channel is shared across all workflow steps
-/// (see `WorkflowContext::event_rx`), but only one step's drain loop runs
-/// at a time, so each handler only consumes events from its own agent.
+/// Spawns a monitored agent process, waits for FIFO notifications via
+/// `recv_timeout` while the agent runs, then re-reads events fresh from JJ
+/// on each cycle and computes a `GraphDelta` for the handler.
 ///
-/// When workspace isolation is active, the spawned agent writes events in its
-/// own JJ workspace. This function discovers that workspace and polls
-/// `read_events` directly from it, deduplicating against events from the
-/// shared listener. Errors from `read_events` use a backoff-then-disable
-/// strategy: after `MAX_CONSECUTIVE_ERRORS` failures the agent-workspace
-/// polling is silently disabled for the remainder of the drain loop.
+/// Flow per cycle:
+/// 1. `recv_timeout(100ms)` — blocks until notification or timeout (doubles
+///    as agent-exit polling interval).
+/// 2. On notification: debounce with a 50ms quiet-period loop draining
+///    further notifications.
+/// 3. `read_events(cwd)` → `materialize_graph` → `compute_delta` →
+///    `handler.on_change()`.
+/// 4. After agent exits: 200ms silence window for final events.
 pub(crate) fn spawn_drain_finalize(
     cwd: &Path,
     task_id: &str,
     run_options: &TaskRunOptions,
-    event_rx: Option<&Receiver<TaskEvent>>,
+    notify_rx: Option<&Receiver<String>>,
     output: WorkflowOutput,
     handler: &mut dyn DrainHandler,
 ) -> crate::error::Result<()> {
@@ -267,48 +261,78 @@ pub(crate) fn spawn_drain_finalize(
         }
     };
 
-    if let Some(rx) = event_rx {
-        // --- Agent workspace discovery ---
-        // Try to discover the agent's isolated workspace for direct event
-        // polling. Falls back to shared-listener-only if discovery fails
-        // (e.g., workspace isolation disabled, timeout).
-        let agent_cwd = discover_agent_workspace(cwd, &prepared.spawn_options.thread);
+    if let Some(rx) = notify_rx {
+        use crate::tasks::graph::{compute_delta, materialize_graph};
 
-        let mut agent_poller = agent_cwd.map(AgentWorkspacePoller::new);
+        let mut prev_graph = if let Ok(events) = read_events(cwd) {
+            materialize_graph(&events)
+        } else {
+            materialize_graph(&[])
+        };
 
+        /// Read events fresh from JJ, materialize, compute delta, and
+        /// call the handler if anything changed.
+        fn process_cycle(
+            cwd: &Path,
+            prev_graph: &mut crate::tasks::graph::TaskGraph,
+            handler: &mut dyn DrainHandler,
+        ) {
+            if let Ok(events) = read_events(cwd) {
+                let next_graph = materialize_graph(&events);
+                let delta = compute_delta(prev_graph, &next_graph);
+                if !delta.new_tasks.is_empty()
+                    || !delta.status_changes.is_empty()
+                    || !delta.new_comments.is_empty()
+                    || !delta.new_edges.is_empty()
+                {
+                    handler.on_change(&delta);
+                }
+                *prev_graph = next_graph;
+            }
+        }
+
+        // Main drain loop: wait for notifications via recv_timeout.
         while agent_handle
             .try_wait()
             .map_err(|e| AikiError::AgentSpawnFailed(format!("try_wait failed: {}", e)))?
             .is_none()
         {
-            // Poll agent workspace for new events (cross-workspace).
-            if let Some(poller) = agent_poller.as_mut() {
-                poller.poll(handler);
+            // Block until a notification arrives or 100ms elapses (serves
+            // as agent status check interval).
+            match rx.recv_timeout(Duration::from_millis(100)) {
+                Ok(_) => {
+                    // Debounce: drain further notifications with a 50ms
+                    // quiet-period window.
+                    while rx.recv_timeout(Duration::from_millis(50)).is_ok() {}
+                    process_cycle(cwd, &mut prev_graph, handler);
+                }
+                Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
+                    // No notification — loop back to check agent status.
+                }
+                Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
+                    break;
+                }
             }
-
-            // Drain shared listener, skipping events already seen from the
-            // agent workspace.
-            drain_shared_with_dedup(rx, handler, agent_poller.as_ref());
-
-            thread::sleep(Duration::from_millis(250));
         }
-        // The listener thread polls JJ at POLL_INTERVAL. After the agent
-        // exits there may be events written just before exit that the listener
-        // hasn't picked up yet. Wait for one full poll cycle plus margin,
-        // draining as new events arrive, so we don't lose tail events.
-        let tail_drain = POLL_INTERVAL + Duration::from_millis(200);
-        let deadline = std::time::Instant::now() + tail_drain;
 
+        // Tail drain: 200ms silence window after agent exits.
+        let deadline = std::time::Instant::now() + Duration::from_millis(200);
         loop {
-            if let Some(poller) = agent_poller.as_mut() {
-                poller.poll(handler);
-            }
-            drain_shared_with_dedup(rx, handler, agent_poller.as_ref());
-            if std::time::Instant::now() >= deadline {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
                 break;
             }
-            thread::sleep(Duration::from_millis(100));
+            match rx.recv_timeout(remaining) {
+                Ok(_) => {
+                    // Keep draining notifications within the window.
+                }
+                Err(_) => {
+                    break;
+                }
+            }
         }
+        // Final read after tail drain.
+        process_cycle(cwd, &mut prev_graph, handler);
         handler.finish();
     } else {
         // No event channel — still must wait for the agent to exit before
@@ -318,140 +342,23 @@ pub(crate) fn spawn_drain_finalize(
             .map_err(|e| AikiError::AgentSpawnFailed(format!("wait failed: {}", e)))?;
     }
 
-    // Read any diagnostic output
-    let proc_output = agent_handle.read_output();
-    if !proc_output.stderr.is_empty() {
-        output.emit(&format!("  agent stderr: {}", proc_output.stderr));
-    }
+    // Agent stderr is discarded — interactive agents (Claude Code, Codex) write
+    // their entire TUI output to stderr, which is noise in workflow context.
+    // Task success/failure is determined by JJ state in finalize_agent_run.
 
     finalize_agent_run(cwd, task_id)?;
 
     Ok(())
 }
 
-// ── Agent workspace polling ─────────────────────────────────────────
-
-/// Maximum consecutive `read_events` errors before disabling agent-workspace
-/// polling for the remainder of the drain loop.
-const MAX_CONSECUTIVE_ERRORS: u32 = 3;
-
-/// Polls `read_events` from the agent's isolated workspace, tracking a
-/// high-water mark and a seen-set for deduplication. Uses a
-/// backoff-then-disable strategy on errors.
-struct AgentWorkspacePoller {
-    cwd: PathBuf,
-    high_water: usize,
-    seen: HashSet<(String, &'static str, DateTime<Utc>)>,
-    consecutive_errors: u32,
-    disabled: bool,
-}
-
-impl AgentWorkspacePoller {
-    fn new(cwd: PathBuf) -> Self {
-        Self {
-            cwd,
-            high_water: 0,
-            seen: HashSet::new(),
-            consecutive_errors: 0,
-            disabled: false,
-        }
-    }
-
-    /// Poll for new events from the agent workspace, feeding them to the
-    /// handler. On error, increments the consecutive error counter and
-    /// disables polling after `MAX_CONSECUTIVE_ERRORS`.
-    fn poll(&mut self, handler: &mut dyn DrainHandler) {
-        if self.disabled {
-            return;
-        }
-
-        match read_events(&self.cwd) {
-            Ok(events) => {
-                self.consecutive_errors = 0;
-                // Process only events after our high-water mark using a
-                // temporary channel so we can reuse the DrainHandler trait.
-                let (tx, tmp_rx) = crossbeam_channel::unbounded();
-                for event in events.into_iter().skip(self.high_water) {
-                    let key = event.dedup_key();
-                    self.seen.insert(key);
-                    let _ = tx.send(event);
-                    self.high_water += 1;
-                }
-                drop(tx);
-                handler.drain(&tmp_rx);
-            }
-            Err(_) => {
-                self.consecutive_errors += 1;
-                if self.consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
-                    self.disabled = true;
-                }
-            }
-        }
-    }
-}
-
-/// Drain events from the shared listener, skipping any already seen via the
-/// agent workspace poller.
-fn drain_shared_with_dedup(
-    rx: &Receiver<TaskEvent>,
-    handler: &mut dyn DrainHandler,
-    poller: Option<&AgentWorkspacePoller>,
-) {
-    let seen = poller.map(|p| &p.seen);
-
-    // If there's no poller (or no seen-set), just drain normally.
-    let Some(seen) = seen else {
-        handler.drain(rx);
-        return;
-    };
-
-    if seen.is_empty() {
-        handler.drain(rx);
-        return;
-    }
-
-    // Manually drain, filtering out duplicates.
-    let (tx, tmp_rx) = crossbeam_channel::unbounded();
-    for event in rx.try_iter() {
-        let key = event.dedup_key();
-        if !seen.contains(&key) {
-            let _ = tx.send(event);
-        }
-    }
-    drop(tx);
-    handler.drain(&tmp_rx);
-}
-
-/// Attempt to discover the agent's isolated workspace path.
-///
-/// Returns `None` if session discovery fails (timeout, workspace isolation
-/// disabled) or the workspace directory doesn't exist.
-fn discover_agent_workspace(
-    cwd: &Path,
-    thread: &crate::tasks::lanes::ThreadId,
-) -> Option<PathBuf> {
-    use crate::agents::runtime::discover_session_id;
-    use crate::repos::id::ensure_repo_id;
-    use crate::session::isolation::workspaces_dir;
-
-    let repo_id = ensure_repo_id(cwd).ok()?;
-    let session_id = discover_session_id(thread).ok()?;
-
-    let agent_cwd = workspaces_dir().join(&repo_id).join(&session_id);
-    if agent_cwd.is_dir() {
-        Some(agent_cwd)
-    } else {
-        None
-    }
-}
-
 /// Drain handler for steps that track subtask creation under a parent task.
 ///
-/// Buffers `Created` events and only displays them once a `LinkAdded`
-/// (`subtask-of` → parent) event confirms the task is a child of the target.
-/// Used by the decompose and fix steps.
+/// Scans the full graph state (`delta.next`) for tasks with a `subtask-of`
+/// edge targeting the parent, using a `seen` set to avoid duplicate output.
+/// This avoids cross-window races where `Created` and `LinkAdded(subtask-of)`
+/// land in different debounce windows. Used by the decompose and fix steps.
 pub(crate) struct SubtaskDrainHandler<'a> {
-    pending_names: HashMap<String, String>,
+    seen: HashSet<String>,
     task_names: &'a mut HashMap<String, String>,
     parent_id: String,
     output: WorkflowOutput,
@@ -464,7 +371,7 @@ impl<'a> SubtaskDrainHandler<'a> {
         output: WorkflowOutput,
     ) -> Self {
         Self {
-            pending_names: HashMap::new(),
+            seen: HashSet::new(),
             task_names,
             parent_id,
             output,
@@ -473,30 +380,24 @@ impl<'a> SubtaskDrainHandler<'a> {
 }
 
 impl DrainHandler for SubtaskDrainHandler<'_> {
-    fn drain(&mut self, rx: &Receiver<TaskEvent>) {
-        for event in rx.try_iter() {
-            match &event {
-                TaskEvent::Created { task_id, name, .. } => {
-                    self.pending_names.insert(task_id.clone(), name.clone());
-                }
-                TaskEvent::LinkAdded { from, to, kind, .. }
-                    if kind == "subtask-of" && to == &self.parent_id =>
-                {
-                    if let Some(name) = self.pending_names.remove(from) {
-                        self.task_names.insert(from.clone(), name.clone());
-                        self.output.emit(&format!("  + {}", name));
-                    }
-                }
-                _ => {}
+    fn on_change(&mut self, delta: &GraphDelta) {
+        // Scan the full graph for subtasks of the parent that we haven't
+        // printed yet. This handles the case where Created and
+        // LinkAdded(subtask-of) land in different debounce windows.
+        for child in delta.next.children_of(&self.parent_id) {
+            if self.seen.insert(child.id.clone()) {
+                self.task_names
+                    .insert(child.id.clone(), child.name.clone());
+                self.output.emit(&format!("  + {}", child.name));
             }
         }
     }
 }
 
-/// Drain handler for review steps that count issue comments.
+/// Drain handler for review steps that emits issues as they are found.
 ///
-/// Counts `CommentAdded` events where `data.issue == "true"` and the comment
-/// targets the review task. Used by the review and regression_review steps.
+/// Watches for issue comments (`data.issue == "true"`) targeting the review task
+/// and prints each one with its severity. Used by the review and regression_review steps.
 pub(crate) struct ReviewDrainHandler {
     review_id: String,
     issue_count: usize,
@@ -514,25 +415,26 @@ impl ReviewDrainHandler {
 }
 
 impl DrainHandler for ReviewDrainHandler {
-    fn drain(&mut self, rx: &Receiver<TaskEvent>) {
-        for event in rx.try_iter() {
-            if let TaskEvent::CommentAdded { task_ids, data, .. } = &event {
-                if task_ids.iter().any(|id| id == &self.review_id)
-                    && data.get("issue").map(|v| v == "true").unwrap_or(false)
-                {
-                    self.issue_count += 1;
-                }
+    fn on_change(&mut self, delta: &GraphDelta) {
+        for &(task_id, comment) in &delta.new_comments {
+            if task_id == self.review_id
+                && comment
+                    .data
+                    .get("issue")
+                    .map(|v| v == "true")
+                    .unwrap_or(false)
+            {
+                self.issue_count += 1;
+                // Truncate long descriptions to keep output scannable
+                let desc = &comment.text;
+                let short = if desc.len() > 80 {
+                    format!("{}...", &desc[..77])
+                } else {
+                    desc.to_string()
+                };
+                self.output
+                    .emit(&format!("  {}. {}", self.issue_count, short));
             }
-        }
-    }
-
-    fn finish(&mut self) {
-        if self.issue_count > 0 {
-            self.output.emit(&format!(
-                "  Found {} issue{}",
-                self.issue_count,
-                if self.issue_count == 1 { "" } else { "s" }
-            ));
         }
     }
 }
