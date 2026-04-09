@@ -14,7 +14,8 @@ use crate::commands::OutputFormat;
 use crate::error::{AikiError, Result};
 use crate::reviews::{
     create_review, determine_followup_assignee, get_issue_comments, has_actionable_issues,
-    parse_locations, resolve_scope_and_assignee, CreateReviewParams, ReviewScope, ReviewScopeKind,
+    issue_count, parse_locations, resolve_scope_and_assignee, CreateReviewParams, ReviewScope,
+    ReviewScopeKind,
 };
 use crate::tasks::lanes::ThreadId;
 use crate::tasks::runner::{task_run, TaskRunOptions};
@@ -130,7 +131,7 @@ pub(crate) fn workflow(
             scope: Some(scope.clone()),
             assignee: assignee.map(|s| s.to_string()),
             iteration: 0,
-            event_rx: None,
+            notify_rx: None,
             task_names: std::collections::HashMap::new(),
         },
     }
@@ -153,7 +154,7 @@ fn setup_workflow(cwd: &Path, opts: &FixOpts) -> Workflow {
             scope: None,
             assignee: None,
             iteration: 0,
-            event_rx: None,
+            notify_rx: None,
             task_names: std::collections::HashMap::new(),
         },
     }
@@ -298,7 +299,7 @@ fn run_pair(cwd: &Path, opts: &FixOpts) -> Result<WorkflowContext> {
             scope: Some(scope),
             assignee,
             iteration: 0,
-            event_rx: None,
+            notify_rx: None,
             task_names: std::collections::HashMap::new(),
         });
     }
@@ -335,9 +336,13 @@ fn run_pair(cwd: &Path, opts: &FixOpts) -> Result<WorkflowContext> {
     }
 
     // 5. Two-phase quality loop
+    let output = WorkflowOutput::new(OutputKind::Text);
     let mut current_review_id = opts.review_id.clone();
     for iteration in 0..MAX_QUALITY_ITERATIONS {
         // ── Pair session ──
+        output.section(&format!("Pair Fix — iteration {}", iteration + 1));
+        show_review_issues(cwd, &current_review_id, output)?;
+
         let issues_md = build_issues_md(cwd, &current_review_id)?;
         let pair_fix_id = create_pair_fix_task(
             cwd,
@@ -354,7 +359,10 @@ fn run_pair(cwd: &Path, opts: &FixOpts) -> Result<WorkflowContext> {
             pair_fix_id, pair_fix_id
         );
 
-        let thread = ThreadId::single(pair_fix_id);
+        let thread = ThreadId::single(pair_fix_id.clone());
+
+        // Use .status() to inherit all stdio — the interactive TUI needs
+        // stdout connected to the real terminal to detect TTY mode.
         let status = Command::new(binary)
             .current_dir(cwd)
             .env("AIKI_THREAD", &thread.serialize())
@@ -367,11 +375,15 @@ fn run_pair(cwd: &Path, opts: &FixOpts) -> Result<WorkflowContext> {
             break;
         }
 
+        // Show pair session summary
+        show_pair_session_summary(cwd, &pair_fix_id, output)?;
+
         if opts.once {
             break;
         }
 
         // ── Phase 1: Review fix-parent ──
+        output.status("running fix-parent review");
         let fp_scope = ReviewScope {
             kind: ReviewScopeKind::Task,
             id: fix_parent_id.clone(),
@@ -397,15 +409,26 @@ fn run_pair(cwd: &Path, opts: &FixOpts) -> Result<WorkflowContext> {
         let fp_review = find_task(&tasks, &fp_review_id)?;
         let fp_has_issues = has_actionable_issues(fp_review);
 
+        let ic = issue_count(fp_review);
+        if ic > 0 {
+            output.success("review", &format!("{} issues found", ic));
+        } else {
+            output.success("review", "approved");
+        }
+
         let outcome = determine_review_outcome(fp_has_issues, &fp_review_id, None, None);
 
         match outcome {
             ReviewOutcome::LoopBack(id) => {
+                output.status("issues found — starting next fix iteration");
+                show_review_issues(cwd, &id, output)?;
                 current_review_id = id;
                 continue;
             }
             ReviewOutcome::ReReviewOriginalScope => {
                 // ── Phase 2: Regression review ──
+                output.section("Regression Review");
+                output.status("reviewing original scope for regressions");
                 let reg_review_result = create_review(
                     cwd,
                     CreateReviewParams {
@@ -425,6 +448,13 @@ fn run_pair(cwd: &Path, opts: &FixOpts) -> Result<WorkflowContext> {
                 let reg_review = find_task(&tasks, &reg_review_id)?;
                 let reg_has_issues = has_actionable_issues(reg_review);
 
+                let reg_ic = issue_count(reg_review);
+                if reg_ic > 0 {
+                    output.success("regression review", &format!("{} issues found", reg_ic));
+                } else {
+                    output.success("regression review", "approved");
+                }
+
                 let reg_outcome = determine_review_outcome(
                     false,
                     &fp_review_id,
@@ -433,8 +463,13 @@ fn run_pair(cwd: &Path, opts: &FixOpts) -> Result<WorkflowContext> {
                 );
 
                 match reg_outcome {
-                    ReviewOutcome::Approved(_) => break,
+                    ReviewOutcome::Approved(_) => {
+                        output.success("quality loop", "all reviews passed");
+                        break;
+                    }
                     ReviewOutcome::LoopBack(id) => {
+                        output.status("regressions found — starting next fix iteration");
+                        show_review_issues(cwd, &id, output)?;
                         current_review_id = id;
                         continue;
                     }
@@ -455,9 +490,53 @@ fn run_pair(cwd: &Path, opts: &FixOpts) -> Result<WorkflowContext> {
         scope: Some(scope),
         assignee,
         iteration: 0,
-        event_rx: None,
+        notify_rx: None,
         task_names: std::collections::HashMap::new(),
     })
+}
+
+/// Show review issues before spawning the pair fix agent.
+/// Follows the same format as `aiki review show`.
+fn show_review_issues(cwd: &Path, review_id: &str, output: WorkflowOutput) -> Result<()> {
+    let events_with_ids = read_events_with_ids(cwd)?;
+    let tasks = materialize_graph_with_ids(&events_with_ids).tasks;
+    let review_task = find_task(&tasks, review_id)?;
+    let issues = get_issue_comments(review_task);
+
+    for issue in &issues {
+        let severity = issue
+            .data
+            .get("severity")
+            .map(|s| s.as_str())
+            .unwrap_or("medium");
+        output.emit(&format!("  [{}] {}", severity, issue.text));
+    }
+
+    Ok(())
+}
+
+/// Show a summary of the completed pair fix session.
+fn show_pair_session_summary(
+    cwd: &Path,
+    pair_fix_id: &str,
+    output: WorkflowOutput,
+) -> Result<()> {
+    let events_with_ids = read_events_with_ids(cwd)?;
+    let tasks = materialize_graph_with_ids(&events_with_ids).tasks;
+    if let Ok(pair_task) = find_task(&tasks, pair_fix_id) {
+        let msg = if pair_task.closed_outcome.is_some() {
+            pair_task
+                .summary
+                .as_deref()
+                .unwrap_or("session complete")
+        } else {
+            "session ended"
+        };
+        output.success("pair fix", msg);
+    } else {
+        output.success("pair fix", "session ended");
+    }
+    Ok(())
 }
 
 /// Build a markdown string of issues sorted by severity (high -> medium -> low).

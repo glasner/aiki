@@ -261,11 +261,27 @@ fn build_summary_lines(graph: &TaskGraph, epic_id: &str, plan_path: &str, group:
     ));
     lines.extend(components::blank());
 
-    // Hint
+    // Hint — if the review found issues, suggest `aiki fix`; otherwise show diff hint
     let epic = &graph.tasks[epic_id];
+    let review_hint = find_build_review(graph, epic_id).and_then(|review| {
+        let issues = extract_issues(review);
+        if issues.is_empty() {
+            None
+        } else {
+            Some(format!(
+                "Run `aiki fix {}` to remediate {} issue{}.",
+                review.short_id(),
+                issues.len(),
+                if issues.len() == 1 { "" } else { "s" },
+            ))
+        }
+    });
+    let hint_text = review_hint.unwrap_or_else(|| {
+        format!("Run `aiki tldr {}` for a walkthrough.", epic.short_id())
+    });
     lines.push(Line {
         indent: 0,
-        text: format!("Run `aiki task diff {}` to see changes.", epic.short_id()),
+        text: hint_text,
         meta: None,
         style: LineStyle::Dim,
         group,
@@ -509,7 +525,7 @@ mod tests {
         // Should contain build completed summary
         assert!(lines.iter().any(|l| l.text.contains("build completed")));
         // Should contain hint
-        assert!(lines.iter().any(|l| l.text.contains("aiki task diff")));
+        assert!(lines.iter().any(|l| l.text.contains("aiki tldr")));
     }
 
     #[test]

@@ -425,6 +425,11 @@ impl DrainHandler for ReviewDrainHandler {
                     .unwrap_or(false)
             {
                 self.issue_count += 1;
+                let severity = comment
+                    .data
+                    .get("severity")
+                    .map(|s| s.as_str())
+                    .unwrap_or("medium");
                 // Truncate long descriptions to keep output scannable
                 let desc = &comment.text;
                 let short = if desc.len() > 80 {
@@ -433,7 +438,7 @@ impl DrainHandler for ReviewDrainHandler {
                     desc.to_string()
                 };
                 self.output
-                    .emit(&format!("  {}. {}", self.issue_count, short));
+                    .emit(&format!("  [{}] {}", severity, short));
             }
         }
     }
