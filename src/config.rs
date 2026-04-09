@@ -97,7 +97,9 @@ pub fn install_global_git_hooks() -> Result<()> {
 pub fn install_claude_code_hooks_global() -> Result<()> {
     let home_dir = dirs::home_dir().context("Could not find home directory")?;
     let settings_path = home_dir.join(".claude/settings.json");
-    let aiki_path = get_aiki_binary_path();
+    // Use bare "aiki" so hooks resolve via PATH, not a stale absolute path
+    // (e.g. a workspace temp binary that no longer exists).
+    let aiki_path = "aiki";
 
     // Create ~/.claude if it doesn't exist
     if let Some(parent) = settings_path.parent() {
@@ -217,7 +219,8 @@ pub fn install_claude_code_hooks_global() -> Result<()> {
 pub fn install_cursor_hooks_global() -> Result<()> {
     let home_dir = dirs::home_dir().context("Could not find home directory")?;
     let hooks_path = home_dir.join(".cursor/hooks.json");
-    let aiki_path = get_aiki_binary_path();
+    // Use bare "aiki" so hooks resolve via PATH, not a stale absolute path.
+    let aiki_path = "aiki";
 
     // Create ~/.cursor if it doesn't exist
     if let Some(parent) = hooks_path.parent() {
