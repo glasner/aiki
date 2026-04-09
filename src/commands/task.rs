@@ -12,6 +12,7 @@ use std::path::Path;
 
 use crate::error::{AikiError, Result};
 use crate::jj::get_working_copy_snapshot_rev;
+use crate::session::flags::resolve_agent_shorthand;
 
 /// Output format for task commands that support summary output.
 #[derive(Clone, Debug, PartialEq, clap::ValueEnum)]
@@ -20,6 +21,35 @@ pub enum TaskOutputFormat {
     Id,
     /// Task summary/completion comment only
     Summary,
+}
+
+/// Bundled filter criteria for `run_list`.
+struct TaskListFilters {
+    status: Vec<String>,
+    open: bool,
+    in_progress: bool,
+    stopped: bool,
+    closed: bool,
+    done: bool,
+    wont_do: bool,
+    max_confidence: Option<ConfidenceLevel>,
+    assignee: Option<String>,
+    unassigned: bool,
+    agent_flags: crate::session::flags::TaskAgentFlags,
+    source: Option<String>,
+    template: Option<String>,
+    kind: Option<String>,
+    descendant_of: Option<String>,
+    thread: Option<String>,
+}
+
+/// Options for `run_list`.
+struct TaskListOptions {
+    scope_override: Option<String>,
+    all: bool,
+    number: Option<usize>,
+    output_format: Option<super::OutputFormat>,
+    filters: TaskListFilters,
 }
 
 /// Placeholder prefix/suffix for parent.subtasks.{slug} deferred resolution.
@@ -316,12 +346,16 @@ pub enum TaskCommands {
         max_confidence: Option<ConfidenceLevel>,
 
         /// Filter to tasks assigned to specific agent or human
-        #[arg(long = "assignee", value_name = "AGENT")]
+        #[arg(long = "assignee", alias = "agent", value_name = "AGENT")]
         assignee: Option<String>,
 
         /// Filter to unassigned tasks only
         #[arg(long)]
         unassigned: bool,
+
+        /// Agent shorthand flags (e.g. --claude, --claude <ext-id>)
+        #[command(flatten)]
+        agent: crate::session::flags::TaskAgentFlags,
 
         /// Filter to tasks from a specific source (supports partial matching)
         #[arg(long)]
@@ -398,6 +432,19 @@ pub enum TaskCommands {
         /// Assign to specific agent or human (claude-code, codex, cursor, gemini, human)
         #[arg(long = "assignee", value_name = "AGENT")]
         assignee: Option<String>,
+
+        /// Shorthand for --assignee claude-code
+        #[arg(long, group = "assignee_shorthand", conflicts_with = "assignee")]
+        claude: bool,
+        /// Shorthand for --assignee codex
+        #[arg(long, group = "assignee_shorthand", conflicts_with = "assignee")]
+        codex: bool,
+        /// Shorthand for --assignee cursor
+        #[arg(long, group = "assignee_shorthand", conflicts_with = "assignee")]
+        cursor: bool,
+        /// Shorthand for --assignee gemini
+        #[arg(long, group = "assignee_shorthand", conflicts_with = "assignee")]
+        gemini: bool,
 
         /// Source that spawned this task (hidden alias for --sourced-from)
         #[arg(long, hide = true, action = clap::ArgAction::Append)]
@@ -561,6 +608,19 @@ pub enum TaskCommands {
         #[arg(long = "assignee", value_name = "AGENT")]
         assignee: Option<String>,
 
+        /// Shorthand for --assignee claude-code
+        #[arg(long, group = "assignee_shorthand", conflicts_with = "assignee")]
+        claude: bool,
+        /// Shorthand for --assignee codex
+        #[arg(long, group = "assignee_shorthand", conflicts_with = "assignee")]
+        codex: bool,
+        /// Shorthand for --assignee cursor
+        #[arg(long, group = "assignee_shorthand", conflicts_with = "assignee")]
+        cursor: bool,
+        /// Shorthand for --assignee gemini
+        #[arg(long, group = "assignee_shorthand", conflicts_with = "assignee")]
+        gemini: bool,
+
         /// Stable slug for this subtask (for quick-start, e.g., "build", "run-tests")
         #[arg(long)]
         slug: Option<String>,
@@ -717,6 +777,19 @@ pub enum TaskCommands {
         /// Assign to specific agent or human (claude-code, codex, cursor, gemini, human)
         #[arg(long = "assignee", value_name = "AGENT")]
         assignee: Option<String>,
+
+        /// Shorthand for --assignee claude-code
+        #[arg(long, group = "assignee_shorthand", conflicts_with = "assignee")]
+        claude: bool,
+        /// Shorthand for --assignee codex
+        #[arg(long, group = "assignee_shorthand", conflicts_with = "assignee")]
+        codex: bool,
+        /// Shorthand for --assignee cursor
+        #[arg(long, group = "assignee_shorthand", conflicts_with = "assignee")]
+        cursor: bool,
+        /// Shorthand for --assignee gemini
+        #[arg(long, group = "assignee_shorthand", conflicts_with = "assignee")]
+        gemini: bool,
 
         /// Set or update a data field (can be specified multiple times)
         #[arg(long, value_name = "KEY=VALUE", action = clap::ArgAction::Append)]
@@ -1028,6 +1101,7 @@ pub fn run(command: Option<TaskCommands>) -> Result<()> {
         max_confidence: None,
         assignee: None,
         unassigned: false,
+        agent: Default::default(),
         source: None,
         template: None,
         kind: None,
@@ -1051,6 +1125,7 @@ pub fn run(command: Option<TaskCommands>) -> Result<()> {
             max_confidence,
             assignee,
             unassigned,
+            agent,
             source,
             template,
             kind,
@@ -1067,25 +1142,30 @@ pub fn run(command: Option<TaskCommands>) -> Result<()> {
             let effective_kind = kind.or(type_filter);
             run_list(
                 &cwd,
-                None,
-                all,
-                status,
-                open,
-                in_progress,
-                stopped,
-                closed,
-                done,
-                wont_do,
-                max_confidence,
-                assignee,
-                unassigned,
-                source,
-                template,
-                effective_kind,
-                descendant_of,
-                thread,
-                number,
-                output,
+                TaskListOptions {
+                    scope_override: None,
+                    all,
+                    number,
+                    output_format: output,
+                    filters: TaskListFilters {
+                        status,
+                        open,
+                        in_progress,
+                        stopped,
+                        closed,
+                        done,
+                        wont_do,
+                        max_confidence,
+                        assignee,
+                        unassigned,
+                        agent_flags: agent,
+                        source,
+                        template,
+                        kind: effective_kind,
+                        descendant_of,
+                        thread,
+                    },
+                },
             )
         }
         TaskCommands::Template { command } => run_template(&cwd, command),
@@ -1097,6 +1177,10 @@ pub fn run(command: Option<TaskCommands>) -> Result<()> {
             parent,
             slug,
             assignee,
+            claude,
+            codex,
+            cursor,
+            gemini,
             source,
             blocked_by,
             supersedes,
@@ -1126,7 +1210,9 @@ pub fn run(command: Option<TaskCommands>) -> Result<()> {
             instructions,
             resolve_subtask_of_alias(subtask_of, parent)?,
             slug,
-            assignee,
+            resolve_agent_shorthand(assignee.clone(), claude, codex, cursor, gemini)
+                .map(|a| a.as_str().to_string())
+                .or(assignee),
             resolve_sourced_from_alias(sourced_from, source)?,
             blocked_by,
             supersedes,
@@ -1164,6 +1250,10 @@ pub fn run(command: Option<TaskCommands>) -> Result<()> {
             subtask_of,
             parent,
             assignee,
+            claude,
+            codex,
+            cursor,
+            gemini,
             slug,
             implements,
             orchestrates,
@@ -1192,7 +1282,9 @@ pub fn run(command: Option<TaskCommands>) -> Result<()> {
             blocked_by,
             supersedes,
             resolve_subtask_of_alias(subtask_of, parent)?,
-            assignee,
+            resolve_agent_shorthand(assignee.clone(), claude, codex, cursor, gemini)
+                .map(|a| a.as_str().to_string())
+                .or(assignee),
             slug,
             implements,
             orchestrates,
@@ -1236,9 +1328,26 @@ pub fn run(command: Option<TaskCommands>) -> Result<()> {
             p3,
             name,
             assignee,
+            claude,
+            codex,
+            cursor,
+            gemini,
             data,
             instructions,
-        } => run_set(&cwd, id, p0, p1, p2, p3, name, assignee, data, instructions),
+        } => run_set(
+            &cwd,
+            id,
+            p0,
+            p1,
+            p2,
+            p3,
+            name,
+            resolve_agent_shorthand(assignee.clone(), claude, codex, cursor, gemini)
+                .map(|a| a.as_str().to_string())
+                .or(assignee),
+            data,
+            instructions,
+        ),
         TaskCommands::Unset {
             id,
             assignee,
@@ -1358,30 +1467,47 @@ pub fn run(command: Option<TaskCommands>) -> Result<()> {
 }
 
 /// List tasks in the ready queue
-fn run_list(
-    cwd: &Path,
-    scope_override: Option<&str>,
-    all: bool,
-    filter_status: Vec<String>,
-    filter_open: bool,
-    filter_in_progress: bool,
-    filter_stopped: bool,
-    filter_closed: bool,
-    filter_done: bool,
-    filter_wont_do: bool,
-    max_confidence: Option<ConfidenceLevel>,
-    filter_assignee: Option<String>,
-    filter_unassigned: bool,
-    filter_source: Option<String>,
-    filter_template: Option<String>,
-    filter_kind: Option<String>,
-    filter_descendant_of: Option<String>,
-    filter_thread: Option<String>,
-    number: Option<usize>,
-    output_format: Option<super::OutputFormat>,
-) -> Result<()> {
+fn run_list(cwd: &Path, opts: TaskListOptions) -> Result<()> {
+    let TaskListOptions {
+        scope_override,
+        all,
+        number,
+        output_format,
+        filters,
+    } = opts;
+    let TaskListFilters {
+        status: filter_status,
+        open: filter_open,
+        in_progress: filter_in_progress,
+        stopped: filter_stopped,
+        closed: filter_closed,
+        done: filter_done,
+        wont_do: filter_wont_do,
+        max_confidence,
+        assignee: filter_assignee,
+        unassigned: filter_unassigned,
+        agent_flags,
+        source: filter_source,
+        template: filter_template,
+        kind: filter_kind,
+        descendant_of: filter_descendant_of,
+        thread: filter_thread,
+    } = filters;
     use crate::agents::{AgentType, Assignee};
     use crate::session::find_active_session;
+    use crate::session::flags::TaskAgentFilter;
+
+    // Resolve agent shorthand flags (--claude, --codex, etc.) into assignee or session filter
+    let (filter_assignee, filter_unassigned, agent_session_filter) = match agent_flags.resolve() {
+        Some(TaskAgentFilter::Assignee(assignee)) => (
+            Some(assignee.as_str().unwrap_or_default().to_string()),
+            filter_unassigned,
+            None,
+        ),
+        Some(TaskAgentFilter::Session(uuid)) => (filter_assignee, filter_unassigned, Some(uuid)),
+        None => (filter_assignee, filter_unassigned, None),
+    };
+
     let events = read_events(cwd)?;
     let graph = materialize_graph(&events);
     let tasks = &graph.tasks;
@@ -1426,7 +1552,7 @@ fn run_list(
     let scope_set = if let Some(s) = scope_override {
         ScopeSet {
             include_root: false,
-            scopes: vec![s.to_string()],
+            scopes: vec![s],
         }
     } else {
         get_current_scope_set(&graph)
@@ -1477,7 +1603,8 @@ fn run_list(
         || filter_done
         || filter_wont_do
         || max_confidence.is_some();
-    let has_explicit_assignee_filters = filter_assignee.is_some() || filter_unassigned;
+    let has_explicit_assignee_filters =
+        filter_assignee.is_some() || filter_unassigned || agent_session_filter.is_some();
 
     // Validate and normalize assignee filter if provided
     // Converts "claude" → "claude-code", "me" → "human"
@@ -1546,8 +1673,15 @@ fn run_list(
     };
 
     // Helper closure to check session ownership
-    // Task is visible if: unclaimed OR claimed by our session
+    // When agent_session_filter is set (--claude <ext-id>), filter to tasks claimed by that session.
+    // Otherwise: task is visible if unclaimed OR claimed by our session.
     let matches_session = |task: &Task| -> bool {
+        if let Some(ref target_uuid) = agent_session_filter {
+            return task
+                .claimed_by_session
+                .as_ref()
+                .map_or(false, |s| s == target_uuid);
+        }
         if all {
             return true; // --all bypasses session filtering
         }
@@ -1945,7 +2079,7 @@ fn run_add(
     once: bool,
     p0: bool,
     p1: bool,
-    _p2: bool,
+    p2: bool,
     p3: bool,
     output_format: Option<super::OutputFormat>,
 ) -> Result<()> {
@@ -2002,6 +2136,8 @@ fn run_add(
             Some(TaskPriority::P0)
         } else if p1 {
             Some(TaskPriority::P1)
+        } else if p2 {
+            Some(TaskPriority::P2)
         } else if p3 {
             Some(TaskPriority::P3)
         } else {
@@ -2247,7 +2383,7 @@ fn run_start(
     reopen_reason: Option<String>,
     p0: bool,
     p1: bool,
-    _p2: bool,
+    p2: bool,
     p3: bool,
     sources: Vec<String>,
     blocked_by: Vec<String>,
@@ -2324,6 +2460,8 @@ fn run_start(
             Some(TaskPriority::P0)
         } else if p1 {
             Some(TaskPriority::P1)
+        } else if p2 {
+            Some(TaskPriority::P2)
         } else if p3 {
             Some(TaskPriority::P3)
         } else {
