@@ -211,11 +211,6 @@ aiki review <task-id>
    - **Location:** `--file path[:<line>[-<end>]]` (repeatable for multi-file issues)
 4. Close the review task when done
 
-**After reviewing**, if you found issues, run `aiki fix` to create followup tasks from review issues:
-```bash
-aiki fix <review-task-id>
-```
-
 ### Conflict Resolution
 
 **When you encounter merge conflicts, use `aiki resolve`:**
@@ -365,6 +360,18 @@ aiki task link <id> --fixes task:<target-id>         # Fix targets a task or fil
 
 # Remove a relationship
 aiki task unlink <id> --blocked-by <blocker-id>
+
+# Filter tasks by agent type
+aiki task list --claude              # tasks assigned to claude
+aiki task list --codex               # tasks assigned to codex
+aiki task list --cursor              # tasks assigned to cursor
+aiki task list --gemini              # tasks assigned to gemini
+
+# List sessions by agent type
+aiki session list --claude
+
+# Show a session by agent's external ID
+aiki session show --claude <external-session-id>
 ```
 
 ### Handling Multiple Requests (Subtasks)

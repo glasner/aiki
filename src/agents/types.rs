@@ -75,7 +75,7 @@ impl AgentType {
             AgentType::Codex => "noreply@openai.com",
             AgentType::Cursor => "noreply@cursor.com",
             AgentType::Gemini => "noreply@google.com",
-            AgentType::Unknown => "noreply@aiki.dev",
+            AgentType::Unknown => "noreply@aiki.sh",
         }
     }
 

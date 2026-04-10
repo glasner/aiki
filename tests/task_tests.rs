@@ -4349,3 +4349,222 @@ fn test_tldr_fallback_renders_legacy_tasks_without_started_snapshots() {
     );
 }
 
+// ── --instructions flag tests ───────────────────────────────────────────────
+
+#[test]
+fn test_task_add_inline_instructions() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    let task_id = extract_short_id(&task_stdout(
+        temp_dir.path(),
+        &["add", "Task with instructions", "--instructions", "Do step 1 then step 2"],
+    ));
+
+    let show = task_stdout(temp_dir.path(), &["show", &task_id, "--with-instructions"]);
+    assert!(
+        show.contains("Do step 1 then step 2"),
+        "Expected inline instructions in show output: {}",
+        show
+    );
+}
+
+#[test]
+fn test_task_add_instructions_from_file() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    let instr_file = temp_dir.path().join("instructions.md");
+    fs::write(&instr_file, "# Steps\n1. Build\n2. Test\n").unwrap();
+
+    let task_id = extract_short_id(&task_stdout(
+        temp_dir.path(),
+        &["add", "Task from file", "--instructions", instr_file.to_str().unwrap()],
+    ));
+
+    let show = task_stdout(temp_dir.path(), &["show", &task_id, "--with-instructions"]);
+    assert!(
+        show.contains("# Steps"),
+        "Expected file-based instructions in show output: {}",
+        show
+    );
+    assert!(
+        show.contains("1. Build"),
+        "Expected file content in instructions: {}",
+        show
+    );
+}
+
+#[test]
+fn test_task_start_quickstart_with_instructions() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    let output = task_stdout(
+        temp_dir.path(),
+        &["start", "Quick task", "--instructions", "Run the linter"],
+    );
+    let task_id = extract_started_id(&output);
+
+    let show = task_stdout(temp_dir.path(), &["show", &task_id, "--with-instructions"]);
+    assert!(
+        show.contains("Run the linter"),
+        "Expected instructions set via quick-start: {}",
+        show
+    );
+}
+
+#[test]
+fn test_task_start_existing_with_instructions() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    let task_id = extract_short_id(&task_stdout(
+        temp_dir.path(),
+        &["add", "Existing task"],
+    ));
+
+    task_stdout(
+        temp_dir.path(),
+        &["start", &task_id, "--instructions", "Override instructions"],
+    );
+
+    let show = task_stdout(temp_dir.path(), &["show", &task_id, "--with-instructions"]);
+    assert!(
+        show.contains("Override instructions"),
+        "Expected instructions set on start of existing task: {}",
+        show
+    );
+}
+
+#[test]
+fn test_task_set_inline_instructions() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    let task_id = extract_short_id(&task_stdout(
+        temp_dir.path(),
+        &["add", "Set instructions task"],
+    ));
+
+    task_stdout(
+        temp_dir.path(),
+        &["set", &task_id, "--instructions", "Updated instructions"],
+    );
+
+    let show = task_stdout(temp_dir.path(), &["show", &task_id, "--with-instructions"]);
+    assert!(
+        show.contains("Updated instructions"),
+        "Expected updated instructions in show output: {}",
+        show
+    );
+}
+
+#[test]
+fn test_task_set_instructions_from_file() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    let task_id = extract_short_id(&task_stdout(
+        temp_dir.path(),
+        &["add", "File instructions task"],
+    ));
+
+    let instr_file = temp_dir.path().join("detailed.txt");
+    fs::write(&instr_file, "Detailed instructions from file\n").unwrap();
+
+    task_stdout(
+        temp_dir.path(),
+        &["set", &task_id, "--instructions", instr_file.to_str().unwrap()],
+    );
+
+    let show = task_stdout(temp_dir.path(), &["show", &task_id, "--with-instructions"]);
+    assert!(
+        show.contains("Detailed instructions from file"),
+        "Expected file-based instructions via set: {}",
+        show
+    );
+}
+
+#[test]
+fn test_task_set_instructions_overwrites_previous() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    let task_id = extract_short_id(&task_stdout(
+        temp_dir.path(),
+        &["add", "Overwrite test", "--instructions", "Original instructions"],
+    ));
+
+    task_stdout(
+        temp_dir.path(),
+        &["set", &task_id, "--instructions", "Replaced instructions"],
+    );
+
+    let show = task_stdout(temp_dir.path(), &["show", &task_id, "--with-instructions"]);
+    assert!(
+        show.contains("Replaced instructions"),
+        "Expected replaced instructions: {}",
+        show
+    );
+    assert!(
+        !show.contains("Original instructions"),
+        "Original instructions should be gone: {}",
+        show
+    );
+}
+
+#[test]
+fn test_task_unset_instructions() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    let task_id = extract_short_id(&task_stdout(
+        temp_dir.path(),
+        &["add", "Unset test", "--instructions", "Will be removed"],
+    ));
+
+    // Verify instructions exist
+    let show = task_stdout(temp_dir.path(), &["show", &task_id, "--with-instructions"]);
+    assert!(
+        show.contains("Will be removed"),
+        "Instructions should be present before unset: {}",
+        show
+    );
+
+    // Unset instructions
+    task_stdout(temp_dir.path(), &["unset", &task_id, "--instructions"]);
+
+    // Verify instructions are gone
+    let show = task_stdout(temp_dir.path(), &["show", &task_id, "--with-instructions"]);
+    assert!(
+        !show.contains("Will be removed"),
+        "Instructions should be cleared after unset: {}",
+        show
+    );
+    assert!(
+        !show.contains("### Instructions"),
+        "Instructions header should not appear after unset: {}",
+        show
+    );
+}
+
+#[test]
+fn test_task_show_without_with_instructions_hides_instructions() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    let task_id = extract_short_id(&task_stdout(
+        temp_dir.path(),
+        &["add", "Hidden instructions test", "--instructions", "Secret instructions"],
+    ));
+
+    // Without --with-instructions, instructions should be hidden
+    let show = task_stdout(temp_dir.path(), &["show", &task_id]);
+    assert!(
+        !show.contains("Secret instructions"),
+        "Instructions should be hidden without --with-instructions: {}",
+        show
+    );
+}
+

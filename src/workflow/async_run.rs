@@ -38,18 +38,6 @@ pub fn spawn_with_stdin(cwd: &Path, args: &[&str], stdin_payload: &[u8]) -> Resu
     }
     drop(stdin);
 
-    // Log child PID for debuggability
-    let pid = child.id();
-    eprintln!("debug: spawned background process pid={pid}");
-
-    // Non-blocking check: if the child already exited with an error, warn
-    match child.try_wait() {
-        Ok(Some(status)) if !status.success() => {
-            eprintln!("warning: background process pid={pid} exited immediately with {status}");
-        }
-        _ => {} // still running or exited successfully — expected
-    }
-
     Ok(())
 }
 

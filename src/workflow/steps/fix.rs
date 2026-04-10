@@ -195,7 +195,7 @@ pub(crate) fn run(ctx: &mut WorkflowContext) -> anyhow::Result<StepResult> {
         Some(agent) => TaskRunOptions::new().with_agent(agent),
         None => TaskRunOptions::new(),
     };
-    if ctx.event_rx.is_some() {
+    if ctx.notify_rx.is_some() {
         let output = ctx.output;
         let mut handler = super::SubtaskDrainHandler::new(
             &mut ctx.task_names,
@@ -206,7 +206,7 @@ pub(crate) fn run(ctx: &mut WorkflowContext) -> anyhow::Result<StepResult> {
             &cwd,
             &plan_fix_id,
             &run_options,
-            ctx.event_rx.as_ref(),
+            ctx.notify_rx.as_ref(),
             output,
             &mut handler,
         )?;

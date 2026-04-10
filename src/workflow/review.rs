@@ -88,7 +88,7 @@ fn workflow(cwd: &Path, opts: &ReviewOpts) -> Workflow {
             scope: None,
             assignee: None,
             iteration: 0,
-            event_rx: None,
+            notify_rx: None,
             task_names: std::collections::HashMap::new(),
         },
     }
@@ -217,7 +217,8 @@ fn maybe_run_fix(
         if quiet { None } else { opts.output.clone() },
         &opts.workflow,
     );
-    let mut wf = fix::workflow(cwd, review_id, &fix_opts, &scope, assignee.as_deref());
+    let assignee_type = assignee.as_deref().and_then(crate::agents::AgentType::from_str);
+    let mut wf = fix::workflow(cwd, review_id, &fix_opts, &scope, assignee_type);
     let output = if quiet {
         OutputKind::Quiet
     } else {
@@ -325,6 +326,10 @@ mod tests {
             start: false,
             template: None,
             agent: None,
+            claude: false,
+            codex: false,
+            cursor: false,
+            gemini: false,
             coder: None,
             autorun: false,
             output: None,
@@ -507,6 +512,10 @@ mod tests {
             start: false,
             template: Some("custom-review".to_string()),
             agent: Some("codex".to_string()),
+            claude: false,
+            codex: false,
+            cursor: false,
+            gemini: false,
             coder: None,
             autorun: true,
             output: Some(OutputFormat::Id),

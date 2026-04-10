@@ -22,6 +22,7 @@ fn test_must_use_warning_compilation() {
         session,
         cwd: PathBuf::from("/tmp"),
         timestamp: chrono::Utc::now(),
+        transcript_path: None,
     });
 }
 
@@ -41,6 +42,7 @@ fn test_impl_asref_path_ergonomics() {
         session: session1,
         cwd: PathBuf::from("/tmp"),
         timestamp: chrono::Utc::now(),
+        transcript_path: None,
     });
 
     // Using String
@@ -77,6 +79,7 @@ fn test_impl_asref_path_ergonomics() {
         session: session3,
         cwd: PathBuf::from(&s),
         timestamp: chrono::Utc::now(),
+        transcript_path: None,
     });
 
     // Using PathBuf
@@ -91,6 +94,7 @@ fn test_impl_asref_path_ergonomics() {
         session: session4,
         cwd: PathBuf::from("/tmp"),
         timestamp: chrono::Utc::now(),
+        transcript_path: None,
     });
 
     // Using &PathBuf
@@ -127,5 +131,6 @@ fn test_impl_asref_path_ergonomics() {
         session: session6,
         cwd: pb.as_path().to_path_buf(),
         timestamp: chrono::Utc::now(),
+        transcript_path: None,
     });
 }

@@ -51,6 +51,7 @@ pub fn record_session_start(
     timestamp: DateTime<Utc>,
     repo_id: Option<&str>,
     event_cwd: Option<&str>,
+    transcript_path: Option<&str>,
 ) -> Result<()> {
     let event = ConversationEvent::SessionStart {
         session_id: session.uuid().to_string(),
@@ -60,6 +61,7 @@ pub fn record_session_start(
         repo_id: repo_id.map(String::from),
         cwd: event_cwd.map(String::from),
         session_mode: Some(session.mode()),
+        transcript_path: transcript_path.map(String::from),
     };
 
     write_event(jj_cwd, &event)?;

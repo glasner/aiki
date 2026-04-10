@@ -1,6 +1,42 @@
 use std::path::PathBuf;
 use thiserror::Error;
 
+/// Format the error message for tasks missing instructions in a thread
+fn format_missing_instructions(missing: &[(String, String)]) -> String {
+    let count = missing.len();
+    let mut msg = format!(
+        "{count} task(s) in this thread are missing instructions:"
+    );
+    for (id, title) in missing {
+        msg.push_str(&format!("\n  - {id} — {title}"));
+    }
+    msg.push_str(
+        "\n\n\
+         Every task MUST have instructions before you run it — even tasks you create yourself.\n\
+         Instructions record your intent and context so that:\n\
+         - If the session crashes or is interrupted, another agent can pick up the work\n\
+         - If the task is retried, the new agent has full context without your conversation history\n\
+         - Reviewers can understand what was intended vs what was done",
+    );
+    // TODO(run-single-shot): restore `aiki run <id> --instructions` suggestion
+    // when ops/now/run-single-shot.md lands (adds --instructions flag to Run).
+    if count == 1 {
+        let id = &missing[0].0;
+        msg.push_str(&format!(
+            "\n\n\
+             Set instructions before running:\n  \
+             aiki task set {id} -i \"<describe what the agent should do>\""
+        ));
+    } else {
+        msg.push_str(
+            "\n\n\
+             Set instructions on each task before running:\n  \
+             aiki task set <id> -i \"<describe what the agent should do>\"",
+        );
+    }
+    msg
+}
+
 /// Format a call stack for display in error messages
 fn format_call_stack(stack: &[String]) -> String {
     if stack.is_empty() {
@@ -147,12 +183,18 @@ Alternatively, install the agent globally:
     UnsupportedPlatform(String),
 
     // Plugin errors
+    #[error("Failed to auto-fetch plugin '{plugin}': {reason}")]
+    AutoFetchFailed { plugin: String, reason: String },
+
     #[error("{plugin} is a dependency of: {dependents}. Use --force to remove anyway.")]
     PluginHasDependents { plugin: String, dependents: String },
 
     // Argument validation errors
     #[error("{0}")]
     InvalidArgument(String),
+
+    #[error("Missing required argument: {0}")]
+    MissingArgument(String),
 
     // Task system errors
     #[error("Task not found: '{0}'")]
@@ -288,6 +330,12 @@ Alternatively, install the agent globally:
 
     #[error("Plugin operation failed for '{plugin}': {details}")]
     PluginOperationFailed { plugin: String, details: String },
+
+    // Thread validation errors
+    #[error("{}", format_missing_instructions(.missing))]
+    ThreadMissingInstructions {
+        missing: Vec<(String, String)>, // Vec of (task_id, title)
+    },
 
     // Generic wrapper for underlying errors
     #[error(transparent)]

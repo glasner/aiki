@@ -108,13 +108,30 @@ pub fn run(fix: bool) -> Result<()> {
 
     // Check Claude Code hooks - verify file exists AND contains all required hooks
     let claude_settings = home_dir.join(".claude/settings.json");
-    let missing_claude_hooks = find_missing_claude_code_hooks(&claude_settings);
-    if missing_claude_hooks.is_empty() {
+    let claude_status = find_missing_claude_code_hooks(&claude_settings);
+    if claude_status.missing.is_empty() && claude_status.old_format.is_empty() {
         println!("  ✓ Claude Code hooks configured");
+    } else if claude_status.missing.is_empty() {
+        // All hooks present but some use old format
+        println!("  ✓ Claude Code hooks configured");
+        println!("  ⚠ Claude Code hooks use deprecated format (--agent/--event → --claude shorthand)");
+        if fix {
+            match migrate_old_format_hooks_in_file(&claude_settings, "claude-code", "--claude") {
+                Ok(count) if count > 0 => {
+                    println!("    ✓ Migrated {} hook command(s) to new format", count);
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    println!("    ✗ Failed to migrate: {}", e);
+                }
+            }
+        } else {
+            println!("    → Run: aiki doctor --fix");
+        }
     } else {
         println!(
             "  ✗ Claude Code hooks: missing {}",
-            missing_claude_hooks.join(", ")
+            claude_status.missing.join(", ")
         );
         if fix {
             println!("    Installing Claude Code hooks...");
@@ -135,9 +152,25 @@ pub fn run(fix: bool) -> Result<()> {
 
     // Check Cursor hooks - verify file exists AND contains aiki hooks
     let cursor_hooks_path = home_dir.join(".cursor/hooks.json");
-    let cursor_hooks_ok = check_cursor_hooks(&cursor_hooks_path);
-    if cursor_hooks_ok {
+    let cursor_status = check_cursor_hooks(&cursor_hooks_path);
+    if cursor_status.all_present && !cursor_status.has_old_format {
         println!("  ✓ Cursor hooks configured");
+    } else if cursor_status.all_present && cursor_status.has_old_format {
+        println!("  ✓ Cursor hooks configured");
+        println!("  ⚠ Cursor hooks use deprecated format (--agent/--event → --cursor shorthand)");
+        if fix {
+            match migrate_old_format_hooks_in_file(&cursor_hooks_path, "cursor", "--cursor") {
+                Ok(count) if count > 0 => {
+                    println!("    ✓ Migrated {} hook command(s) to new format", count);
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    println!("    ✗ Failed to migrate: {}", e);
+                }
+            }
+        } else {
+            println!("    → Run: aiki doctor --fix");
+        }
     } else {
         println!("  ✗ Cursor hooks not configured");
         if fix {
@@ -160,9 +193,25 @@ pub fn run(fix: bool) -> Result<()> {
     // Check Codex hooks - verify config.toml has OTel + hooks.json has hook definitions
     let codex_config_path = home_dir.join(".codex/config.toml");
     let codex_hooks_path = home_dir.join(".codex/hooks.json");
-    let codex_hooks_ok = check_codex_hooks(&codex_config_path, &codex_hooks_path);
-    if codex_hooks_ok {
+    let codex_status = check_codex_hooks(&codex_config_path, &codex_hooks_path);
+    if codex_status.all_present && !codex_status.has_old_format {
         println!("  ✓ Codex hooks configured");
+    } else if codex_status.all_present && codex_status.has_old_format {
+        println!("  ✓ Codex hooks configured");
+        println!("  ⚠ Codex hooks use deprecated format (--agent/--event → --codex shorthand)");
+        if fix {
+            match migrate_old_format_hooks_in_file(&codex_hooks_path, "codex", "--codex") {
+                Ok(count) if count > 0 => {
+                    println!("    ✓ Migrated {} hook command(s) to new format", count);
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    println!("    ✗ Failed to migrate: {}", e);
+                }
+            }
+        } else {
+            println!("    → Run: aiki doctor --fix");
+        }
     } else {
         println!("  ✗ Codex hooks not configured");
         if fix {
@@ -966,18 +1015,36 @@ fn collect_hooks_yml_plugin_refs(
     refs
 }
 
+/// Result of checking whether a command string matches an expected aiki hook.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HookFormatMatch {
+    /// Command uses the new shorthand format (e.g. `--claude SessionStart`)
+    NewFormat,
+    /// Command uses the deprecated old format (e.g. `--agent claude-code --event SessionStart`)
+    OldFormat,
+    /// Command does not match the expected hook
+    NoMatch,
+}
+
+impl HookFormatMatch {
+    fn is_match(self) -> bool {
+        matches!(self, Self::NewFormat | Self::OldFormat)
+    }
+}
+
 /// Check if a command string invokes aiki hooks stdin with specific agent/event
 ///
-/// Matches commands like:
-/// - `aiki hooks stdin --agent claude-code --event session.started`
-/// - `/path/to/aiki.exe hooks stdin --agent cursor --event beforeSubmitPrompt`
+/// Accepts both old and new flag formats:
+/// - Old: `aiki hooks stdin --agent claude-code --event SessionStart`
+/// - New: `aiki hooks stdin --claude SessionStart`
 ///
 /// If expected_agent or expected_event is Some, validates those flags are present.
+/// Returns a `HookFormatMatch` indicating whether the command matches and which format it uses.
 fn is_aiki_hooks_command_with_params(
     cmd: &str,
     expected_agent: Option<&str>,
     expected_event: Option<&str>,
-) -> bool {
+) -> HookFormatMatch {
     // Split command into words
     let words: Vec<&str> = cmd.split_whitespace().collect();
 
@@ -997,181 +1064,254 @@ fn is_aiki_hooks_command_with_params(
     }
 
     if !found_hooks_stdin {
-        return false;
+        return HookFormatMatch::NoMatch;
     }
 
-    // If no specific agent/event required, we're done
+    // If no specific agent/event required, we're done (treat as new format)
     if expected_agent.is_none() && expected_event.is_none() {
-        return true;
+        return HookFormatMatch::NewFormat;
     }
 
-    // Check for --agent flag
-    if let Some(agent) = expected_agent {
-        let has_agent = words.windows(2).any(|w| w[0] == "--agent" && w[1] == agent);
-        if !has_agent {
-            return false;
-        }
+    // Map canonical agent names to their shorthand flags
+    let shorthand_flag = expected_agent.and_then(|a| match a {
+        "claude-code" => Some("--claude"),
+        "codex" => Some("--codex"),
+        "cursor" => Some("--cursor"),
+        "gemini" => Some("--gemini"),
+        _ => None,
+    });
+
+    // New format: --<agent-shorthand> <event>  (e.g. --claude SessionStart)
+    let new_format_matches = match (shorthand_flag, expected_event) {
+        (Some(flag), Some(event)) => words.windows(2).any(|w| w[0] == flag && w[1] == event),
+        (Some(flag), None) => words.iter().any(|w| *w == flag),
+        _ => false,
+    };
+
+    if new_format_matches {
+        return HookFormatMatch::NewFormat;
     }
 
-    // Check for --event flag
-    if let Some(event) = expected_event {
-        let has_event = words.windows(2).any(|w| w[0] == "--event" && w[1] == event);
-        if !has_event {
-            return false;
-        }
+    // Old format: --agent <name> --event <event>
+    let old_format_matches = {
+        let agent_ok = expected_agent
+            .map(|agent| words.windows(2).any(|w| w[0] == "--agent" && w[1] == agent))
+            .unwrap_or(true);
+        let event_ok = expected_event
+            .map(|event| words.windows(2).any(|w| w[0] == "--event" && w[1] == event))
+            .unwrap_or(true);
+        agent_ok && event_ok
+    };
+
+    if old_format_matches {
+        return HookFormatMatch::OldFormat;
     }
 
-    true
+    HookFormatMatch::NoMatch
 }
+
+/// Result of checking Claude Code hooks: which are missing and which use old format.
+struct ClaudeHookStatus {
+    /// Hook names that are completely missing (not present in any format).
+    missing: Vec<&'static str>,
+    /// Hook names that are present but use the deprecated `--agent/--event` format.
+    old_format: Vec<&'static str>,
+}
+
+/// Required Claude Code hooks (must match what `config::install_claude_code_hooks_global` installs).
+const REQUIRED_CLAUDE_HOOKS: &[&str] = &[
+    "SessionStart",
+    "PreCompact",
+    "UserPromptSubmit",
+    "PreToolUse",
+    "PostToolUse",
+    "Stop",
+    "SessionEnd",
+];
 
 /// Find which Claude Code hooks are missing from ~/.claude/settings.json
 ///
-/// Returns a list of missing hook names. Empty list means all hooks are configured.
-fn find_missing_claude_code_hooks(settings_path: &std::path::Path) -> Vec<&'static str> {
-    // Required Claude Code hooks (must match what config::install_claude_code_hooks_global installs)
-    let required_hooks: &[&str] = &[
-        "SessionStart",
-        "PreCompact",
-        "UserPromptSubmit",
-        "PreToolUse",
-        "PostToolUse",
-        "Stop",
-        "SessionEnd",
-    ];
+/// Returns a `ClaudeHookStatus` with both missing hooks and old-format hooks.
+fn find_missing_claude_code_hooks(settings_path: &std::path::Path) -> ClaudeHookStatus {
+    let all_missing = || ClaudeHookStatus {
+        missing: REQUIRED_CLAUDE_HOOKS.to_vec(),
+        old_format: Vec::new(),
+    };
 
     if !settings_path.exists() {
-        return required_hooks.to_vec();
+        return all_missing();
     }
 
     let content = match fs::read_to_string(settings_path) {
         Ok(c) => c,
-        Err(_) => return required_hooks.to_vec(),
+        Err(_) => return all_missing(),
     };
 
     let settings: serde_json::Value = match serde_json::from_str(&content) {
         Ok(v) => v,
-        Err(_) => return required_hooks.to_vec(),
+        Err(_) => return all_missing(),
     };
 
     let hooks = match settings.get("hooks") {
         Some(h) => h,
-        None => return required_hooks.to_vec(),
+        None => return all_missing(),
     };
 
     // Helper to check if a Claude Code hook entry contains aiki command with correct params
-    let has_hook = |hook_name: &str| -> bool {
+    let check_hook = |hook_name: &str| -> HookFormatMatch {
         hooks
             .get(hook_name)
             .and_then(|arr| arr.as_array())
-            .map(|arr| {
-                arr.iter().any(|entry| {
-                    entry
-                        .get("hooks")
-                        .and_then(|h| h.as_array())
-                        .map(|hooks_arr| {
-                            hooks_arr.iter().any(|hook| {
-                                hook.get("command")
-                                    .and_then(|c| c.as_str())
-                                    .map(|c| {
-                                        is_aiki_hooks_command_with_params(
-                                            c,
-                                            Some("claude-code"),
-                                            Some(hook_name),
-                                        )
-                                    })
-                                    .unwrap_or(false)
-                            })
-                        })
-                        .unwrap_or(false)
-                })
+            .and_then(|arr| {
+                for entry in arr {
+                    if let Some(hooks_arr) = entry.get("hooks").and_then(|h| h.as_array()) {
+                        for hook in hooks_arr {
+                            if let Some(cmd) = hook.get("command").and_then(|c| c.as_str()) {
+                                let m = is_aiki_hooks_command_with_params(
+                                    cmd,
+                                    Some("claude-code"),
+                                    Some(hook_name),
+                                );
+                                if m.is_match() {
+                                    return Some(m);
+                                }
+                            }
+                        }
+                    }
+                }
+                None
             })
-            .unwrap_or(false)
+            .unwrap_or(HookFormatMatch::NoMatch)
     };
 
-    required_hooks
-        .iter()
-        .filter(|name| !has_hook(name))
-        .copied()
-        .collect()
+    let mut missing = Vec::new();
+    let mut old_format = Vec::new();
+    for name in REQUIRED_CLAUDE_HOOKS {
+        match check_hook(name) {
+            HookFormatMatch::NewFormat => {}
+            HookFormatMatch::OldFormat => old_format.push(*name),
+            HookFormatMatch::NoMatch => missing.push(*name),
+        }
+    }
+
+    ClaudeHookStatus { missing, old_format }
 }
+
+/// Result of checking Cursor hooks.
+struct CursorHookStatus {
+    /// true when all required hooks are present (in either format).
+    all_present: bool,
+    /// true when at least one hook uses the deprecated `--agent/--event` format.
+    has_old_format: bool,
+}
+
+/// Required Cursor hooks.
+const REQUIRED_CURSOR_HOOKS: &[&str] = &[
+    "beforeSubmitPrompt",
+    "afterFileEdit",
+    "beforeShellExecution",
+    "afterShellExecution",
+    "beforeMCPExecution",
+    "afterMCPExecution",
+    "stop",
+];
 
 /// Check if Cursor hooks are properly configured
 ///
-/// Returns true if ~/.cursor/hooks.json exists AND contains both:
-/// - hooks.beforeSubmitPrompt with aiki hooks stdin command
-/// - hooks.afterFileEdit with aiki hooks stdin command
-fn check_cursor_hooks(hooks_path: &std::path::Path) -> bool {
+/// Returns a `CursorHookStatus` indicating completeness and whether old format is used.
+fn check_cursor_hooks(hooks_path: &std::path::Path) -> CursorHookStatus {
+    let not_configured = CursorHookStatus {
+        all_present: false,
+        has_old_format: false,
+    };
+
     if !hooks_path.exists() {
-        return false;
+        return not_configured;
     }
 
     let content = match fs::read_to_string(hooks_path) {
         Ok(c) => c,
-        Err(_) => return false,
+        Err(_) => return not_configured,
     };
 
     let config: serde_json::Value = match serde_json::from_str(&content) {
         Ok(v) => v,
-        Err(_) => return false,
+        Err(_) => return not_configured,
     };
 
     let hooks = match config.get("hooks") {
         Some(h) => h,
-        None => return false,
+        None => return not_configured,
     };
 
     // Helper to check if an array contains an aiki hooks stdin command with specific agent/event
-    let has_aiki_hook_with_params = |arr: &serde_json::Value, agent: &str, event: &str| -> bool {
+    let check_aiki_hook = |arr: &serde_json::Value, agent: &str, event: &str| -> HookFormatMatch {
         arr.as_array()
-            .map(|arr| {
-                arr.iter().any(|hook| {
-                    hook.get("command")
-                        .and_then(|c| c.as_str())
-                        .map(|c| is_aiki_hooks_command_with_params(c, Some(agent), Some(event)))
-                        .unwrap_or(false)
-                })
+            .and_then(|arr| {
+                for hook in arr {
+                    if let Some(cmd) = hook.get("command").and_then(|c| c.as_str()) {
+                        let m = is_aiki_hooks_command_with_params(cmd, Some(agent), Some(event));
+                        if m.is_match() {
+                            return Some(m);
+                        }
+                    }
+                }
+                None
             })
-            .unwrap_or(false)
+            .unwrap_or(HookFormatMatch::NoMatch)
     };
 
-    // Required Cursor hooks
-    let required_hooks = [
-        "beforeSubmitPrompt",
-        "afterFileEdit",
-        "beforeShellExecution",
-        "afterShellExecution",
-        "beforeMCPExecution",
-        "afterMCPExecution",
-        "stop",
-    ];
-
-    required_hooks.iter().all(|hook_name| {
-        hooks
+    let mut all_present = true;
+    let mut has_old_format = false;
+    for hook_name in REQUIRED_CURSOR_HOOKS {
+        match hooks
             .get(*hook_name)
-            .map(|arr| has_aiki_hook_with_params(arr, "cursor", hook_name))
-            .unwrap_or(false)
-    })
+            .map(|arr| check_aiki_hook(arr, "cursor", hook_name))
+            .unwrap_or(HookFormatMatch::NoMatch)
+        {
+            HookFormatMatch::NewFormat => {}
+            HookFormatMatch::OldFormat => has_old_format = true,
+            HookFormatMatch::NoMatch => all_present = false,
+        }
+    }
+
+    CursorHookStatus {
+        all_present,
+        has_old_format,
+    }
+}
+
+/// Result of checking Codex hooks.
+struct CodexHookStatus {
+    /// true when config.toml and hooks.json are properly configured.
+    all_present: bool,
+    /// true when at least one hook uses the deprecated `--agent/--event` format.
+    has_old_format: bool,
 }
 
 /// Check if Codex hooks are properly configured
 ///
-/// Returns true if ~/.codex/config.toml exists and ~/.codex/hooks.json exists,
-/// with:
-/// - [otel] section with aiki endpoint (127.0.0.1:19876)
-/// - [features].codex_hooks = true in config.toml
-/// - hooks.json entries for SessionStart/UserPromptSubmit/PreToolUse/Stop
-fn check_codex_hooks(config_path: &std::path::Path, hooks_path: &std::path::Path) -> bool {
-    let has_aiki_hook_with_params = |arr: &serde_json::Value, agent: &str, event: &str| -> bool {
+/// Returns a `CodexHookStatus` indicating completeness and whether old format is used.
+fn check_codex_hooks(config_path: &std::path::Path, hooks_path: &std::path::Path) -> CodexHookStatus {
+    let not_configured = CodexHookStatus {
+        all_present: false,
+        has_old_format: false,
+    };
+
+    let check_aiki_hook = |arr: &serde_json::Value, agent: &str, event: &str| -> HookFormatMatch {
         arr.as_array()
-            .map(|arr| {
-                arr.iter().any(|hook| {
-                    hook.get("command")
-                        .and_then(|c| c.as_str())
-                        .map(|c| is_aiki_hooks_command_with_params(c, Some(agent), Some(event)))
-                        .unwrap_or(false)
-                })
+            .and_then(|arr| {
+                for hook in arr {
+                    if let Some(cmd) = hook.get("command").and_then(|c| c.as_str()) {
+                        let m = is_aiki_hooks_command_with_params(cmd, Some(agent), Some(event));
+                        if m.is_match() {
+                            return Some(m);
+                        }
+                    }
+                }
+                None
             })
-            .unwrap_or(false)
+            .unwrap_or(HookFormatMatch::NoMatch)
     };
 
     let config_ok = config_path
@@ -1218,39 +1358,107 @@ fn check_codex_hooks(config_path: &std::path::Path, hooks_path: &std::path::Path
         })
         .unwrap_or(false);
 
-    let hooks_ok = hooks_path
+    if !config_ok {
+        return not_configured;
+    }
+
+    let hooks_result = hooks_path
         .exists()
         .then(|| fs::read_to_string(hooks_path).ok())
         .flatten()
         .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok())
-        .map(|json| {
-            let hooks = json.get("hooks").and_then(|v| v.as_object());
-            hooks
-                .map(|h| {
-                    [
-                        ("SessionStart", "sessionStart"),
-                        ("UserPromptSubmit", "userPromptSubmit"),
-                        ("PreToolUse", "preToolUse"),
-                        ("Stop", "stop"),
-                    ]
-                    .iter()
-                    .all(|(name, event)| {
-                        h.get(*name)
-                            .and_then(|v| v.as_array())
-                            .is_some_and(|arr| {
-                                arr.iter().any(|group| {
-                                    group.get("hooks").is_some_and(|nested| {
-                                        has_aiki_hook_with_params(nested, "codex", event)
-                                    })
-                                })
-                            })
+        .and_then(|json| {
+            let hooks = json.get("hooks").and_then(|v| v.as_object())?;
+            let mut all_present = true;
+            let mut has_old_format = false;
+            for (name, event) in [
+                ("SessionStart", "sessionStart"),
+                ("UserPromptSubmit", "userPromptSubmit"),
+                ("PreToolUse", "preToolUse"),
+                ("Stop", "stop"),
+            ] {
+                let matched = hooks
+                    .get(name)
+                    .and_then(|v| v.as_array())
+                    .and_then(|arr| {
+                        for group in arr {
+                            if let Some(nested) = group.get("hooks") {
+                                let m = check_aiki_hook(nested, "codex", event);
+                                if m.is_match() {
+                                    return Some(m);
+                                }
+                            }
+                        }
+                        None
                     })
-                })
-                .unwrap_or(false)
-        })
-        .unwrap_or(false);
+                    .unwrap_or(HookFormatMatch::NoMatch);
 
-    config_ok && hooks_ok
+                match matched {
+                    HookFormatMatch::NewFormat => {}
+                    HookFormatMatch::OldFormat => has_old_format = true,
+                    HookFormatMatch::NoMatch => all_present = false,
+                }
+            }
+            Some(CodexHookStatus {
+                all_present,
+                has_old_format,
+            })
+        });
+
+    hooks_result.unwrap_or(not_configured)
+}
+
+/// Migrate old-format hook commands in a JSON settings file to the new shorthand.
+///
+/// Walks all string values in the JSON looking for `--agent <agent_name> --event <EVENT>`
+/// and replaces with `<shorthand_flag> <EVENT>`.
+///
+/// Returns the number of command strings that were rewritten.
+fn migrate_old_format_hooks_in_file(
+    path: &std::path::Path,
+    agent_name: &str,
+    shorthand_flag: &str,
+) -> anyhow::Result<usize> {
+    let content = fs::read_to_string(path)
+        .with_context(|| format!("Failed to read {}", path.display()))?;
+    let mut json: serde_json::Value = serde_json::from_str(&content)
+        .with_context(|| format!("Failed to parse {}", path.display()))?;
+
+    let count = migrate_old_format_in_value(&mut json, agent_name, shorthand_flag);
+
+    if count > 0 {
+        let output = serde_json::to_string_pretty(&json)?;
+        fs::write(path, output.as_bytes())
+            .with_context(|| format!("Failed to write {}", path.display()))?;
+    }
+
+    Ok(count)
+}
+
+/// Recursively walk a JSON value, rewriting old-format hook command strings.
+///
+/// Returns the number of strings rewritten.
+fn migrate_old_format_in_value(
+    value: &mut serde_json::Value,
+    agent_name: &str,
+    shorthand_flag: &str,
+) -> usize {
+    match value {
+        serde_json::Value::String(s) => {
+            // Only rewrite if this looks like an aiki hooks command with old format
+            if s.contains("--agent") && s.contains("--event") && s.contains("hooks") && s.contains("stdin") {
+                let old_pattern = format!("--agent {} --event", agent_name);
+                if s.contains(&old_pattern) {
+                    *s = s.replace(&old_pattern, shorthand_flag);
+                    return 1;
+                }
+            }
+            0
+        }
+        serde_json::Value::Array(arr) => arr.iter_mut().map(|v| migrate_old_format_in_value(v, agent_name, shorthand_flag)).sum(),
+        serde_json::Value::Object(obj) => obj.values_mut().map(|v| migrate_old_format_in_value(v, agent_name, shorthand_flag)).sum(),
+        _ => 0,
+    }
 }
 
 /// Check if the OTel receiver is listening on 127.0.0.1:19876
@@ -1503,7 +1711,10 @@ mod tests {
         });
         write!(file, "{}", serde_json::to_string(&settings).unwrap()).unwrap();
 
-        assert!(find_missing_claude_code_hooks(file.path()).is_empty());
+        let status = find_missing_claude_code_hooks(file.path());
+        assert!(status.missing.is_empty());
+        // Old format commands: all hooks are old format
+        assert_eq!(status.old_format.len(), 7);
     }
 
     #[test]
@@ -1550,8 +1761,8 @@ mod tests {
         });
         write!(file, "{}", serde_json::to_string(&settings).unwrap()).unwrap();
 
-        let missing = find_missing_claude_code_hooks(file.path());
-        assert_eq!(missing, vec!["PreCompact", "SessionEnd"]);
+        let status = find_missing_claude_code_hooks(file.path());
+        assert_eq!(status.missing, vec!["PreCompact", "SessionEnd"]);
     }
 
     #[test]
@@ -1570,10 +1781,10 @@ mod tests {
         });
         write!(file, "{}", serde_json::to_string(&settings).unwrap()).unwrap();
 
-        let missing = find_missing_claude_code_hooks(file.path());
-        assert!(missing.contains(&"PostToolUse"));
-        assert!(missing.contains(&"PreCompact"));
-        assert!(missing.contains(&"SessionEnd"));
+        let status = find_missing_claude_code_hooks(file.path());
+        assert!(status.missing.contains(&"PostToolUse"));
+        assert!(status.missing.contains(&"PreCompact"));
+        assert!(status.missing.contains(&"SessionEnd"));
     }
 
     #[test]
@@ -1599,14 +1810,14 @@ mod tests {
         });
         write!(file, "{}", serde_json::to_string(&settings).unwrap()).unwrap();
 
-        let missing = find_missing_claude_code_hooks(file.path());
-        assert!(missing.contains(&"SessionStart")); // wrong command
+        let status = find_missing_claude_code_hooks(file.path());
+        assert!(status.missing.contains(&"SessionStart")); // wrong command
     }
 
     #[test]
     fn test_find_missing_claude_code_hooks_no_file() {
         let path = std::path::Path::new("/nonexistent/path/settings.json");
-        assert_eq!(find_missing_claude_code_hooks(path).len(), 7); // all hooks missing
+        assert_eq!(find_missing_claude_code_hooks(path).missing.len(), 7); // all hooks missing
     }
 
     #[test]
@@ -1640,7 +1851,9 @@ mod tests {
         });
         write!(file, "{}", serde_json::to_string(&hooks).unwrap()).unwrap();
 
-        assert!(check_cursor_hooks(file.path()));
+        let status = check_cursor_hooks(file.path());
+        assert!(status.all_present);
+        assert!(status.has_old_format); // these use --agent/--event
     }
 
     #[test]
@@ -1656,7 +1869,7 @@ mod tests {
         });
         write!(file, "{}", serde_json::to_string(&hooks).unwrap()).unwrap();
 
-        assert!(!check_cursor_hooks(file.path()));
+        assert!(!check_cursor_hooks(file.path()).all_present);
     }
 
     #[test]
@@ -1672,7 +1885,7 @@ mod tests {
         });
         write!(file, "{}", serde_json::to_string(&hooks).unwrap()).unwrap();
 
-        assert!(!check_cursor_hooks(file.path()));
+        assert!(!check_cursor_hooks(file.path()).all_present);
     }
 
     #[test]
@@ -1691,7 +1904,7 @@ mod tests {
         });
         write!(file, "{}", serde_json::to_string(&hooks).unwrap()).unwrap();
 
-        assert!(!check_cursor_hooks(file.path()));
+        assert!(!check_cursor_hooks(file.path()).all_present);
     }
 
     #[test]
@@ -1711,110 +1924,140 @@ mod tests {
         });
         write!(file, "{}", serde_json::to_string(&hooks).unwrap()).unwrap();
 
-        assert!(!check_cursor_hooks(file.path()));
+        assert!(!check_cursor_hooks(file.path()).all_present);
     }
 
     #[test]
     fn test_check_cursor_hooks_no_file() {
         let path = std::path::Path::new("/nonexistent/path/hooks.json");
-        assert!(!check_cursor_hooks(path));
+        assert!(!check_cursor_hooks(path).all_present);
     }
 
     // Tests for is_aiki_hooks_command_with_params
 
     #[test]
     fn test_is_aiki_hooks_command_basic() {
-        assert!(is_aiki_hooks_command_with_params(
-            "aiki hooks stdin --agent claude-code --event session.started",
-            Some("claude-code"),
-            Some("session.started")
-        ));
+        assert_eq!(
+            is_aiki_hooks_command_with_params(
+                "aiki hooks stdin --agent claude-code --event session.started",
+                Some("claude-code"),
+                Some("session.started")
+            ),
+            HookFormatMatch::OldFormat
+        );
     }
 
     #[test]
     fn test_is_aiki_hooks_command_with_exe() {
-        assert!(is_aiki_hooks_command_with_params(
-            "aiki.exe hooks stdin --agent claude-code --event session.started",
-            Some("claude-code"),
-            Some("session.started")
-        ));
+        assert_eq!(
+            is_aiki_hooks_command_with_params(
+                "aiki.exe hooks stdin --agent claude-code --event session.started",
+                Some("claude-code"),
+                Some("session.started")
+            ),
+            HookFormatMatch::OldFormat
+        );
     }
 
     #[test]
     fn test_is_aiki_hooks_command_with_path() {
-        assert!(is_aiki_hooks_command_with_params(
-            "/usr/local/bin/aiki hooks stdin --agent cursor --event beforeSubmitPrompt",
-            Some("cursor"),
-            Some("beforeSubmitPrompt")
-        ));
+        assert_eq!(
+            is_aiki_hooks_command_with_params(
+                "/usr/local/bin/aiki hooks stdin --agent cursor --event beforeSubmitPrompt",
+                Some("cursor"),
+                Some("beforeSubmitPrompt")
+            ),
+            HookFormatMatch::OldFormat
+        );
     }
 
     #[test]
     fn test_is_aiki_hooks_command_with_path_and_exe() {
-        assert!(is_aiki_hooks_command_with_params(
-            "C:\\Program Files\\aiki.exe hooks stdin --agent claude-code --event afterFileEdit",
-            Some("claude-code"),
-            Some("afterFileEdit")
-        ));
+        assert_eq!(
+            is_aiki_hooks_command_with_params(
+                "C:\\Program Files\\aiki.exe hooks stdin --agent claude-code --event afterFileEdit",
+                Some("claude-code"),
+                Some("afterFileEdit")
+            ),
+            HookFormatMatch::OldFormat
+        );
     }
 
     #[test]
     fn test_is_aiki_hooks_command_relative_path() {
-        assert!(is_aiki_hooks_command_with_params(
-            "./aiki hooks stdin --agent cursor --event afterFileEdit",
-            Some("cursor"),
-            Some("afterFileEdit")
-        ));
+        assert_eq!(
+            is_aiki_hooks_command_with_params(
+                "./aiki hooks stdin --agent cursor --event afterFileEdit",
+                Some("cursor"),
+                Some("afterFileEdit")
+            ),
+            HookFormatMatch::OldFormat
+        );
     }
 
     #[test]
     fn test_is_aiki_hooks_command_wrong_agent() {
         // Should fail: command has claude-code but we expect cursor
-        assert!(!is_aiki_hooks_command_with_params(
-            "aiki hooks stdin --agent claude-code --event session.started",
-            Some("cursor"),
-            Some("session.started")
-        ));
+        assert_eq!(
+            is_aiki_hooks_command_with_params(
+                "aiki hooks stdin --agent claude-code --event session.started",
+                Some("cursor"),
+                Some("session.started")
+            ),
+            HookFormatMatch::NoMatch
+        );
     }
 
     #[test]
     fn test_is_aiki_hooks_command_wrong_event() {
         // Should fail: command has session.started but we expect change.completed
-        assert!(!is_aiki_hooks_command_with_params(
-            "aiki hooks stdin --agent claude-code --event session.started",
-            Some("claude-code"),
-            Some("change.completed")
-        ));
+        assert_eq!(
+            is_aiki_hooks_command_with_params(
+                "aiki hooks stdin --agent claude-code --event session.started",
+                Some("claude-code"),
+                Some("change.completed")
+            ),
+            HookFormatMatch::NoMatch
+        );
     }
 
     #[test]
     fn test_is_aiki_hooks_command_missing_agent() {
         // Should fail: no --agent flag
-        assert!(!is_aiki_hooks_command_with_params(
-            "aiki hooks stdin --event session.started",
-            Some("claude-code"),
-            Some("session.started")
-        ));
+        assert_eq!(
+            is_aiki_hooks_command_with_params(
+                "aiki hooks stdin --event session.started",
+                Some("claude-code"),
+                Some("session.started")
+            ),
+            HookFormatMatch::NoMatch
+        );
     }
 
     #[test]
     fn test_is_aiki_hooks_command_missing_event() {
         // Should fail: no --event flag
-        assert!(!is_aiki_hooks_command_with_params(
-            "aiki hooks stdin --agent claude-code",
-            Some("claude-code"),
-            Some("session.started")
-        ));
+        assert_eq!(
+            is_aiki_hooks_command_with_params(
+                "aiki hooks stdin --agent claude-code",
+                Some("claude-code"),
+                Some("session.started")
+            ),
+            HookFormatMatch::NoMatch
+        );
     }
 
     #[test]
     fn test_is_aiki_hooks_command_not_hooks_handle() {
         // Should fail: not "hooks stdin"
-        assert!(!is_aiki_hooks_command_with_params(
-            "aiki init --agent claude-code --event session.started",
-            Some("claude-code"),
-            Some("session.started")
-        ));
+        assert_eq!(
+            is_aiki_hooks_command_with_params(
+                "aiki init --agent claude-code --event session.started",
+                Some("claude-code"),
+                Some("session.started")
+            ),
+            HookFormatMatch::NoMatch
+        );
     }
 
     #[test]
@@ -1824,7 +2067,79 @@ mod tests {
             "aiki hooks stdin",
             None,
             None
-        ));
+        ).is_match());
+    }
+
+    #[test]
+    fn test_is_aiki_hooks_command_new_claude_shorthand() {
+        assert_eq!(
+            is_aiki_hooks_command_with_params(
+                "aiki hooks stdin --claude SessionStart",
+                Some("claude-code"),
+                Some("SessionStart")
+            ),
+            HookFormatMatch::NewFormat
+        );
+    }
+
+    #[test]
+    fn test_is_aiki_hooks_command_new_cursor_shorthand() {
+        assert_eq!(
+            is_aiki_hooks_command_with_params(
+                "aiki hooks stdin --cursor beforeSubmitPrompt",
+                Some("cursor"),
+                Some("beforeSubmitPrompt")
+            ),
+            HookFormatMatch::NewFormat
+        );
+    }
+
+    #[test]
+    fn test_is_aiki_hooks_command_new_codex_shorthand() {
+        assert_eq!(
+            is_aiki_hooks_command_with_params(
+                "aiki hooks stdin --codex sessionStart",
+                Some("codex"),
+                Some("sessionStart")
+            ),
+            HookFormatMatch::NewFormat
+        );
+    }
+
+    #[test]
+    fn test_is_aiki_hooks_command_new_shorthand_with_path() {
+        assert_eq!(
+            is_aiki_hooks_command_with_params(
+                "/usr/local/bin/aiki hooks stdin --claude SessionStart",
+                Some("claude-code"),
+                Some("SessionStart")
+            ),
+            HookFormatMatch::NewFormat
+        );
+    }
+
+    #[test]
+    fn test_is_aiki_hooks_command_new_shorthand_wrong_event() {
+        assert_eq!(
+            is_aiki_hooks_command_with_params(
+                "aiki hooks stdin --claude SessionStart",
+                Some("claude-code"),
+                Some("Stop")
+            ),
+            HookFormatMatch::NoMatch
+        );
+    }
+
+    #[test]
+    fn test_is_aiki_hooks_command_new_shorthand_wrong_agent() {
+        assert_eq!(
+            is_aiki_hooks_command_with_params(
+                "aiki hooks stdin --claude SessionStart",
+                Some("cursor"),
+                Some("SessionStart")
+            ),
+            HookFormatMatch::NoMatch
+        );
     }
 
     #[test]
@@ -1885,7 +2200,72 @@ mod tests {
         });
         write!(file, "{}", serde_json::to_string(&settings).unwrap()).unwrap();
 
-        assert!(find_missing_claude_code_hooks(file.path()).is_empty());
+        let status = find_missing_claude_code_hooks(file.path());
+        assert!(status.missing.is_empty());
+        assert_eq!(status.old_format.len(), 7); // all old format
+    }
+
+    #[test]
+    fn test_find_missing_claude_code_hooks_new_shorthand_format() {
+        let mut file = NamedTempFile::new().unwrap();
+        let settings = serde_json::json!({
+            "hooks": {
+                "SessionStart": [{
+                    "matcher": "",
+                    "hooks": [{
+                        "type": "command",
+                        "command": "aiki hooks stdin --claude SessionStart"
+                    }]
+                }],
+                "PreCompact": [{
+                    "matcher": "",
+                    "hooks": [{
+                        "type": "command",
+                        "command": "aiki hooks stdin --claude PreCompact"
+                    }]
+                }],
+                "UserPromptSubmit": [{
+                    "matcher": "",
+                    "hooks": [{
+                        "type": "command",
+                        "command": "aiki hooks stdin --claude UserPromptSubmit"
+                    }]
+                }],
+                "PreToolUse": [{
+                    "matcher": "Edit|Write|Bash",
+                    "hooks": [{
+                        "type": "command",
+                        "command": "aiki hooks stdin --claude PreToolUse"
+                    }]
+                }],
+                "PostToolUse": [{
+                    "matcher": "Edit|Write|Bash",
+                    "hooks": [{
+                        "type": "command",
+                        "command": "/usr/local/bin/aiki hooks stdin --claude PostToolUse"
+                    }]
+                }],
+                "Stop": [{
+                    "matcher": "",
+                    "hooks": [{
+                        "type": "command",
+                        "command": "aiki hooks stdin --claude Stop"
+                    }]
+                }],
+                "SessionEnd": [{
+                    "matcher": "",
+                    "hooks": [{
+                        "type": "command",
+                        "command": "aiki hooks stdin --claude SessionEnd"
+                    }]
+                }]
+            }
+        });
+        write!(file, "{}", serde_json::to_string(&settings).unwrap()).unwrap();
+
+        let status = find_missing_claude_code_hooks(file.path());
+        assert!(status.missing.is_empty());
+        assert!(status.old_format.is_empty()); // all new format
     }
 
     #[test]
@@ -1919,7 +2299,9 @@ mod tests {
         });
         write!(file, "{}", serde_json::to_string(&hooks).unwrap()).unwrap();
 
-        assert!(check_cursor_hooks(file.path()));
+        let status = check_cursor_hooks(file.path());
+        assert!(status.all_present);
+        assert!(status.has_old_format); // all old format
     }
 
     #[test]
@@ -1962,8 +2344,8 @@ writable_roots = ["{fake_home}"]
         write!(hooks_file, "{}", serde_json::to_string_pretty(&hooks).unwrap()).unwrap();
 
         let result = check_codex_hooks(config_file.path(), hooks_file.path());
-
-        assert!(result);
+        assert!(result.all_present);
+        assert!(result.has_old_format); // old format
     }
 
     #[test]
@@ -1988,7 +2370,7 @@ protocol = "binary"
         });
         write!(hooks_file, "{}", serde_json::to_string_pretty(&hooks).unwrap()).unwrap();
 
-        assert!(!check_codex_hooks(config_file.path(), hooks_file.path()));
+        assert!(!check_codex_hooks(config_file.path(), hooks_file.path()).all_present);
     }
 
     #[test]
@@ -2015,8 +2397,8 @@ protocol = "binary"
         write!(file, "{}", serde_json::to_string(&settings).unwrap()).unwrap();
 
         // Should report SessionStart as missing (wrong agent: cursor instead of claude-code)
-        let missing = find_missing_claude_code_hooks(file.path());
-        assert!(missing.contains(&"SessionStart"));
+        let status = find_missing_claude_code_hooks(file.path());
+        assert!(status.missing.contains(&"SessionStart"));
     }
 
     #[test]
@@ -2036,7 +2418,7 @@ protocol = "binary"
         write!(file, "{}", serde_json::to_string(&hooks).unwrap()).unwrap();
 
         // Should fail: beforeSubmitPrompt has wrong event (session.started instead of beforeSubmitPrompt)
-        assert!(!check_cursor_hooks(file.path()));
+        assert!(!check_cursor_hooks(file.path()).all_present);
     }
 
     // Tests for plugin resolution
@@ -2419,5 +2801,250 @@ protocol = "binary"
         let content = fs::read_to_string(dir.path().join("AGENTS.md")).unwrap();
         assert!(content.contains("<aiki version="));
         assert!(content.contains("# My instructions"));
+    }
+
+    // ---- Old-format hook detection and migration tests ----
+
+    #[test]
+    fn test_old_format_hooks_detected_not_missing() {
+        // All hooks present in old format: missing should be empty, old_format should be full
+        let mut file = NamedTempFile::new().unwrap();
+        let settings = serde_json::json!({
+            "hooks": {
+                "SessionStart": [{"matcher": "", "hooks": [{"type": "command", "command": "aiki hooks stdin --agent claude-code --event SessionStart"}]}],
+                "PreCompact": [{"matcher": "", "hooks": [{"type": "command", "command": "aiki hooks stdin --agent claude-code --event PreCompact"}]}],
+                "UserPromptSubmit": [{"matcher": "", "hooks": [{"type": "command", "command": "aiki hooks stdin --agent claude-code --event UserPromptSubmit"}]}],
+                "PreToolUse": [{"matcher": "", "hooks": [{"type": "command", "command": "aiki hooks stdin --agent claude-code --event PreToolUse"}]}],
+                "PostToolUse": [{"matcher": "", "hooks": [{"type": "command", "command": "aiki hooks stdin --agent claude-code --event PostToolUse"}]}],
+                "Stop": [{"matcher": "", "hooks": [{"type": "command", "command": "aiki hooks stdin --agent claude-code --event Stop"}]}],
+                "SessionEnd": [{"matcher": "", "hooks": [{"type": "command", "command": "aiki hooks stdin --agent claude-code --event SessionEnd"}]}]
+            }
+        });
+        write!(file, "{}", serde_json::to_string(&settings).unwrap()).unwrap();
+
+        let status = find_missing_claude_code_hooks(file.path());
+        assert!(status.missing.is_empty(), "old-format hooks should not be counted as missing");
+        assert_eq!(status.old_format.len(), 7, "all hooks should be detected as old format");
+    }
+
+    #[test]
+    fn test_new_format_hooks_no_warning() {
+        // All hooks in new format: no missing, no old_format
+        let mut file = NamedTempFile::new().unwrap();
+        let settings = serde_json::json!({
+            "hooks": {
+                "SessionStart": [{"matcher": "", "hooks": [{"type": "command", "command": "aiki hooks stdin --claude SessionStart"}]}],
+                "PreCompact": [{"matcher": "", "hooks": [{"type": "command", "command": "aiki hooks stdin --claude PreCompact"}]}],
+                "UserPromptSubmit": [{"matcher": "", "hooks": [{"type": "command", "command": "aiki hooks stdin --claude UserPromptSubmit"}]}],
+                "PreToolUse": [{"matcher": "", "hooks": [{"type": "command", "command": "aiki hooks stdin --claude PreToolUse"}]}],
+                "PostToolUse": [{"matcher": "", "hooks": [{"type": "command", "command": "aiki hooks stdin --claude PostToolUse"}]}],
+                "Stop": [{"matcher": "", "hooks": [{"type": "command", "command": "aiki hooks stdin --claude Stop"}]}],
+                "SessionEnd": [{"matcher": "", "hooks": [{"type": "command", "command": "aiki hooks stdin --claude SessionEnd"}]}]
+            }
+        });
+        write!(file, "{}", serde_json::to_string(&settings).unwrap()).unwrap();
+
+        let status = find_missing_claude_code_hooks(file.path());
+        assert!(status.missing.is_empty());
+        assert!(status.old_format.is_empty(), "new-format hooks should not trigger old_format");
+    }
+
+    #[test]
+    fn test_mixed_old_new_format_hooks() {
+        // Mix of old and new format: only old ones appear in old_format
+        let mut file = NamedTempFile::new().unwrap();
+        let settings = serde_json::json!({
+            "hooks": {
+                "SessionStart": [{"matcher": "", "hooks": [{"type": "command", "command": "aiki hooks stdin --claude SessionStart"}]}],
+                "PreCompact": [{"matcher": "", "hooks": [{"type": "command", "command": "aiki hooks stdin --agent claude-code --event PreCompact"}]}],
+                "UserPromptSubmit": [{"matcher": "", "hooks": [{"type": "command", "command": "aiki hooks stdin --claude UserPromptSubmit"}]}],
+                "PreToolUse": [{"matcher": "", "hooks": [{"type": "command", "command": "aiki hooks stdin --agent claude-code --event PreToolUse"}]}],
+                "PostToolUse": [{"matcher": "", "hooks": [{"type": "command", "command": "aiki hooks stdin --claude PostToolUse"}]}],
+                "Stop": [{"matcher": "", "hooks": [{"type": "command", "command": "aiki hooks stdin --claude Stop"}]}],
+                "SessionEnd": [{"matcher": "", "hooks": [{"type": "command", "command": "aiki hooks stdin --claude SessionEnd"}]}]
+            }
+        });
+        write!(file, "{}", serde_json::to_string(&settings).unwrap()).unwrap();
+
+        let status = find_missing_claude_code_hooks(file.path());
+        assert!(status.missing.is_empty());
+        assert_eq!(status.old_format, vec!["PreCompact", "PreToolUse"]);
+    }
+
+    #[test]
+    fn test_migrate_old_format_hooks_in_json() {
+        // Test that --fix rewrites old-format hook commands to new shorthand
+        let mut file = NamedTempFile::new().unwrap();
+        let settings = serde_json::json!({
+            "hooks": {
+                "SessionStart": [{"matcher": "", "hooks": [{"type": "command", "command": "aiki hooks stdin --agent claude-code --event SessionStart"}]}],
+                "Stop": [{"matcher": "", "hooks": [{"type": "command", "command": "/usr/local/bin/aiki hooks stdin --agent claude-code --event Stop"}]}]
+            },
+            "permissions": {"allow": ["Bash"]}
+        });
+        write!(file, "{}", serde_json::to_string(&settings).unwrap()).unwrap();
+
+        let count = migrate_old_format_hooks_in_file(file.path(), "claude-code", "--claude").unwrap();
+        assert_eq!(count, 2);
+
+        // Read back and verify
+        let content = fs::read_to_string(file.path()).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&content).unwrap();
+
+        // SessionStart should now use --claude
+        let cmd = json["hooks"]["SessionStart"][0]["hooks"][0]["command"].as_str().unwrap();
+        assert_eq!(cmd, "aiki hooks stdin --claude SessionStart");
+
+        // Stop should now use --claude
+        let cmd = json["hooks"]["Stop"][0]["hooks"][0]["command"].as_str().unwrap();
+        assert_eq!(cmd, "/usr/local/bin/aiki hooks stdin --claude Stop");
+
+        // permissions should be preserved
+        assert!(json.get("permissions").is_some());
+    }
+
+    #[test]
+    fn test_migrate_mixed_old_new_only_rewrites_old() {
+        // Only old-format commands get rewritten; new-format left untouched
+        let mut file = NamedTempFile::new().unwrap();
+        let settings = serde_json::json!({
+            "hooks": {
+                "SessionStart": [{"matcher": "", "hooks": [{"type": "command", "command": "aiki hooks stdin --claude SessionStart"}]}],
+                "Stop": [{"matcher": "", "hooks": [{"type": "command", "command": "aiki hooks stdin --agent claude-code --event Stop"}]}]
+            }
+        });
+        write!(file, "{}", serde_json::to_string(&settings).unwrap()).unwrap();
+
+        let count = migrate_old_format_hooks_in_file(file.path(), "claude-code", "--claude").unwrap();
+        assert_eq!(count, 1); // only Stop was old format
+
+        let content = fs::read_to_string(file.path()).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&content).unwrap();
+
+        // SessionStart should still use --claude (unchanged)
+        let cmd = json["hooks"]["SessionStart"][0]["hooks"][0]["command"].as_str().unwrap();
+        assert_eq!(cmd, "aiki hooks stdin --claude SessionStart");
+
+        // Stop should now use --claude
+        let cmd = json["hooks"]["Stop"][0]["hooks"][0]["command"].as_str().unwrap();
+        assert_eq!(cmd, "aiki hooks stdin --claude Stop");
+    }
+
+    #[test]
+    fn test_migrate_already_new_format_no_changes() {
+        // All hooks already in new format: no changes
+        let mut file = NamedTempFile::new().unwrap();
+        let settings = serde_json::json!({
+            "hooks": {
+                "SessionStart": [{"matcher": "", "hooks": [{"type": "command", "command": "aiki hooks stdin --claude SessionStart"}]}],
+                "Stop": [{"matcher": "", "hooks": [{"type": "command", "command": "aiki hooks stdin --claude Stop"}]}]
+            }
+        });
+        let original = serde_json::to_string(&settings).unwrap();
+        write!(file, "{}", original).unwrap();
+
+        let count = migrate_old_format_hooks_in_file(file.path(), "claude-code", "--claude").unwrap();
+        assert_eq!(count, 0);
+
+        // File should not have been rewritten (original formatting preserved)
+        let content = fs::read_to_string(file.path()).unwrap();
+        assert_eq!(content, original); // identical since count=0 means no write
+    }
+
+    #[test]
+    fn test_migrate_cursor_hooks() {
+        // Test cursor hook migration
+        let mut file = NamedTempFile::new().unwrap();
+        let hooks = serde_json::json!({
+            "version": 1,
+            "hooks": {
+                "beforeSubmitPrompt": [{"command": "aiki hooks stdin --agent cursor --event beforeSubmitPrompt"}],
+                "afterFileEdit": [{"command": "aiki hooks stdin --agent cursor --event afterFileEdit"}]
+            }
+        });
+        write!(file, "{}", serde_json::to_string(&hooks).unwrap()).unwrap();
+
+        let count = migrate_old_format_hooks_in_file(file.path(), "cursor", "--cursor").unwrap();
+        assert_eq!(count, 2);
+
+        let content = fs::read_to_string(file.path()).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&content).unwrap();
+
+        let cmd = json["hooks"]["beforeSubmitPrompt"][0]["command"].as_str().unwrap();
+        assert_eq!(cmd, "aiki hooks stdin --cursor beforeSubmitPrompt");
+
+        let cmd = json["hooks"]["afterFileEdit"][0]["command"].as_str().unwrap();
+        assert_eq!(cmd, "aiki hooks stdin --cursor afterFileEdit");
+    }
+
+    #[test]
+    fn test_migrate_codex_hooks() {
+        // Test codex hook migration
+        let mut file = NamedTempFile::new().unwrap();
+        let hooks = serde_json::json!({
+            "hooks": {
+                "SessionStart": [{"hooks": [{"type": "command", "command": "aiki hooks stdin --agent codex --event sessionStart"}]}],
+                "Stop": [{"hooks": [{"type": "command", "command": "aiki hooks stdin --agent codex --event stop"}]}]
+            }
+        });
+        write!(file, "{}", serde_json::to_string(&hooks).unwrap()).unwrap();
+
+        let count = migrate_old_format_hooks_in_file(file.path(), "codex", "--codex").unwrap();
+        assert_eq!(count, 2);
+
+        let content = fs::read_to_string(file.path()).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&content).unwrap();
+
+        let cmd = json["hooks"]["SessionStart"][0]["hooks"][0]["command"].as_str().unwrap();
+        assert_eq!(cmd, "aiki hooks stdin --codex sessionStart");
+
+        let cmd = json["hooks"]["Stop"][0]["hooks"][0]["command"].as_str().unwrap();
+        assert_eq!(cmd, "aiki hooks stdin --codex stop");
+    }
+
+    #[test]
+    fn test_cursor_hooks_old_format_detection() {
+        // Cursor hooks all in old format: all_present=true, has_old_format=true
+        let mut file = NamedTempFile::new().unwrap();
+        let hooks = serde_json::json!({
+            "version": 1,
+            "hooks": {
+                "beforeSubmitPrompt": [{"command": "aiki hooks stdin --agent cursor --event beforeSubmitPrompt"}],
+                "afterFileEdit": [{"command": "aiki hooks stdin --agent cursor --event afterFileEdit"}],
+                "beforeShellExecution": [{"command": "aiki hooks stdin --agent cursor --event beforeShellExecution"}],
+                "afterShellExecution": [{"command": "aiki hooks stdin --agent cursor --event afterShellExecution"}],
+                "beforeMCPExecution": [{"command": "aiki hooks stdin --agent cursor --event beforeMCPExecution"}],
+                "afterMCPExecution": [{"command": "aiki hooks stdin --agent cursor --event afterMCPExecution"}],
+                "stop": [{"command": "aiki hooks stdin --agent cursor --event stop"}]
+            }
+        });
+        write!(file, "{}", serde_json::to_string(&hooks).unwrap()).unwrap();
+
+        let status = check_cursor_hooks(file.path());
+        assert!(status.all_present);
+        assert!(status.has_old_format);
+    }
+
+    #[test]
+    fn test_cursor_hooks_new_format_no_warning() {
+        // Cursor hooks all in new format: no warning
+        let mut file = NamedTempFile::new().unwrap();
+        let hooks = serde_json::json!({
+            "version": 1,
+            "hooks": {
+                "beforeSubmitPrompt": [{"command": "aiki hooks stdin --cursor beforeSubmitPrompt"}],
+                "afterFileEdit": [{"command": "aiki hooks stdin --cursor afterFileEdit"}],
+                "beforeShellExecution": [{"command": "aiki hooks stdin --cursor beforeShellExecution"}],
+                "afterShellExecution": [{"command": "aiki hooks stdin --cursor afterShellExecution"}],
+                "beforeMCPExecution": [{"command": "aiki hooks stdin --cursor beforeMCPExecution"}],
+                "afterMCPExecution": [{"command": "aiki hooks stdin --cursor afterMCPExecution"}],
+                "stop": [{"command": "aiki hooks stdin --cursor stop"}]
+            }
+        });
+        write!(file, "{}", serde_json::to_string(&hooks).unwrap()).unwrap();
+
+        let status = check_cursor_hooks(file.path());
+        assert!(status.all_present);
+        assert!(!status.has_old_format);
     }
 }

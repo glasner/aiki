@@ -187,6 +187,7 @@ fn test_task_event_chaining_multiple_writes() {
             session_id: Some("test-session".to_string()),
             turn_id: None,
             working_copy: None,
+            instructions: None,
             timestamp: t + chrono::Duration::seconds(1),
         },
         TaskEvent::Closed {

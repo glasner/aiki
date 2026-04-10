@@ -104,18 +104,8 @@ fn e2e_codex_provenance_on_trivial_change() {
     validate_provenance_fields(repo, &commits[0], &task_id);
 }
 
-#[test]
-#[ignore] // e2e: requires claude binary + API key
-fn e2e_task_diff_shows_agent_changes() {
-    if !jj_available() {
-        eprintln!("Skipping: jj not available");
-        return;
-    }
-    if !agent_available("claude") {
-        eprintln!("Skipping: claude binary not available");
-        return;
-    }
-
+/// Shared logic for task-diff tests: create two files via an agent, verify task diff output.
+fn run_task_diff_test(agent: &str) {
     let temp = tempdir().unwrap();
     let repo = temp.path();
     init_aiki_repo(repo);
@@ -130,7 +120,7 @@ fn e2e_task_diff_shows_agent_changes() {
     );
 
     let (success, _, stderr) = aiki_run(repo, &task_id, Duration::from_secs(180));
-    assert!(success, "aiki run failed: {stderr}");
+    assert!(success, "aiki run failed with {agent}: {stderr}");
     assert!(
         wait_for_task_closed(repo, &task_id, Duration::from_secs(30)),
         "Task not closed"
@@ -152,4 +142,32 @@ fn e2e_task_diff_shows_agent_changes() {
         diff_output.contains("bar.txt"),
         "task diff missing bar.txt: {diff_output}"
     );
+}
+
+#[test]
+#[ignore] // e2e: requires claude binary + API key
+fn e2e_claude_task_diff_shows_agent_changes() {
+    if !jj_available() {
+        eprintln!("Skipping: jj not available");
+        return;
+    }
+    if !agent_available("claude") {
+        eprintln!("Skipping: claude binary not available");
+        return;
+    }
+    run_task_diff_test("claude-code");
+}
+
+#[test]
+#[ignore] // e2e: requires codex binary + API key
+fn e2e_codex_task_diff_shows_agent_changes() {
+    if !jj_available() {
+        eprintln!("Skipping: jj not available");
+        return;
+    }
+    if !agent_available("codex") {
+        eprintln!("Skipping: codex binary not available");
+        return;
+    }
+    run_task_diff_test("codex");
 }

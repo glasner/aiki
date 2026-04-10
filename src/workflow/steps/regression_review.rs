@@ -115,7 +115,7 @@ fn run_review_for_fix(
     let review_result = create_review(&cwd, build_fix_review_params(scope, template, agent))?;
 
     ctx.status("running review agent");
-    if ctx.event_rx.is_some() {
+    if ctx.notify_rx.is_some() {
         let output = ctx.output;
         let run_options = TaskRunOptions::new();
         let mut handler = super::ReviewDrainHandler::new(review_result.review_task_id.clone(), output);
@@ -123,7 +123,7 @@ fn run_review_for_fix(
             &cwd,
             &review_result.review_task_id,
             &run_options,
-            ctx.event_rx.as_ref(),
+            ctx.notify_rx.as_ref(),
             output,
             &mut handler,
         )?;
@@ -371,7 +371,7 @@ mod tests {
             scope,
             assignee: None,
             iteration: 0,
-            event_rx: None,
+            notify_rx: None,
             task_names: std::collections::HashMap::new(),
         }
     }
@@ -560,7 +560,7 @@ mod tests {
             scope: None,
             assignee: None,
             iteration: 0,
-            event_rx: None,
+            notify_rx: None,
             task_names: std::collections::HashMap::new(),
         };
 

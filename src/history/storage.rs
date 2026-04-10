@@ -650,6 +650,7 @@ fn event_to_metadata_block(event: &ConversationEvent) -> String {
             repo_id,
             cwd,
             session_mode,
+            transcript_path,
         } => {
             add_metadata("event", "session_start", &mut lines);
             add_metadata("session", session_id, &mut lines);
@@ -659,6 +660,9 @@ fn event_to_metadata_block(event: &ConversationEvent) -> String {
             }
             if let Some(mode) = session_mode {
                 add_metadata("session_mode", mode.to_string(), &mut lines);
+            }
+            if let Some(path) = transcript_path {
+                add_metadata("transcript_path", path, &mut lines);
             }
             add_location_metadata(repo_id, cwd, &mut lines);
             add_metadata_timestamp(timestamp, &mut lines);
@@ -869,6 +873,10 @@ fn parse_metadata_block(block: &str) -> Option<ConversationEvent> {
                 .get("session_mode")
                 .and_then(|v| v.first())
                 .and_then(|s| SessionMode::from_str(s));
+            let transcript_path = fields
+                .get("transcript_path")
+                .and_then(|v| v.first())
+                .map(|s| s.to_string());
 
             Some(ConversationEvent::SessionStart {
                 session_id,
@@ -878,6 +886,7 @@ fn parse_metadata_block(block: &str) -> Option<ConversationEvent> {
                 repo_id,
                 cwd,
                 session_mode,
+                transcript_path,
             })
         }
         "session_end" => {
@@ -1518,6 +1527,7 @@ timestamp=2026-01-09T10:30:00Z
             repo_id: None,
             cwd: None,
             session_mode: None,
+            transcript_path: None,
         };
 
         let block = event_to_metadata_block(&event);
@@ -1556,6 +1566,7 @@ timestamp=2026-01-09T10:30:00Z
             repo_id: None,
             cwd: None,
             session_mode: None,
+            transcript_path: None,
         };
 
         let block = event_to_metadata_block(&event);
@@ -1599,6 +1610,7 @@ timestamp=2026-01-09T10:30:00Z
                 repo_id: None,
                 cwd: None,
                 session_mode: None,
+                transcript_path: None,
             },
             ConversationEvent::SessionStart {
                 session_id: "session-B".to_string(),
@@ -1608,6 +1620,7 @@ timestamp=2026-01-09T10:30:00Z
                 repo_id: None,
                 cwd: None,
                 session_mode: None,
+                transcript_path: None,
             },
         ];
 
@@ -1636,6 +1649,7 @@ timestamp=2026-01-09T10:30:00Z
                 repo_id: None,
                 cwd: None,
                 session_mode: None,
+                transcript_path: None,
             },
             ConversationEvent::SessionStart {
                 session_id: "session-Y".to_string(),
@@ -1645,6 +1659,7 @@ timestamp=2026-01-09T10:30:00Z
                 repo_id: None,
                 cwd: None,
                 session_mode: None,
+                transcript_path: None,
             },
         ];
 

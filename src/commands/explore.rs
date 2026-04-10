@@ -8,7 +8,6 @@
 use std::env;
 use std::path::Path;
 
-use crate::agents::AgentType;
 use crate::commands::OutputFormat;
 use crate::error::{AikiError, Result};
 use crate::output_utils;
@@ -47,6 +46,19 @@ pub struct ExploreArgs {
     /// Agent for explore assignment
     #[arg(long)]
     pub agent: Option<String>,
+
+    /// Shorthand for --agent claude-code
+    #[arg(long, group = "agent_shorthand", conflicts_with = "agent")]
+    pub claude: bool,
+    /// Shorthand for --agent codex
+    #[arg(long, group = "agent_shorthand", conflicts_with = "agent")]
+    pub codex: bool,
+    /// Shorthand for --agent cursor
+    #[arg(long, group = "agent_shorthand", conflicts_with = "agent")]
+    pub cursor: bool,
+    /// Shorthand for --agent gemini
+    #[arg(long, group = "agent_shorthand", conflicts_with = "agent")]
+    pub gemini: bool,
 
     /// Output format (e.g., `id` for bare task ID on stdout)
     #[arg(long, short = 'o', value_name = "FORMAT")]
@@ -118,17 +130,14 @@ fn detect_explore_target(
 
 /// Run the explore command
 pub fn run(args: ExploreArgs) -> Result<()> {
+    use crate::session::flags::resolve_agent_shorthand;
+    let agent_type = resolve_agent_shorthand(args.agent, args.claude, args.codex, args.cursor, args.gemini);
+
     let cwd = env::current_dir()
         .map_err(|_| AikiError::InvalidArgument("Failed to get current directory".to_string()))?;
 
-    // Parse agent if provided
-    let agent_override = if let Some(ref agent_str) = args.agent {
-        let agent_type = AgentType::from_str(agent_str)
-            .ok_or_else(|| AikiError::UnknownAgentType(agent_str.clone()))?;
-        Some(agent_type.as_str().to_string())
-    } else {
-        None
-    };
+    // Resolve agent override to canonical string for assignee
+    let agent_override = agent_type.map(|a| a.as_str().to_string());
 
     // Detect target and resolve scope
     let (scope, _worker) = detect_explore_target(&cwd, &args.target, args.code)?;

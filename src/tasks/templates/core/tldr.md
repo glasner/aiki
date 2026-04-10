@@ -127,7 +127,21 @@ Pick a number to discuss, or "next" to move on.
 
 **When the user picks a number:** Explain that component in detail — what it
 does, how it connects to other components, key design choices, and any concerns.
-After your explanation, re-display the list with discussed items struck through:
+
+After your explanation, **stay in the sub-conversation**. Offer context-appropriate
+suggestions based on what you just explained. Examples:
+
+- If you identified a concern or smell: offer **Fix / Plan / Skip / Discuss**
+  (see "Action menu" below)
+- If there's a deeper aspect worth exploring: "Want to see the implementation?"
+  or "Want to trace how this connects to X?"
+- If the explanation is complete and clean: "Any questions about this, or 'back'
+  to the list?"
+
+Do NOT re-display the full architecture list after every explanation. The user
+stays in the sub-topic until they say "back", "list", "next", or pick a new
+number. When they do return, re-display the list with discussed items struck
+through:
 
 ```
 ## Architecture
@@ -165,8 +179,15 @@ Format:
 Pick a number to discuss, or "next" to move on.
 ```
 
-Same interaction pattern as Phase 2: user picks a number, you explain in
-detail, re-display with strikethrough. "next" advances to Phase 4.
+**When the user picks a number:** Explain the hotspot — what it is, why it
+matters, what the risk is. Show relevant code if helpful.
+
+Hotspots are issues by nature, so **always offer the action menu** after
+explaining (see "Action menu" below). The user stays in the sub-conversation
+until they choose an action and then say "back", or pick a new number directly.
+
+When they return to the list, re-display with strikethrough. "next" advances
+to Phase 4.
 
 ### Phase 4: Key Decisions
 
@@ -190,7 +211,19 @@ Format:
 Pick a number to discuss, or "next" to move on.
 ```
 
-Same interaction pattern. "next" advances to Phase 5.
+**When the user picks a number:** Explain the decision — what was decided, why,
+what the alternatives were, and what the trade-off is.
+
+After your explanation, offer context-appropriate suggestions:
+
+- If the user might disagree or want to revisit: offer the **action menu**
+  (Fix to change the approach, Plan for later, Skip to accept, Discuss to
+  explore alternatives)
+- If the decision seems straightforward: "Makes sense? Or want to dig in?
+  'back' to the list."
+
+The user stays in the sub-conversation until they return. "next" advances to
+Phase 5.
 
 ### Phase 5: Wrap-up
 
@@ -216,6 +249,33 @@ task:
 ```bash
 aiki task close <this-task-id> --summary "TL;DR review completed for epic <epic-id>"
 ```
+
+---
+
+## Action menu
+
+When a concern, issue, or questionable decision surfaces during any phase, offer
+the user these options (adapted from the pair-fix template):
+
+1. **Fix** — Delegate a fix to a background subagent so the conversation continues
+2. **Plan** — Write a fix plan for later instead of implementing now
+3. **Skip** — Accept as-is (ask for a brief reason)
+4. **Discuss** — Talk it through before deciding
+
+If you identified multiple approaches, present them as lettered options
+(**A**, **B**, **C**) before the menu so the user can say "1A" (Fix with
+approach A), "1B", etc.
+
+**Acting on choices:**
+- **Fix**: Create a task with instructions, run it via `aiki run <id> --async`,
+  report that it was delegated, and continue the conversation.
+- **Plan**: Write a concise fix plan (problem, files, change, verification),
+  save as a task comment or plan file, then continue.
+- **Skip**: Note the reason, continue.
+- **Discuss**: Explore the trade-off, then re-offer the menu.
+
+After acting, stay in the sub-conversation. Do NOT jump back to the parent list
+unless the user says "back", "list", or picks a new number.
 
 ---
 

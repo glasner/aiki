@@ -196,6 +196,8 @@ pub enum TaskEvent {
         turn_id: Option<String>,
         /// Immutable snapshot revset captured from `@` at start time.
         working_copy: Option<String>,
+        /// Instructions set atomically at start time (for quick-start with -i)
+        instructions: Option<String>,
         timestamp: DateTime<Utc>,
     },
     /// Task(s) were stopped (batch operation)

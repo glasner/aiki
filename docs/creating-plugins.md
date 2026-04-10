@@ -176,7 +176,16 @@ git init && git add . && git commit -m "Initial plugin"
 gh repo create myuser/my-plugin --public --source=. --push
 ```
 
-Users install it with:
+Users can reference it immediately — plugins are **auto-fetched** on first use. No install step required:
+
+```yaml
+# .aiki/hooks.yml
+include:
+  - aiki/default
+  - myuser/my-plugin   # auto-fetched from GitHub on first reference
+```
+
+To pre-fetch (e.g., for CI or offline use):
 
 ```bash
 aiki plugin install myuser/my-plugin
@@ -185,10 +194,10 @@ aiki plugin install myuser/my-plugin
 ## Plugin Management
 
 ```bash
-# Install a specific plugin (and its dependencies)
+# Pre-fetch a plugin (optional — plugins auto-fetch on first reference)
 aiki plugin install myuser/my-plugin
 
-# Install all plugins referenced by the current project
+# Pre-fetch all plugins referenced by the current project
 aiki plugin install
 
 # Update a specific plugin
@@ -197,12 +206,14 @@ aiki plugin update myuser/my-plugin
 # Update all installed plugins
 aiki plugin update
 
-# List plugins and their status
+# List plugins and their status (includes auto-fetched plugins)
 aiki plugin list
 
 # Remove a plugin
 aiki plugin remove myuser/my-plugin
 ```
+
+> **Note:** `aiki plugin install` is a pre-fetch optimization, not a prerequisite. Plugins are automatically cloned from GitHub the first time they're referenced via `include:`, `hook:`, `before:`/`after:`, or `--template`. The first use is slightly slower (one-time clone); subsequent sessions use the cached copy.
 
 ## Composition
 

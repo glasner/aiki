@@ -6,6 +6,9 @@
 
 use super::types::Task;
 
+/// Sentinel printed when no tasks remain (checked by agent prompts and hooks)
+pub const DONE_MESSAGE: &str = "Done. No remaining tasks.";
+
 /// Navigation hint shown in the context footer
 const NAV_HINT: &str = "Run `aiki task` to view - OR - `aiki task start` to begin work.";
 
@@ -155,7 +158,8 @@ pub fn build_list_output(
     if !in_progress.is_empty() || !ready_queue.is_empty() {
         out.push_str(&build_footer(in_progress, ready_queue, graph));
     } else {
-        out.push_str("Done. No remaining tasks.\n");
+        out.push_str(DONE_MESSAGE);
+        out.push('\n');
     }
     out
 }
@@ -539,7 +543,7 @@ mod tests {
     #[test]
     fn test_list_output_empty() {
         let md = build_list_output(&[], &[], None);
-        assert!(md.contains("Done. No remaining tasks."));
+        assert!(md.contains(DONE_MESSAGE));
         assert!(!md.contains("---"));
     }
 

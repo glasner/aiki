@@ -32,7 +32,7 @@ impl BuildOpts {
     ///
     /// Validates that a target (plan path or epic ID) is present. For
     /// `--_continue-async`, the epic ID is the target.
-    pub fn from_args(args: &BuildCommandArgs) -> crate::error::Result<Self> {
+    pub fn from_args(args: &BuildCommandArgs, agent: Option<AgentType>) -> crate::error::Result<Self> {
         let target = args
             .continue_async
             .as_deref()
@@ -44,15 +44,6 @@ impl BuildOpts {
                 )
             })?
             .to_string();
-
-        let agent = if let Some(ref agent_str) = args.agent {
-            Some(
-                AgentType::from_str(agent_str)
-                    .ok_or_else(|| AikiError::UnknownAgentType(agent_str.clone()))?,
-            )
-        } else {
-            None
-        };
 
         let fix = args.fix || args.fix_template.is_some();
         let review_template = args.review_template.clone();
@@ -101,7 +92,7 @@ fn build_context(cwd: &Path, opts: &BuildOpts) -> WorkflowContext {
         scope: None,
         assignee: None,
         iteration: 0,
-        event_rx: None,
+        notify_rx: None,
         task_names: std::collections::HashMap::new(),
     }
 }
@@ -252,7 +243,8 @@ fn maybe_run_fix(
         if quiet { None } else { opts.output.clone() },
         &opts.workflow,
     );
-    let mut wf = fix::workflow(cwd, review_id, &fix_opts, &scope, assignee.as_deref());
+    let assignee_type = assignee.as_deref().and_then(AgentType::from_str);
+    let mut wf = fix::workflow(cwd, review_id, &fix_opts, &scope, assignee_type);
     let output = if quiet {
         OutputKind::Quiet
     } else {
@@ -424,6 +416,10 @@ mod tests {
             decompose_template: None,
             loop_template: None,
             agent: None,
+            claude: false,
+            codex: false,
+            cursor: false,
+            gemini: false,
             review: false,
             review_template: None,
             fix: true,
@@ -434,7 +430,7 @@ mod tests {
             output: None,
             subcommand: None,
         };
-        let opts = BuildOpts::from_args(&args).unwrap();
+        let opts = BuildOpts::from_args(&args, None).unwrap();
         assert!(opts.workflow.fix);
         assert!(opts.workflow.review, "--fix must imply --review");
     }
@@ -450,6 +446,10 @@ mod tests {
             decompose_template: None,
             loop_template: None,
             agent: None,
+            claude: false,
+            codex: false,
+            cursor: false,
+            gemini: false,
             review: false,
             review_template: None,
             fix: false,
@@ -460,7 +460,7 @@ mod tests {
             output: None,
             subcommand: None,
         };
-        let opts = BuildOpts::from_args(&args).unwrap();
+        let opts = BuildOpts::from_args(&args, None).unwrap();
         assert!(opts.workflow.fix);
         assert!(opts.workflow.review);
         assert_eq!(opts.workflow.fix_template, Some("custom".to_string()));
@@ -555,6 +555,8 @@ mod tests {
 
     #[test]
     fn build_fix_opts_do_not_forward_build_agent_as_coder() {
+        use crate::agents::AgentType;
+
         let args = BuildCommandArgs {
             target: Some("plan.md".to_string()),
             run_async: false,
@@ -562,6 +564,10 @@ mod tests {
             decompose_template: Some("custom-decompose".to_string()),
             loop_template: Some("custom-loop".to_string()),
             agent: Some("codex".to_string()),
+            claude: false,
+            codex: false,
+            cursor: false,
+            gemini: false,
             review: false,
             review_template: Some("custom-review".to_string()),
             fix: true,
@@ -572,7 +578,7 @@ mod tests {
             output: Some(crate::commands::OutputFormat::Id),
             subcommand: None,
         };
-        let opts = BuildOpts::from_args(&args).unwrap();
+        let opts = BuildOpts::from_args(&args, Some(AgentType::Codex)).unwrap();
 
         let forwarded =
             FixOpts::from_workflow("review123".to_string(), opts.output.clone(), &opts.workflow);

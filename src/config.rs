@@ -130,7 +130,7 @@ pub fn install_claude_code_hooks_global() -> Result<()> {
         "matcher": "",
         "hooks": [{
             "type": "command",
-            "command": format!("{} hooks stdin --agent claude-code --event SessionStart", aiki_path),
+            "command": format!("{} hooks stdin --claude SessionStart", aiki_path),
             "timeout": 10
         }]
     }]);
@@ -140,7 +140,7 @@ pub fn install_claude_code_hooks_global() -> Result<()> {
         "matcher": "",
         "hooks": [{
             "type": "command",
-            "command": format!("{} hooks stdin --agent claude-code --event PreCompact", aiki_path),
+            "command": format!("{} hooks stdin --claude PreCompact", aiki_path),
             "timeout": 10
         }]
     }]);
@@ -150,7 +150,7 @@ pub fn install_claude_code_hooks_global() -> Result<()> {
         "matcher": "",
         "hooks": [{
             "type": "command",
-            "command": format!("{} hooks stdin --agent claude-code --event UserPromptSubmit", aiki_path),
+            "command": format!("{} hooks stdin --claude UserPromptSubmit", aiki_path),
             "timeout": 5
         }]
     }]);
@@ -160,7 +160,7 @@ pub fn install_claude_code_hooks_global() -> Result<()> {
         "matcher": tool_matcher,
         "hooks": [{
             "type": "command",
-            "command": format!("{} hooks stdin --agent claude-code --event PreToolUse", aiki_path),
+            "command": format!("{} hooks stdin --claude PreToolUse", aiki_path),
             "timeout": 5
         }]
     }]);
@@ -170,7 +170,7 @@ pub fn install_claude_code_hooks_global() -> Result<()> {
         "matcher": tool_matcher,
         "hooks": [{
             "type": "command",
-            "command": format!("{} hooks stdin --agent claude-code --event PostToolUse", aiki_path),
+            "command": format!("{} hooks stdin --claude PostToolUse", aiki_path),
             "timeout": 5
         }]
     }]);
@@ -180,7 +180,7 @@ pub fn install_claude_code_hooks_global() -> Result<()> {
         "matcher": "",
         "hooks": [{
             "type": "command",
-            "command": format!("{} hooks stdin --agent claude-code --event Stop", aiki_path),
+            "command": format!("{} hooks stdin --claude Stop", aiki_path),
             "timeout": 5
         }]
     }]);
@@ -190,7 +190,7 @@ pub fn install_claude_code_hooks_global() -> Result<()> {
         "matcher": "",
         "hooks": [{
             "type": "command",
-            "command": format!("{} hooks stdin --agent claude-code --event SessionEnd", aiki_path),
+            "command": format!("{} hooks stdin --claude SessionEnd", aiki_path),
             "timeout": 5
         }]
     }]);
@@ -251,7 +251,7 @@ pub fn install_cursor_hooks_global() -> Result<()> {
         .unwrap_or_default();
 
     let aiki_init_hook = json!({
-        "command": format!("{} hooks stdin --agent cursor --event beforeSubmitPrompt", aiki_path)
+        "command": format!("{} hooks stdin --cursor beforeSubmitPrompt", aiki_path)
     });
 
     // Check if already installed
@@ -286,7 +286,7 @@ pub fn install_cursor_hooks_global() -> Result<()> {
             .unwrap_or_default();
 
         let aiki_hook = json!({
-            "command": format!("{} hooks stdin --agent cursor --event {}", aiki_path, event_name)
+            "command": format!("{} hooks stdin --cursor {}", aiki_path, event_name)
         });
 
         let already_installed = existing.iter().any(|hook| {
@@ -481,7 +481,7 @@ pub fn install_codex_hooks_global() -> Result<()> {
         let hook_entry = serde_json::json!([{
             "hooks": [{
                 "type": "command",
-                "command": format!("aiki hooks stdin --agent codex --event {}", event_arg),
+                "command": format!("aiki hooks stdin --codex {}", event_arg),
             }]
         }]);
         hooks_map.insert(event_key.to_string(), hook_entry);

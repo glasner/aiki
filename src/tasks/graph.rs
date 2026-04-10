@@ -264,6 +264,16 @@ impl EdgeStore {
         self.link_meta
             .get(&(from.to_string(), to.to_string(), kind.to_string()))
     }
+
+    /// Iterate all edges as (from, to, kind) triples.
+    pub fn all_edges(&self) -> impl Iterator<Item = (&str, &str, &str)> {
+        self.forward.iter().flat_map(|(kind, from_map)| {
+            from_map.iter().flat_map(move |(from, tos)| {
+                tos.iter()
+                    .map(move |to| (from.as_str(), to.as_str(), kind.as_str()))
+            })
+        })
+    }
 }
 
 impl Default for EdgeStore {
@@ -679,6 +689,7 @@ fn process_event(
             session_id,
             turn_id,
             working_copy: _,
+            instructions,
             timestamp,
         } => {
             for task_id in task_ids {
@@ -693,6 +704,10 @@ fn process_event(
                     // Set assignee from the agent that started the task
                     if agent_type != "unknown" {
                         task.assignee = Some(agent_type.clone());
+                    }
+                    // Apply instructions if provided atomically with start
+                    if let Some(instr) = instructions {
+                        task.instructions = Some(instr.clone());
                     }
                 }
             }
@@ -919,6 +934,95 @@ pub fn is_task_only_kind(kind: &str) -> bool {
 /// Look up a link kind by name.
 pub fn find_link_kind(name: &str) -> Option<&'static LinkKind> {
     LINK_KINDS.iter().find(|k| k.name == name)
+}
+
+// ---------------------------------------------------------------------------
+// Graph delta (diff between two snapshots)
+// ---------------------------------------------------------------------------
+
+/// A change in task status between two graph snapshots.
+pub struct StatusChange<'a> {
+    pub task: &'a Task,
+    pub prev_status: TaskStatus,
+    pub next_status: TaskStatus,
+}
+
+/// Computed diff between two `TaskGraph` snapshots.
+///
+/// Produced once per debounce window by the drain loop to determine what
+/// changed between the previous and current materialized graph.
+pub struct GraphDelta<'a> {
+    pub prev: &'a TaskGraph,
+    pub next: &'a TaskGraph,
+    /// Tasks present in `next` but not in `prev`.
+    pub new_tasks: Vec<&'a Task>,
+    /// Tasks whose status changed between snapshots.
+    pub status_changes: Vec<StatusChange<'a>>,
+    /// New comments added between snapshots: (task_id, comment).
+    pub new_comments: Vec<(&'a str, &'a TaskComment)>,
+    /// New edges added between snapshots: (from, to, kind).
+    pub new_edges: Vec<(&'a str, &'a str, &'a str)>,
+}
+
+/// Compute the diff between two graph snapshots.
+pub fn compute_delta<'a>(prev: &'a TaskGraph, next: &'a TaskGraph) -> GraphDelta<'a> {
+    // New tasks: present in next but not prev
+    let new_tasks: Vec<&Task> = next
+        .tasks
+        .iter()
+        .filter(|(id, _)| !prev.tasks.contains_key(id.as_str()))
+        .map(|(_, t)| t)
+        .collect();
+
+    // Status changes: present in both, status differs
+    let status_changes: Vec<StatusChange> = next
+        .tasks
+        .iter()
+        .filter_map(|(id, next_task)| {
+            prev.tasks.get(id.as_str()).and_then(|prev_task| {
+                if prev_task.status != next_task.status {
+                    Some(StatusChange {
+                        task: next_task,
+                        prev_status: prev_task.status,
+                        next_status: next_task.status,
+                    })
+                } else {
+                    None
+                }
+            })
+        })
+        .collect();
+
+    // New comments: for each task in next, comments beyond what prev had
+    let new_comments: Vec<(&str, &TaskComment)> = next
+        .tasks
+        .iter()
+        .flat_map(|(id, next_task)| {
+            let prev_count = prev
+                .tasks
+                .get(id.as_str())
+                .map_or(0, |t| t.comments.len());
+            next_task.comments[prev_count.min(next_task.comments.len())..]
+                .iter()
+                .map(move |c| (id.as_str(), c))
+        })
+        .collect();
+
+    // New edges: edges in next not present in prev
+    let new_edges: Vec<(&str, &str, &str)> = next
+        .edges
+        .all_edges()
+        .filter(|(from, to, kind)| !prev.edges.has_link(from, to, kind))
+        .collect();
+
+    GraphDelta {
+        prev,
+        next,
+        new_tasks,
+        status_changes,
+        new_comments,
+        new_edges,
+    }
 }
 
 #[cfg(test)]
@@ -1941,6 +2045,7 @@ mod tests {
                 session_id: None,
                 turn_id: Some("turn-aaa-1".to_string()),
                 working_copy: None,
+                instructions: None,
                 timestamp: Utc::now(),
             },
         ];
@@ -1962,6 +2067,7 @@ mod tests {
                 session_id: None,
                 turn_id: Some("turn-aaa-1".to_string()),
                 working_copy: None,
+                instructions: None,
                 timestamp: Utc::now(),
             },
             TaskEvent::Stopped {
@@ -1989,6 +2095,7 @@ mod tests {
                 session_id: None,
                 turn_id: Some("turn-aaa-1".to_string()),
                 working_copy: None,
+                instructions: None,
                 timestamp: Utc::now(),
             },
             TaskEvent::Closed {
@@ -2018,6 +2125,7 @@ mod tests {
                 session_id: None,
                 turn_id: Some("turn-aaa-1".to_string()),
                 working_copy: None,
+                instructions: None,
                 timestamp: Utc::now(),
             },
             TaskEvent::Stopped {
@@ -2033,6 +2141,7 @@ mod tests {
                 session_id: None,
                 turn_id: Some("turn-bbb-1".to_string()),
                 working_copy: None,
+                instructions: None,
                 timestamp: Utc::now(),
             },
         ];
@@ -2054,6 +2163,7 @@ mod tests {
                 session_id: None,
                 turn_id: None,
                 working_copy: None,
+                instructions: None,
                 timestamp: Utc::now(),
             },
         ];
@@ -2585,6 +2695,7 @@ mod tests {
                 session_id: None,
                 turn_id: None,
                 working_copy: None,
+                instructions: None,
                 timestamp: Utc::now(),
             },
             make_closed("A"),
@@ -2610,6 +2721,7 @@ mod tests {
                 session_id: None,
                 turn_id: None,
                 working_copy: None,
+                instructions: None,
                 timestamp: Utc::now(),
             },
             make_stopped("B"),
@@ -2925,6 +3037,7 @@ mod tests {
             session_id: None,
             turn_id: None,
             working_copy: None,
+            instructions: None,
             timestamp: Utc::now(),
         }
     }
@@ -3055,5 +3168,106 @@ mod tests {
             "Reserved tasks are currently skipped by find_autorun_candidates. \
              If this starts failing, it means Reserved was intentionally added — update this test."
         );
+    }
+
+    // --- GraphDelta / compute_delta ---
+
+    #[test]
+    fn test_compute_delta_all_categories() {
+        // Build "prev" graph: task A (Open), task B (Open) with 1 comment, edge A→B subtask-of
+        let prev_events = vec![
+            make_created("A", "Task A"),
+            make_created("B", "Task B"),
+            make_link("A", "B", "subtask-of"),
+            TaskEvent::CommentAdded {
+                task_ids: vec!["B".to_string()],
+                text: "first comment".to_string(),
+                data: HashMap::new(),
+                timestamp: Utc::now(),
+            },
+        ];
+        let prev = materialize_graph(&prev_events);
+
+        // Build "next" graph: task A (Started), B (Open) with 2 comments,
+        // new task C, new edge B→C blocked-by
+        let next_events = vec![
+            make_created("A", "Task A"),
+            make_created("B", "Task B"),
+            make_created("C", "Task C"),
+            make_link("A", "B", "subtask-of"),
+            make_link("B", "C", "blocked-by"),
+            make_started("A"),
+            TaskEvent::CommentAdded {
+                task_ids: vec!["B".to_string()],
+                text: "first comment".to_string(),
+                data: HashMap::new(),
+                timestamp: Utc::now(),
+            },
+            TaskEvent::CommentAdded {
+                task_ids: vec!["B".to_string()],
+                text: "second comment".to_string(),
+                data: HashMap::new(),
+                timestamp: Utc::now(),
+            },
+        ];
+        let next = materialize_graph(&next_events);
+
+        let delta = compute_delta(&prev, &next);
+
+        // New tasks: only C
+        assert_eq!(delta.new_tasks.len(), 1);
+        assert_eq!(delta.new_tasks[0].id, "C");
+
+        // Status changes: A went Open→InProgress
+        assert_eq!(delta.status_changes.len(), 1);
+        assert_eq!(delta.status_changes[0].task.id, "A");
+        assert_eq!(delta.status_changes[0].prev_status, TaskStatus::Open);
+        assert_eq!(delta.status_changes[0].next_status, TaskStatus::InProgress);
+
+        // New comments: one new comment on B (the second one)
+        assert_eq!(delta.new_comments.len(), 1);
+        assert_eq!(delta.new_comments[0].0, "B");
+        assert_eq!(delta.new_comments[0].1.text, "second comment");
+
+        // New edges: B→C blocked-by (subtask-of already existed)
+        assert_eq!(delta.new_edges.len(), 1);
+        let (from, to, kind) = delta.new_edges[0];
+        assert_eq!(from, "B");
+        assert_eq!(to, "C");
+        assert_eq!(kind, "blocked-by");
+    }
+
+    #[test]
+    fn test_compute_delta_empty_graphs() {
+        let prev = materialize_graph(&[]);
+        let next = materialize_graph(&[]);
+        let delta = compute_delta(&prev, &next);
+
+        assert!(delta.new_tasks.is_empty());
+        assert!(delta.status_changes.is_empty());
+        assert!(delta.new_comments.is_empty());
+        assert!(delta.new_edges.is_empty());
+    }
+
+    #[test]
+    fn test_compute_delta_new_task_comments_included() {
+        // Comments on a brand-new task should appear in new_comments
+        let prev = materialize_graph(&[]);
+        let next_events = vec![
+            make_created("X", "New task"),
+            TaskEvent::CommentAdded {
+                task_ids: vec!["X".to_string()],
+                text: "hello".to_string(),
+                data: HashMap::new(),
+                timestamp: Utc::now(),
+            },
+        ];
+        let next = materialize_graph(&next_events);
+        let delta = compute_delta(&prev, &next);
+
+        assert_eq!(delta.new_tasks.len(), 1);
+        // prev has 0 comments for X (task doesn't exist), so all comments are new
+        assert_eq!(delta.new_comments.len(), 1);
+        assert_eq!(delta.new_comments[0].1.text, "hello");
     }
 }

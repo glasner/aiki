@@ -53,6 +53,20 @@ pub struct TldrArgs {
     /// Override agent for interactive session
     #[arg(long)]
     pub agent: Option<String>,
+
+    /// Shorthand for --agent claude-code
+    #[arg(long, group = "agent_shorthand", conflicts_with = "agent")]
+    pub claude: bool,
+    /// Shorthand for --agent codex
+    #[arg(long, group = "agent_shorthand", conflicts_with = "agent")]
+    pub codex: bool,
+    /// Shorthand for --agent cursor
+    #[arg(long, group = "agent_shorthand", conflicts_with = "agent")]
+    pub cursor: bool,
+    /// Shorthand for --agent gemini
+    #[arg(long, group = "agent_shorthand", conflicts_with = "agent")]
+    pub gemini: bool,
+
     /// Task template to use (default: tldr)
     #[arg(long)]
     pub template: Option<String>,
@@ -60,6 +74,9 @@ pub struct TldrArgs {
 
 /// Run the tldr command
 pub fn run(args: TldrArgs) -> Result<()> {
+    use crate::session::flags::resolve_agent_shorthand;
+    let agent_type = resolve_agent_shorthand(args.agent, args.claude, args.codex, args.cursor, args.gemini);
+
     let cwd = env::current_dir()
         .map_err(|_| AikiError::InvalidArgument("Failed to get current directory".to_string()))?;
 
@@ -157,7 +174,7 @@ pub fn run(args: TldrArgs) -> Result<()> {
     data.insert("file_stats".to_string(), "Run `aiki task diff --stat` to view file stats.".to_string());
 
     // Step 4: Resolve launch agent and preflight before creating the task
-    let launch = resolve_tldr_launch(args.agent.as_deref())?;
+    let launch = resolve_tldr_launch(agent_type)?;
     validate_tldr_launch(launch, |agent| agent.is_installed())?;
 
     // Step 5: Load template and create task
@@ -378,12 +395,8 @@ fn build_tldr_plan_payload(
 }
 
 /// Resolve the effective interactive agent and CLI binary for tldr sessions.
-fn resolve_tldr_launch(agent: Option<&str>) -> Result<TldrLaunchConfig> {
-    let agent_type = match agent {
-        Some(agent_str) => AgentType::from_str(agent_str)
-            .ok_or_else(|| AikiError::UnknownAgentType(agent_str.to_string()))?,
-        None => AgentType::ClaudeCode,
-    };
+fn resolve_tldr_launch(agent: Option<AgentType>) -> Result<TldrLaunchConfig> {
+    let agent_type = agent.unwrap_or(AgentType::ClaudeCode);
 
     let binary = agent_type.cli_binary().ok_or_else(|| {
         AikiError::InvalidArgument(format!(
@@ -867,6 +880,7 @@ mod tests {
             session_id: Some(session_id.to_string()),
             turn_id: None,
             working_copy: None,
+            instructions: None,
             timestamp,
         }
     }
@@ -1438,14 +1452,14 @@ mod tests {
 
     #[test]
     fn resolve_tldr_launch_explicit_agent_overrides_default() {
-        let launch = resolve_tldr_launch(Some("codex")).unwrap();
+        let launch = resolve_tldr_launch(Some(AgentType::Codex)).unwrap();
         assert_eq!(launch.agent_type, AgentType::Codex);
         assert_eq!(launch.binary, "codex");
     }
 
     #[test]
     fn resolve_tldr_launch_rejects_non_spawnable_session_agent() {
-        let err = resolve_tldr_launch(Some("cursor")).unwrap_err();
+        let err = resolve_tldr_launch(Some(AgentType::Cursor)).unwrap_err();
         let rendered = format!("{}", err);
         assert!(rendered.contains("does not support interactive `aiki tldr` sessions"));
         assert!(rendered.contains(&AgentType::Cursor.install_hint()));

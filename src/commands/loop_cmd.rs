@@ -8,7 +8,6 @@
 
 use std::env;
 
-use crate::agents::AgentType;
 use crate::commands::OutputFormat;
 use crate::error::{AikiError, Result};
 pub use crate::workflow::steps::r#loop::{run_loop, LoopOptions};
@@ -28,6 +27,19 @@ pub struct LoopArgs {
     #[arg(long)]
     pub agent: Option<String>,
 
+    /// Shorthand for --agent claude-code
+    #[arg(long, group = "agent_shorthand", conflicts_with = "agent")]
+    pub claude: bool,
+    /// Shorthand for --agent codex
+    #[arg(long, group = "agent_shorthand", conflicts_with = "agent")]
+    pub codex: bool,
+    /// Shorthand for --agent cursor
+    #[arg(long, group = "agent_shorthand", conflicts_with = "agent")]
+    pub cursor: bool,
+    /// Shorthand for --agent gemini
+    #[arg(long, group = "agent_shorthand", conflicts_with = "agent")]
+    pub gemini: bool,
+
     /// Template name override (default: loop)
     #[arg(long)]
     pub template: Option<String>,
@@ -39,17 +51,11 @@ pub struct LoopArgs {
 
 /// Run the loop command (CLI entry point)
 pub fn run(args: LoopArgs) -> Result<()> {
+    use crate::session::flags::resolve_agent_shorthand;
+    let agent_type = resolve_agent_shorthand(args.agent, args.claude, args.codex, args.cursor, args.gemini);
+
     let cwd = env::current_dir()
         .map_err(|_| AikiError::InvalidArgument("Failed to get current directory".to_string()))?;
-
-    let agent_type = if let Some(ref agent_str) = args.agent {
-        Some(
-            AgentType::from_str(agent_str)
-                .ok_or_else(|| AikiError::UnknownAgentType(agent_str.clone()))?,
-        )
-    } else {
-        None
-    };
 
     let mut options = LoopOptions::new().with_async(args.run_async);
     if let Some(agent) = agent_type {

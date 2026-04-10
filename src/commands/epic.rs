@@ -43,9 +43,18 @@ pub enum EpicCommands {
         #[arg(long)]
         agent: Option<String>,
 
-        /// Set instructions on the epic (inline, from file, or stdin with bare flag)
-        #[arg(long, short = 'i', num_args = 0..=1, default_missing_value = "")]
-        instructions: Option<String>,
+        /// Shorthand for --agent claude-code
+        #[arg(long, group = "agent_shorthand", conflicts_with = "agent")]
+        claude: bool,
+        /// Shorthand for --agent codex
+        #[arg(long, group = "agent_shorthand", conflicts_with = "agent")]
+        codex: bool,
+        /// Shorthand for --agent cursor
+        #[arg(long, group = "agent_shorthand", conflicts_with = "agent")]
+        cursor: bool,
+        /// Shorthand for --agent gemini
+        #[arg(long, group = "agent_shorthand", conflicts_with = "agent")]
+        gemini: bool,
 
         /// Output format (e.g., `id` for bare task ID on stdout)
         #[arg(long, short = 'o', value_name = "FORMAT")]
@@ -79,9 +88,16 @@ pub fn run(command: EpicCommands) -> Result<()> {
             restart,
             template,
             agent,
-            instructions,
+            claude,
+            codex,
+            cursor,
+            gemini,
             output,
-        } => run_add(&cwd, &plan_path, restart, template, agent, instructions, output),
+        } => {
+            use crate::session::flags::resolve_agent_shorthand;
+            let agent = resolve_agent_shorthand(agent, claude, codex, cursor, gemini);
+            run_add(&cwd, &plan_path, restart, template, agent, output)
+        }
         EpicCommands::Show { arg, output } => run_show(&cwd, &arg, output),
         EpicCommands::List { number } => run_list(&cwd, number),
     }
@@ -99,8 +115,7 @@ fn run_add(
     plan_path: &str,
     restart: bool,
     template_name: Option<String>,
-    agent: Option<String>,
-    instructions_arg: Option<String>,
+    agent_type: Option<AgentType>,
     output_format: Option<OutputFormat>,
 ) -> Result<()> {
     // Validate plan file exists and is .md
@@ -120,23 +135,10 @@ fn run_add(
         ));
     }
 
-    // Parse agent if provided
-    let agent_type = if let Some(ref agent_str) = agent {
-        Some(
-            AgentType::from_str(agent_str)
-                .ok_or_else(|| AikiError::UnknownAgentType(agent_str.clone()))?,
-        )
-    } else {
-        None
-    };
-
     // Load current tasks to check for existing epics
     let events = read_events(cwd)?;
     let graph = materialize_graph(&events);
     let plan_graph = PlanGraph::build(&graph);
-
-    // Resolve instructions from inline text, file path, or stdin
-    let resolved_instructions = super::input::resolve_text(instructions_arg.as_deref())?;
 
     // --restart always creates a new epic
     if restart {
@@ -147,7 +149,7 @@ fn run_add(
             }
         }
         let epic_id =
-            create_epic_with_decompose(cwd, plan_path, template_name.as_deref(), agent_type, false, resolved_instructions.clone())?;
+            create_epic_with_decompose(cwd, plan_path, template_name.as_deref(), agent_type, false)?;
         return output_epic_result(cwd, &epic_id, output_format);
     }
 
@@ -166,7 +168,7 @@ fn run_add(
         _ => {
             // No epic, or epic is closed — create new
             let epic_id =
-                create_epic_with_decompose(cwd, plan_path, template_name.as_deref(), agent_type, false, resolved_instructions)?;
+                create_epic_with_decompose(cwd, plan_path, template_name.as_deref(), agent_type, false)?;
             output_epic_result(cwd, &epic_id, output_format)
         }
     }

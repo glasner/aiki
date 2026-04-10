@@ -61,7 +61,7 @@ pub enum PlanMode {
 pub fn run(
     args: Vec<String>,
     template: Option<String>,
-    agent: Option<String>,
+    agent: Option<AgentType>,
     output_format: Option<super::OutputFormat>,
 ) -> Result<()> {
     let cwd = env::current_dir()
@@ -78,7 +78,7 @@ pub fn run(
     let plan_dir = &cfg.plan.dir;
 
     // CLI --agent flag takes precedence over config plan.agent
-    let agent = agent.or_else(|| cfg.plan.agent.map(|a| a.to_string()));
+    let agent = agent.or(cfg.plan.agent);
 
     // Dispatch based on first argument
     match args.first().map(|s| s.as_str()) {
@@ -386,7 +386,7 @@ fn run_epic(
     mode: PlanMode,
     plan_dir: &Path,
     template_name: Option<String>,
-    agent: Option<String>,
+    agent: Option<AgentType>,
     output_id: bool,
 ) -> Result<()> {
     let timestamp = chrono::Utc::now();
@@ -442,14 +442,8 @@ fn run_epic(
         }
     }
 
-    let agent_type = match agent.as_deref() {
-        Some(agent_str) => Some(
-            AgentType::from_str(agent_str)
-                .ok_or_else(|| AikiError::UnknownAgentType(agent_str.to_string()))?,
-        ),
-        None => None,
-    };
-    let (launch_agent, launch_binary) = resolve_plan_launch_agent(agent.as_deref())?;
+    let agent_type = agent;
+    let (launch_agent, launch_binary) = resolve_plan_launch_agent(agent_type)?;
     if !launch_agent.is_installed() {
         return Err(AikiError::InvalidArgument(format!(
             "Agent '{}' is not installed. {}",
@@ -745,7 +739,7 @@ fn run_fix(
     cwd: &Path,
     review_id: &str,
     template_name: Option<String>,
-    agent: Option<String>,
+    agent: Option<AgentType>,
     output_id: bool,
 ) -> Result<()> {
     use super::task::{create_from_template, TemplateTaskParams};
@@ -761,7 +755,7 @@ fn run_fix(
         template_name: template.to_string(),
         data,
         sources: vec![format!("task:{}", review_id)],
-        assignee: agent,
+        assignee: agent.map(|a| a.as_str().to_string()),
         ..Default::default()
     };
 
@@ -865,12 +859,8 @@ fn output_plan_error(plan_id: &str, error: &str) -> Result<()> {
     Ok(())
 }
 
-fn resolve_plan_launch_agent(agent: Option<&str>) -> Result<(AgentType, &'static str)> {
-    let agent_type = match agent {
-        Some(agent_str) => AgentType::from_str(agent_str)
-            .ok_or_else(|| AikiError::UnknownAgentType(agent_str.to_string()))?,
-        None => AgentType::ClaudeCode,
-    };
+fn resolve_plan_launch_agent(agent: Option<AgentType>) -> Result<(AgentType, &'static str)> {
+    let agent_type = agent.unwrap_or(AgentType::ClaudeCode);
 
     let binary = agent_type.cli_binary().ok_or_else(|| {
         AikiError::InvalidArgument(format!(
@@ -1149,14 +1139,14 @@ mod tests {
 
     #[test]
     fn test_resolve_plan_launch_agent_supports_codex() {
-        let (agent, binary) = resolve_plan_launch_agent(Some("codex")).unwrap();
+        let (agent, binary) = resolve_plan_launch_agent(Some(AgentType::Codex)).unwrap();
         assert_eq!(agent, AgentType::Codex);
         assert_eq!(binary, "codex");
     }
 
     #[test]
     fn test_resolve_plan_launch_agent_rejects_non_spawnable_agent() {
-        let err = resolve_plan_launch_agent(Some("cursor")).unwrap_err();
+        let err = resolve_plan_launch_agent(Some(AgentType::Cursor)).unwrap_err();
         assert!(format!("{}", err).contains("does not support interactive `aiki plan` sessions"));
     }
 

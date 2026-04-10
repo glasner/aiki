@@ -44,6 +44,7 @@ use crate::error::{AikiError, Result};
 pub struct HookLoader {
     resolver: HookResolver,
     cache: HashMap<PathBuf, Hook>,
+    failed_fetches: HashMap<String, String>,
 }
 
 impl HookLoader {
@@ -59,6 +60,7 @@ impl HookLoader {
         Ok(Self {
             resolver: HookResolver::with_start_dir(start_dir)?,
             cache: HashMap::new(),
+            failed_fetches: HashMap::new(),
         })
     }
 
@@ -89,6 +91,13 @@ impl HookLoader {
     /// - `AikiError::HookNotFound` if the file doesn't exist
     /// - `AikiError::Other` if YAML parsing fails
     pub fn load(&mut self, path: &str) -> Result<(Hook, PathBuf)> {
+        if let Some(original_reason) = self.failed_fetches.get(path) {
+            return Err(AikiError::AutoFetchFailed {
+                plugin: path.to_string(),
+                reason: original_reason.clone(),
+            });
+        }
+
         // Try resolving from filesystem first
         match self.resolver.resolve(path) {
             Ok(canonical_path) => {
@@ -104,7 +113,8 @@ impl HookLoader {
                 self.cache.insert(canonical_path.clone(), hook.clone());
                 Ok((hook, canonical_path))
             }
-            Err(AikiError::HookNotFound { .. }) => {
+            Err(ref resolve_err @ AikiError::HookNotFound { .. })
+            | Err(ref resolve_err @ AikiError::AutoFetchFailed { .. }) => {
                 // Fallback: check built-in plugin registry
                 let synthetic_path = PathBuf::from(format!("builtin://{}", path));
 
@@ -125,15 +135,24 @@ impl HookLoader {
                     return Ok((hook, synthetic_path));
                 }
 
-                // Not a built-in either — return the original not-found error
-                Err(AikiError::HookNotFound {
-                    path: path.to_string(),
-                    resolved_path: path.to_string(),
-                    source: std::io::Error::new(
-                        std::io::ErrorKind::NotFound,
-                        format!("Hook '{}' not found on disk or as built-in plugin", path),
-                    ),
-                })
+                // Not a built-in either — memoize the failure and return the original error
+                match resolve_err {
+                    AikiError::AutoFetchFailed { reason, .. } => {
+                        self.failed_fetches.insert(path.to_string(), reason.clone());
+                        Err(AikiError::AutoFetchFailed {
+                            plugin: path.to_string(),
+                            reason: reason.clone(),
+                        })
+                    }
+                    _ => Err(AikiError::HookNotFound {
+                        path: path.to_string(),
+                        resolved_path: path.to_string(),
+                        source: std::io::Error::new(
+                            std::io::ErrorKind::NotFound,
+                            format!("Hook '{}' not found on disk or as built-in plugin", path),
+                        ),
+                    }),
+                }
             }
             Err(e) => Err(e),
         }
@@ -223,6 +242,15 @@ impl HookLoader {
 
     pub fn clear_cache(&mut self) {
         self.cache.clear();
+        self.failed_fetches.clear();
+    }
+
+    pub fn failed_fetches_count(&self) -> usize {
+        self.failed_fetches.len()
+    }
+
+    pub fn mark_fetch_failed(&mut self, path: &str, reason: &str) {
+        self.failed_fetches.insert(path.to_string(), reason.to_string());
     }
 
     pub fn load_core_hook() -> &'static Hook {
@@ -374,7 +402,10 @@ version: "1"
         let mut loader = HookLoader::with_start_dir(temp_dir.path()).unwrap();
 
         let result = loader.load("aiki/nonexistent");
-        assert!(matches!(result, Err(AikiError::HookNotFound { .. })));
+        assert!(matches!(
+            result,
+            Err(AikiError::AutoFetchFailed { .. }) | Err(AikiError::HookNotFound { .. })
+        ));
     }
 
     #[test]
@@ -446,5 +477,128 @@ version: "1"
         let (hook2, _) = loader.load("aiki/default").unwrap();
         assert_eq!(loader.cache_size(), 1);
         assert_eq!(hook1.name, hook2.name);
+    }
+
+    #[test]
+    fn test_auto_fetch_failed_memoization() {
+        let temp_dir = create_test_project();
+        let mut loader = HookLoader::with_start_dir(temp_dir.path()).unwrap();
+
+        // Manually mark a plugin as having a failed fetch
+        loader.mark_fetch_failed("fakens/fakeplugin", "registry returned 404");
+        assert_eq!(loader.failed_fetches_count(), 1);
+
+        // Loading should return memoized AutoFetchFailed with original reason
+        let result = loader.load("fakens/fakeplugin");
+        assert!(matches!(
+            result,
+            Err(AikiError::AutoFetchFailed { ref reason, .. })
+                if reason == "registry returned 404"
+        ), "Expected memoized AutoFetchFailed with original reason, got: {:?}", result);
+
+        // Cache size should remain 0 — the resolver was never called
+        assert_eq!(loader.cache_size(), 0);
+
+        // Loading again should still return the same memoized error with original reason
+        let result2 = loader.load("fakens/fakeplugin");
+        assert!(matches!(
+            result2,
+            Err(AikiError::AutoFetchFailed { ref reason, .. })
+                if reason == "registry returned 404"
+        ));
+    }
+
+    #[test]
+    fn test_clear_cache_clears_failed_fetches() {
+        let temp_dir = create_test_project();
+        let mut loader = HookLoader::with_start_dir(temp_dir.path()).unwrap();
+
+        // Mark a plugin as failed
+        loader.mark_fetch_failed("fakens/someplugin", "network timeout");
+        assert_eq!(loader.failed_fetches_count(), 1);
+
+        // Verify it's memoized
+        let result = loader.load("fakens/someplugin");
+        assert!(matches!(result, Err(AikiError::AutoFetchFailed { .. })));
+
+        // Also load a successful hook to populate the main cache
+        let flow_path = temp_dir.path().join(".aiki/hooks/aiki/cleartest.yml");
+        create_flow_file(&flow_path, "Clear Test Flow", &[], &[]);
+        loader.load("aiki/cleartest").unwrap();
+        assert_eq!(loader.cache_size(), 1);
+
+        // Clear everything
+        loader.clear_cache();
+        assert_eq!(loader.cache_size(), 0);
+        assert_eq!(loader.failed_fetches_count(), 0);
+
+        // After clearing, loading the previously-failed plugin should attempt
+        // resolution again (not return memoized error). It will still fail,
+        // but the error message should NOT be the original memoized reason.
+        let result2 = loader.load("fakens/someplugin");
+        assert!(result2.is_err());
+        if let Err(AikiError::AutoFetchFailed { reason, .. }) = &result2 {
+            assert_ne!(
+                reason, "network timeout",
+                "After clear_cache, load should re-attempt resolution, not return memoized error"
+            );
+        }
+    }
+
+    #[test]
+    fn test_memoized_auto_fetch_does_not_affect_other_plugins() {
+        let temp_dir = create_test_project();
+        let mut loader = HookLoader::with_start_dir(temp_dir.path()).unwrap();
+
+        // Mark one plugin as failed
+        loader.mark_fetch_failed("fakens/badplugin", "plugin not found in registry");
+
+        // A different plugin on disk should still load successfully
+        let flow_path = temp_dir.path().join(".aiki/hooks/aiki/good.yml");
+        create_flow_file(&flow_path, "Good Flow", &[], &[]);
+
+        let (hook, _) = loader.load("aiki/good").unwrap();
+        assert_eq!(hook.name, "Good Flow");
+
+        // The failed plugin should still be memoized with its original reason
+        let result = loader.load("fakens/badplugin");
+        assert!(matches!(
+            result,
+            Err(AikiError::AutoFetchFailed { ref reason, .. })
+                if reason == "plugin not found in registry"
+        ));
+    }
+
+    #[test]
+    fn test_load_not_found_records_auto_fetch_failure() {
+        let temp_dir = create_test_project();
+        let mut loader = HookLoader::with_start_dir(temp_dir.path()).unwrap();
+
+        assert_eq!(loader.failed_fetches_count(), 0);
+
+        // Load a non-existent plugin — this goes through the full resolve path
+        let result = loader.load("aiki/nonexistent");
+        assert!(result.is_err());
+
+        // If it was an AutoFetchFailed, it should have been memoized
+        if matches!(result, Err(AikiError::AutoFetchFailed { .. })) {
+            assert_eq!(
+                loader.failed_fetches_count(),
+                1,
+                "AutoFetchFailed should be memoized in failed_fetches"
+            );
+
+            // Second call should return the memoized version with original reason
+            let result2 = loader.load("aiki/nonexistent");
+            match (&result, &result2) {
+                (
+                    Err(AikiError::AutoFetchFailed { reason: original, .. }),
+                    Err(AikiError::AutoFetchFailed { reason: memoized, .. }),
+                ) => {
+                    assert_eq!(original, memoized, "Memoized reason should match original");
+                }
+                _ => panic!("Expected memoized AutoFetchFailed, got: {:?}", result2),
+            }
+        }
     }
 }

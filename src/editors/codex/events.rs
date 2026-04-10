@@ -80,7 +80,6 @@ struct SessionStartPayload {
     model: String,
     #[allow(dead_code)]
     permission_mode: PermissionMode,
-    #[allow(dead_code)]
     transcript_path: Option<String>,
 }
 
@@ -218,6 +217,7 @@ fn build_session_started_event(payload: SessionStartPayload) -> AikiEvent {
             session,
             cwd,
             timestamp,
+            transcript_path: payload.transcript_path,
         }),
     }
 }

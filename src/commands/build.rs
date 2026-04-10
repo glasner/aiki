@@ -58,6 +58,19 @@ pub struct BuildArgs {
     #[arg(long)]
     pub agent: Option<String>,
 
+    /// Shorthand for --agent claude-code
+    #[arg(long, group = "agent_shorthand", conflicts_with = "agent")]
+    pub claude: bool,
+    /// Shorthand for --agent codex
+    #[arg(long, group = "agent_shorthand", conflicts_with = "agent")]
+    pub codex: bool,
+    /// Shorthand for --agent cursor
+    #[arg(long, group = "agent_shorthand", conflicts_with = "agent")]
+    pub cursor: bool,
+    /// Shorthand for --agent gemini
+    #[arg(long, group = "agent_shorthand", conflicts_with = "agent")]
+    pub gemini: bool,
+
     /// Run review after build
     #[arg(long, short = 'r')]
     pub review: bool,
@@ -106,16 +119,19 @@ impl crate::workflow::HasRunKind for BuildArgs {
 
 /// Run the build command
 pub fn run(args: BuildArgs) -> Result<()> {
+    use crate::session::flags::resolve_agent_shorthand;
+    let agent = resolve_agent_shorthand(args.agent.clone(), args.claude, args.codex, args.cursor, args.gemini);
+
     let cwd = env::current_dir()
         .map_err(|_| AikiError::InvalidArgument("Failed to get current directory".to_string()))?;
 
-    if let Some(subcommand) = args.subcommand {
+    if let Some(subcommand) = &args.subcommand {
         return match subcommand {
-            BuildSubcommands::Show { plan_path, output } => run_show(&cwd, &plan_path, output),
+            BuildSubcommands::Show { plan_path, output } => run_show(&cwd, plan_path, output.clone()),
         };
     }
 
-    let opts = BuildOpts::from_args(&args)?;
+    let opts = BuildOpts::from_args(&args, agent)?;
     build::run(&cwd, &opts)?;
 
     Ok(())
@@ -166,7 +182,7 @@ fn run_show(cwd: &Path, plan_path: &str, output_format: Option<OutputFormat>) ->
                 scope: None,
                 assignee: None,
                 iteration: 0,
-                event_rx: None,
+                notify_rx: None,
                 task_names: std::collections::HashMap::new(),
             };
             output_build_status(&ctx, &None);
@@ -485,7 +501,7 @@ mod tests {
             scope: None,
             assignee: None,
             iteration: 0,
-            event_rx: None,
+            notify_rx: None,
             task_names: std::collections::HashMap::new(),
         };
         output_build_status(&ctx, &None);
@@ -508,7 +524,7 @@ mod tests {
             scope: None,
             assignee: None,
             iteration: 0,
-            event_rx: None,
+            notify_rx: None,
             task_names: std::collections::HashMap::new(),
         };
         output_build_status(&ctx, &None);
@@ -548,6 +564,10 @@ mod tests {
             decompose_template: None,
             loop_template: None,
             agent: None,
+            claude: false,
+            codex: false,
+            cursor: false,
+            gemini: false,
             review: false,
             review_template: None,
             fix: false,
@@ -571,6 +591,10 @@ mod tests {
             decompose_template: None,
             loop_template: Some("custom/loop".to_string()),
             agent: None,
+            claude: false,
+            codex: false,
+            cursor: false,
+            gemini: false,
             review: false,
             review_template: None,
             fix: false,
@@ -593,6 +617,10 @@ mod tests {
             decompose_template: Some("my/decompose".to_string()),
             loop_template: None,
             agent: None,
+            claude: false,
+            codex: false,
+            cursor: false,
+            gemini: false,
             review: false,
             review_template: None,
             fix: false,
@@ -615,6 +643,10 @@ mod tests {
             decompose_template: None,
             loop_template: None,
             agent: None,
+            claude: false,
+            codex: false,
+            cursor: false,
+            gemini: false,
             review: false,
             review_template: None,
             fix: false,
@@ -647,6 +679,10 @@ mod tests {
             decompose_template: None,
             loop_template: None,
             agent: None,
+            claude: false,
+            codex: false,
+            cursor: false,
+            gemini: false,
             review: false,
             review_template: None,
             fix: true,
@@ -679,6 +715,10 @@ mod tests {
             decompose_template: None,
             loop_template: None,
             agent: None,
+            claude: false,
+            codex: false,
+            cursor: false,
+            gemini: false,
             review: true,
             review_template: None,
             fix: false,
@@ -710,6 +750,10 @@ mod tests {
             decompose_template: None,
             loop_template: None,
             agent: None,
+            claude: false,
+            codex: false,
+            cursor: false,
+            gemini: false,
             review: false,
             review_template: Some("my/review".to_string()),
             fix: false,
@@ -732,6 +776,10 @@ mod tests {
             decompose_template: None,
             loop_template: None,
             agent: None,
+            claude: false,
+            codex: false,
+            cursor: false,
+            gemini: false,
             review: false,
             review_template: None,
             fix: false,
@@ -756,6 +804,10 @@ mod tests {
             decompose_template: None,
             loop_template: None,
             agent: None,
+            claude: false,
+            codex: false,
+            cursor: false,
+            gemini: false,
             review: false,
             review_template: None,
             fix: false,

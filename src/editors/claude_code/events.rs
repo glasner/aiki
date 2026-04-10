@@ -256,6 +256,7 @@ fn build_session_started_event(payload: SessionStartPayload) -> AikiEvent {
             session,
             cwd,
             timestamp,
+            transcript_path: None,
         }),
     }
 }

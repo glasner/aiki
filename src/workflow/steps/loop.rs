@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 #[cfg(test)]
 use std::env;
 use std::path::Path;
@@ -14,10 +14,8 @@ use crate::tasks::md::MdBuilder;
 use crate::tasks::runner::{
     handle_session_result, task_run, task_run_async, task_run_on_session, TaskRunOptions,
 };
-use crate::tasks::types::TaskOutcome;
 use crate::tasks::{
-    find_task, get_subtasks, materialize_graph, read_events, start_task_core, TaskEvent,
-    TaskStatus,
+    find_task, get_subtasks, materialize_graph, read_events, start_task_core, TaskStatus,
 };
 use crate::workflow::{OutputKind, WorkflowOutput};
 
@@ -62,7 +60,7 @@ impl LoopOptions {
 /// the parent task ID, writes an `orchestrates` link from the loop task to the
 /// parent, and runs the task.
 ///
-/// When `ctx` is provided with an active `event_rx`, uses spawn_monitored +
+/// When `ctx` is provided with an active `notify_rx`, uses spawn_monitored +
 /// event drain loop to show subtask progress in real-time. Otherwise falls
 /// back to `task_run()` or TUI.
 ///
@@ -140,17 +138,18 @@ pub fn run_loop(
         let _handle = task_run_async(cwd, &loop_task_id, task_run_options)?;
         emit_loop_async(output_ctx, &loop_task_id, &parent_id);
     } else if let Some(ctx) = ctx {
-        if ctx.event_rx.is_some() {
+        if ctx.notify_rx.is_some() {
             let output = ctx.output;
             let mut handler = LoopDrainHandler {
                 task_names: &mut ctx.task_names,
+                parent_id: parent_id.clone(),
                 output,
             };
             super::spawn_drain_finalize(
                 cwd,
                 &loop_task_id,
                 &task_run_options,
-                ctx.event_rx.as_ref(),
+                ctx.notify_rx.as_ref(),
                 output,
                 &mut handler,
             )?;
@@ -170,50 +169,61 @@ pub fn run_loop(
 
 /// Drain handler for the loop step: displays task lifecycle events
 /// (started, completed, skipped, failed) in real-time.
+/// Filters events to only include subtasks of the parent epic.
 struct LoopDrainHandler<'a> {
     task_names: &'a mut HashMap<String, String>,
+    parent_id: String,
     output: WorkflowOutput,
 }
 
 impl super::DrainHandler for LoopDrainHandler<'_> {
-    fn drain(&mut self, rx: &crossbeam_channel::Receiver<TaskEvent>) {
-        for event in rx.try_iter() {
-            match &event {
-                TaskEvent::Created { task_id, name, .. } => {
-                    self.task_names.insert(task_id.clone(), name.clone());
+    fn on_change(&mut self, delta: &super::GraphDelta) {
+        use crate::tasks::types::{TaskOutcome, TaskStatus};
+
+        // Build set of child IDs for the parent epic to filter events.
+        let child_ids: HashSet<&str> = delta
+            .next
+            .children_of(&self.parent_id)
+            .iter()
+            .map(|t| t.id.as_str())
+            .collect();
+
+        // Record names from newly created tasks (only epic's children).
+        for task in &delta.new_tasks {
+            if child_ids.contains(task.id.as_str()) {
+                self.task_names.insert(task.id.clone(), task.name.clone());
+            }
+        }
+
+        // Display status transitions (only epic's children).
+        for sc in delta.status_changes.iter().filter(|sc| child_ids.contains(sc.task.id.as_str())) {
+            let name = self
+                .task_names
+                .get(&sc.task.id)
+                .map(|s| s.as_str())
+                .unwrap_or(&sc.task.id);
+
+            match sc.next_status {
+                TaskStatus::InProgress => {
+                    self.output.emit(&format!("  \u{25b8} {}", name));
                 }
-                TaskEvent::Started { task_ids, .. } => {
-                    for id in task_ids {
-                        let name =
-                            self.task_names.get(id).map(|s| s.as_str()).unwrap_or(id);
-                        self.output.emit(&format!("  \u{25b8} {}", name));
-                    }
-                }
-                TaskEvent::Closed {
-                    task_ids, outcome, ..
-                } => {
-                    for id in task_ids {
-                        let name =
-                            self.task_names.get(id).map(|s| s.as_str()).unwrap_or(id);
-                        match outcome {
-                            TaskOutcome::Done => {
-                                self.output
-                                    .emit(&format!("  \u{2714} {} \u{2014} done", name));
-                            }
-                            TaskOutcome::WontDo => {
-                                self.output
-                                    .emit(&format!("  \u{2298} {} \u{2014} skipped", name));
-                            }
-                        }
-                    }
-                }
-                TaskEvent::Stopped { task_ids, .. } => {
-                    for id in task_ids {
-                        let name =
-                            self.task_names.get(id).map(|s| s.as_str()).unwrap_or(id);
+                TaskStatus::Closed => match sc.task.closed_outcome {
+                    Some(TaskOutcome::Done) => {
                         self.output
-                            .emit(&format!("  \u{2718} {} \u{2014} failed", name));
+                            .emit(&format!("  \u{2714} {} \u{2014} done", name));
                     }
+                    Some(TaskOutcome::WontDo) => {
+                        self.output
+                            .emit(&format!("  \u{2298} {} \u{2014} skipped", name));
+                    }
+                    None => {
+                        self.output
+                            .emit(&format!("  \u{2714} {} \u{2014} done", name));
+                    }
+                },
+                TaskStatus::Stopped => {
+                    self.output
+                        .emit(&format!("  \u{2718} {} \u{2014} failed", name));
                 }
                 _ => {}
             }
@@ -288,6 +298,9 @@ fn emit_loop_async(output: WorkflowOutput, loop_id: &str, parent_id: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tasks::graph::TaskGraph;
+    use crate::tasks::types::Task;
+    use crate::workflow::steps::DrainHandler;
     use crate::workflow::OutputKind;
 
     fn run_loop_output_probe(case: &str) -> String {
@@ -392,163 +405,297 @@ mod tests {
         assert!(!quiet_output.contains("background"));
     }
 
-    /// Verify the loop drain logic emits correct output for Started/Closed/Stopped events.
-    #[test]
-    fn loop_drain_emits_correct_output_for_task_lifecycle() {
-        use crate::tasks::types::{TaskOutcome, TaskPriority};
-
-        let (tx, rx) = crossbeam_channel::unbounded();
-        let mut task_names: HashMap<String, String> = HashMap::new();
-        // Pre-populate task_names (simulating decompose step seeding)
-        task_names.insert("sub_001".to_string(), "Fix auth bug".to_string());
-        task_names.insert("sub_002".to_string(), "Add error handling".to_string());
-        task_names.insert("sub_003".to_string(), "Remove deprecated API".to_string());
-
-        let now = chrono::Utc::now();
-
-        // Created event for a new task not seen during decompose
-        tx.send(TaskEvent::Created {
-            task_id: "sub_004".to_string(),
-            name: "New runtime task".to_string(),
+    /// Helper: build a minimal Task for test graph construction.
+    fn make_test_task(id: &str, name: &str, status: TaskStatus) -> Task {
+        use crate::tasks::types::TaskPriority;
+        Task {
+            id: id.to_string(),
+            name: name.to_string(),
             slug: None,
             task_type: None,
+            status,
             priority: TaskPriority::P2,
             assignee: None,
             sources: Vec::new(),
             template: None,
             instructions: None,
             data: HashMap::new(),
-            timestamp: now,
-        })
-        .unwrap();
-
-        // Started event
-        tx.send(TaskEvent::Started {
-            task_ids: vec!["sub_001".to_string()],
-            agent_type: "claude-code".to_string(),
-            session_id: None,
-            turn_id: None,
-            working_copy: None,
-            timestamp: now,
-        })
-        .unwrap();
-
-        // Closed event (Done)
-        tx.send(TaskEvent::Closed {
-            task_ids: vec!["sub_001".to_string()],
-            outcome: TaskOutcome::Done,
+            created_at: chrono::Utc::now(),
+            started_at: None,
+            claimed_by_session: None,
+            last_session_id: None,
+            stopped_reason: None,
+            closed_outcome: None,
             confidence: None,
             summary: None,
-            session_id: None,
-            turn_id: None,
-            timestamp: now,
-        })
-        .unwrap();
-
-        // Closed event (WontDo)
-        tx.send(TaskEvent::Closed {
-            task_ids: vec!["sub_002".to_string()],
-            outcome: TaskOutcome::WontDo,
-            confidence: None,
-            summary: None,
-            session_id: None,
-            turn_id: None,
-            timestamp: now,
-        })
-        .unwrap();
-
-        // Stopped event
-        tx.send(TaskEvent::Stopped {
-            task_ids: vec!["sub_003".to_string()],
-            reason: Some("Agent crashed".to_string()),
-            session_id: None,
-            turn_id: None,
-            timestamp: now,
-        })
-        .unwrap();
-
-        drop(tx);
-
-        // Collect emitted output by running the drain logic
-        let mut emitted: Vec<String> = Vec::new();
-        for event in rx.try_iter() {
-            match &event {
-                TaskEvent::Created { task_id, name, .. } => {
-                    task_names.insert(task_id.clone(), name.clone());
-                }
-                TaskEvent::Started { task_ids, .. } => {
-                    for id in task_ids {
-                        let name = task_names.get(id).map(|s| s.as_str()).unwrap_or(id);
-                        emitted.push(format!("  \u{25b8} {}", name));
-                    }
-                }
-                TaskEvent::Closed {
-                    task_ids, outcome, ..
-                } => {
-                    for id in task_ids {
-                        let name = task_names.get(id).map(|s| s.as_str()).unwrap_or(id);
-                        match outcome {
-                            TaskOutcome::Done => {
-                                emitted.push(format!("  \u{2714} {} \u{2014} done", name));
-                            }
-                            TaskOutcome::WontDo => {
-                                emitted.push(format!("  \u{2298} {} \u{2014} skipped", name));
-                            }
-                        }
-                    }
-                }
-                TaskEvent::Stopped { task_ids, .. } => {
-                    for id in task_ids {
-                        let name = task_names.get(id).map(|s| s.as_str()).unwrap_or(id);
-                        emitted.push(format!("  \u{2718} {} \u{2014} failed", name));
-                    }
-                }
-                _ => {}
-            }
+            turn_started: None,
+            closed_at: None,
+            turn_closed: None,
+            turn_stopped: None,
+            comments: Vec::new(),
         }
+    }
 
-        // Verify Created populated task_names
+    /// Helper: build an empty TaskGraph.
+    fn empty_graph() -> TaskGraph {
+        TaskGraph {
+            tasks: Default::default(),
+            edges: crate::tasks::graph::EdgeStore::new(),
+            slug_index: Default::default(),
+        }
+    }
+
+    /// Verify the handler records new task names from GraphDelta.new_tasks.
+    #[test]
+    fn loop_drain_records_new_task_names_from_delta() {
+        use crate::tasks::graph::{GraphDelta, StatusChange};
+        use crate::tasks::types::TaskStatus;
+
+        let mut task_names: HashMap<String, String> = HashMap::new();
+        let output = WorkflowOutput::new(OutputKind::Quiet);
+        let mut handler = LoopDrainHandler {
+            task_names: &mut task_names,
+            parent_id: "parent_epic".to_string(),
+            output,
+        };
+
+        let prev = empty_graph();
+        let mut next = empty_graph();
+        let task = make_test_task("sub_004", "New runtime task", TaskStatus::Open);
+        next.tasks.insert("sub_004".to_string(), task);
+        next.edges.add("sub_004", "parent_epic", "subtask-of");
+
+        let delta = GraphDelta {
+            prev: &prev,
+            next: &next,
+            new_tasks: vec![next.tasks.get("sub_004").unwrap()],
+            status_changes: vec![],
+            new_comments: vec![],
+            new_edges: vec![],
+        };
+        handler.on_change(&delta);
+
         assert_eq!(task_names.get("sub_004").unwrap(), "New runtime task");
+    }
 
-        // Verify output matches Text Output Spec
-        assert_eq!(emitted.len(), 4);
-        assert_eq!(emitted[0], "  \u{25b8} Fix auth bug");
-        assert_eq!(emitted[1], "  \u{2714} Fix auth bug \u{2014} done");
-        assert_eq!(emitted[2], "  \u{2298} Add error handling \u{2014} skipped");
-        assert_eq!(emitted[3], "  \u{2718} Remove deprecated API \u{2014} failed");
+    /// Verify the handler emits correct output for task lifecycle via GraphDelta.
+    /// Uses the subprocess probe pattern to capture stderr output.
+    #[test]
+    fn loop_drain_emits_correct_output_for_task_lifecycle() {
+        let output = run_loop_drain_probe("lifecycle");
+
+        // Verify all lifecycle status lines
+        assert!(output.contains("  \u{25b8} Fix auth bug"), "missing started line");
+        assert!(
+            output.contains("  \u{2714} Fix auth bug \u{2014} done"),
+            "missing done line"
+        );
+        assert!(
+            output.contains("  \u{2298} Add error handling \u{2014} skipped"),
+            "missing skipped line"
+        );
+        assert!(
+            output.contains("  \u{2718} Remove deprecated API \u{2014} failed"),
+            "missing failed line"
+        );
     }
 
     /// Verify that unknown task IDs fall back to the raw ID in output.
     #[test]
     fn loop_drain_uses_raw_id_for_unknown_tasks() {
-        let (tx, rx) = crossbeam_channel::unbounded();
-        let mut task_names: HashMap<String, String> = HashMap::new();
+        let output = run_loop_drain_probe("unknown-id");
+        assert!(
+            output.contains("  \u{25b8} unknown_id"),
+            "missing fallback to raw ID"
+        );
+    }
 
-        let now = chrono::Utc::now();
+    /// Subprocess probe for drain handler tests, similar to the loop output probes above.
+    fn run_loop_drain_probe(case: &str) -> String {
+        let exe = env::current_exe().expect("resolve current test binary");
+        let output = Command::new(exe)
+            .arg("--exact")
+            .arg("workflow::steps::r#loop::tests::loop_drain_probe")
+            .arg("--nocapture")
+            .env("AIKI_LOOP_DRAIN_TEST_CASE", case)
+            .output()
+            .expect("run loop drain probe");
 
-        tx.send(TaskEvent::Started {
-            task_ids: vec!["unknown_id".to_string()],
-            agent_type: "claude-code".to_string(),
-            session_id: None,
-            turn_id: None,
-            working_copy: None,
-            timestamp: now,
-        })
-        .unwrap();
+        assert!(
+            output.status.success(),
+            "probe failed: stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
 
-        drop(tx);
+        String::from_utf8_lossy(&output.stderr).to_string()
+    }
 
-        let mut emitted: Vec<String> = Vec::new();
-        for event in rx.try_iter() {
-            if let TaskEvent::Started { task_ids, .. } = &event {
-                for id in task_ids {
-                    let name = task_names.get(id).map(|s| s.as_str()).unwrap_or(id);
-                    emitted.push(format!("  \u{25b8} {}", name));
+    /// Probe entry point — only runs when AIKI_LOOP_DRAIN_TEST_CASE is set.
+    #[test]
+    fn loop_drain_probe() {
+        use crate::tasks::graph::{GraphDelta, StatusChange};
+        use crate::tasks::types::{TaskOutcome, TaskStatus};
+
+        let Some(case) = env::var("AIKI_LOOP_DRAIN_TEST_CASE").ok() else {
+            return;
+        };
+
+        let output = WorkflowOutput::new(OutputKind::Text);
+
+        match case.as_str() {
+            "lifecycle" => {
+                let mut task_names: HashMap<String, String> = HashMap::new();
+                // Pre-populate (simulating decompose step seeding)
+                task_names.insert("sub_001".to_string(), "Fix auth bug".to_string());
+                task_names.insert("sub_002".to_string(), "Add error handling".to_string());
+                task_names
+                    .insert("sub_003".to_string(), "Remove deprecated API".to_string());
+
+                let parent_id = "parent_epic".to_string();
+                let mut handler = LoopDrainHandler {
+                    task_names: &mut task_names,
+                    parent_id: parent_id.clone(),
+                    output,
+                };
+
+                // Helper: add subtask-of edges for given task IDs in a graph.
+                fn add_child_edges(graph: &mut TaskGraph, parent: &str, children: &[&str]) {
+                    for child in children {
+                        graph.edges.add(child, parent, "subtask-of");
+                    }
                 }
-            }
-        }
 
-        assert_eq!(emitted.len(), 1);
-        assert_eq!(emitted[0], "  \u{25b8} unknown_id");
+                // Delta 1: new task created
+                let g1_prev = empty_graph();
+                let mut g1_next = empty_graph();
+                g1_next.tasks.insert(
+                    "sub_004".to_string(),
+                    make_test_task("sub_004", "New runtime task", TaskStatus::Open),
+                );
+                add_child_edges(&mut g1_next, &parent_id, &["sub_004"]);
+                let delta = GraphDelta {
+                    prev: &g1_prev,
+                    next: &g1_next,
+                    new_tasks: vec![g1_next.tasks.get("sub_004").unwrap()],
+                    status_changes: vec![],
+                    new_comments: vec![],
+                    new_edges: vec![],
+                };
+                handler.on_change(&delta);
+
+                // Delta 2: sub_001 started
+                let mut g2 = empty_graph();
+                let started = make_test_task("sub_001", "Fix auth bug", TaskStatus::InProgress);
+                g2.tasks.insert("sub_001".to_string(), started);
+                add_child_edges(&mut g2, &parent_id, &["sub_001"]);
+                let delta = GraphDelta {
+                    prev: &g1_prev,
+                    next: &g2,
+                    new_tasks: vec![],
+                    status_changes: vec![StatusChange {
+                        task: g2.tasks.get("sub_001").unwrap(),
+                        prev_status: TaskStatus::Open,
+                        next_status: TaskStatus::InProgress,
+                    }],
+                    new_comments: vec![],
+                    new_edges: vec![],
+                };
+                handler.on_change(&delta);
+
+                // Delta 3: sub_001 closed (Done)
+                let mut g3 = empty_graph();
+                let mut done = make_test_task("sub_001", "Fix auth bug", TaskStatus::Closed);
+                done.closed_outcome = Some(TaskOutcome::Done);
+                g3.tasks.insert("sub_001".to_string(), done);
+                add_child_edges(&mut g3, &parent_id, &["sub_001"]);
+                let delta = GraphDelta {
+                    prev: &g1_prev,
+                    next: &g3,
+                    new_tasks: vec![],
+                    status_changes: vec![StatusChange {
+                        task: g3.tasks.get("sub_001").unwrap(),
+                        prev_status: TaskStatus::InProgress,
+                        next_status: TaskStatus::Closed,
+                    }],
+                    new_comments: vec![],
+                    new_edges: vec![],
+                };
+                handler.on_change(&delta);
+
+                // Delta 4: sub_002 closed (WontDo)
+                let mut g4 = empty_graph();
+                let mut wont_do =
+                    make_test_task("sub_002", "Add error handling", TaskStatus::Closed);
+                wont_do.closed_outcome = Some(TaskOutcome::WontDo);
+                g4.tasks.insert("sub_002".to_string(), wont_do);
+                add_child_edges(&mut g4, &parent_id, &["sub_002"]);
+                let delta = GraphDelta {
+                    prev: &g1_prev,
+                    next: &g4,
+                    new_tasks: vec![],
+                    status_changes: vec![StatusChange {
+                        task: g4.tasks.get("sub_002").unwrap(),
+                        prev_status: TaskStatus::Open,
+                        next_status: TaskStatus::Closed,
+                    }],
+                    new_comments: vec![],
+                    new_edges: vec![],
+                };
+                handler.on_change(&delta);
+
+                // Delta 5: sub_003 stopped
+                let mut g5 = empty_graph();
+                g5.tasks.insert(
+                    "sub_003".to_string(),
+                    make_test_task("sub_003", "Remove deprecated API", TaskStatus::Stopped),
+                );
+                add_child_edges(&mut g5, &parent_id, &["sub_003"]);
+                let delta = GraphDelta {
+                    prev: &g1_prev,
+                    next: &g5,
+                    new_tasks: vec![],
+                    status_changes: vec![StatusChange {
+                        task: g5.tasks.get("sub_003").unwrap(),
+                        prev_status: TaskStatus::Open,
+                        next_status: TaskStatus::Stopped,
+                    }],
+                    new_comments: vec![],
+                    new_edges: vec![],
+                };
+                handler.on_change(&delta);
+            }
+            "unknown-id" => {
+                let mut task_names: HashMap<String, String> = HashMap::new();
+                let parent_id = "parent_epic".to_string();
+                let mut handler = LoopDrainHandler {
+                    task_names: &mut task_names,
+                    parent_id: parent_id.clone(),
+                    output,
+                };
+
+                // Task has a status change but name was never recorded
+                let mut g = empty_graph();
+                g.tasks.insert(
+                    "unknown_id".to_string(),
+                    make_test_task("unknown_id", "unknown_id", TaskStatus::InProgress),
+                );
+                g.edges.add("unknown_id", &parent_id, "subtask-of");
+                let delta = GraphDelta {
+                    prev: &empty_graph(),
+                    next: &g,
+                    new_tasks: vec![],
+                    status_changes: vec![StatusChange {
+                        task: g.tasks.get("unknown_id").unwrap(),
+                        prev_status: TaskStatus::Open,
+                        next_status: TaskStatus::InProgress,
+                    }],
+                    new_comments: vec![],
+                    new_edges: vec![],
+                };
+                handler.on_change(&delta);
+            }
+            other => panic!("unknown loop drain probe case: {other}"),
+        }
     }
 }

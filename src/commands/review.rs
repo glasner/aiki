@@ -131,6 +131,19 @@ pub struct ReviewArgs {
     #[arg(long)]
     pub agent: Option<String>,
 
+    /// Shorthand for --agent claude-code
+    #[arg(long, group = "agent_shorthand", conflicts_with = "agent")]
+    pub claude: bool,
+    /// Shorthand for --agent codex
+    #[arg(long, group = "agent_shorthand", conflicts_with = "agent")]
+    pub codex: bool,
+    /// Shorthand for --agent cursor
+    #[arg(long, group = "agent_shorthand", conflicts_with = "agent")]
+    pub cursor: bool,
+    /// Shorthand for --agent gemini
+    #[arg(long, group = "agent_shorthand", conflicts_with = "agent")]
+    pub gemini: bool,
+
     /// Agent for coding/fixing tasks (default: claude-code)
     #[arg(long)]
     pub coder: Option<String>,
@@ -165,7 +178,11 @@ impl crate::workflow::HasRunKind for ReviewArgs {
 }
 
 /// Run the review command
-pub fn run(args: ReviewArgs) -> Result<()> {
+pub fn run(mut args: ReviewArgs) -> Result<()> {
+    use crate::session::flags::resolve_agent_shorthand;
+    args.agent = resolve_agent_shorthand(args.agent, args.claude, args.codex, args.cursor, args.gemini)
+        .map(|a| a.as_str().to_string());
+
     let cwd = env::current_dir()
         .map_err(|_| AikiError::InvalidArgument("Failed to get current directory".to_string()))?;
 

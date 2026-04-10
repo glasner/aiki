@@ -44,6 +44,19 @@ pub struct FixArgs {
     #[arg(long)]
     pub agent: Option<String>,
 
+    /// Shorthand for --agent claude-code
+    #[arg(long, group = "agent_shorthand", conflicts_with = "agent")]
+    pub claude: bool,
+    /// Shorthand for --agent codex
+    #[arg(long, group = "agent_shorthand", conflicts_with = "agent")]
+    pub codex: bool,
+    /// Shorthand for --agent cursor
+    #[arg(long, group = "agent_shorthand", conflicts_with = "agent")]
+    pub cursor: bool,
+    /// Shorthand for --agent gemini
+    #[arg(long, group = "agent_shorthand", conflicts_with = "agent")]
+    pub gemini: bool,
+
     /// Interactive pair mode — walk through issues with the user
     #[arg(long, conflicts_with = "run_async")]
     pub pair: bool,
@@ -71,7 +84,11 @@ impl crate::workflow::HasRunKind for FixArgs {
 }
 
 /// Run the fix command — parse args and delegate to workflow.
-pub fn run(args: FixArgs) -> Result<()> {
+pub fn run(mut args: FixArgs) -> Result<()> {
+    use crate::session::flags::resolve_agent_shorthand;
+    args.agent = resolve_agent_shorthand(args.agent, args.claude, args.codex, args.cursor, args.gemini)
+        .map(|a| a.as_str().to_string());
+
     let cwd = env::current_dir()
         .map_err(|_| AikiError::InvalidArgument("Failed to get current directory".to_string()))?;
     let refs = super::input::resolve_ref_list(
@@ -167,7 +184,7 @@ mod tests {
             task_ids: vec![],
         };
 
-        let workflow = workflow(temp_dir.path(), "review123", &opts, &scope, Some("codex"));
+        let workflow = workflow(temp_dir.path(), "review123", &opts, &scope, Some(crate::agents::AgentType::Codex));
         let names: Vec<_> = workflow.steps.iter().map(|s| s.name()).collect();
 
         assert_eq!(workflow.steps.len(), 6);
@@ -325,7 +342,7 @@ mod tests {
             "review123",
             &opts,
             &original_scope,
-            Some("codex"),
+            Some(crate::agents::AgentType::Codex),
         );
         workflow.ctx.task_id = Some(fix_parent_id.clone());
 

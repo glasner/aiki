@@ -627,15 +627,6 @@ pub fn cleanup_workspace(repo_root: &Path, workspace: &IsolatedWorkspace) -> Res
         }
     }
 
-    // Clean up empty parent directory (e.g., /tmp/aiki/<repo-id>/)
-    if let Some(parent) = workspace.path.parent() {
-        if let Ok(entries) = fs::read_dir(parent) {
-            if entries.count() == 0 {
-                let _ = fs::remove_dir(parent);
-            }
-        }
-    }
-
     debug_log(|| format!("Cleaned up workspace '{}'", workspace.name));
     Ok(())
 }
@@ -681,12 +672,6 @@ pub fn recover_orphaned_workspaces(session_uuid: &str) -> Result<u32> {
                 );
                 // Clean up the directory even if we can't absorb
                 let _ = fs::remove_dir_all(&session_ws_dir);
-                // Clean up empty parent directory
-                if let Ok(entries) = fs::read_dir(&repo_id_dir) {
-                    if entries.count() == 0 {
-                        let _ = fs::remove_dir(&repo_id_dir);
-                    }
-                }
                 continue;
             }
         };
@@ -803,13 +788,6 @@ pub fn cleanup_orphaned_workspaces(repo_root: &Path) -> Result<u32> {
             let ws_dir = workspaces_dir().join(&repo_id).join(uuid);
             if ws_dir.exists() {
                 let _ = fs::remove_dir_all(&ws_dir);
-            }
-            // Clean up empty parent directory (e.g., /tmp/aiki/<repo-id>/)
-            let repo_dir = workspaces_dir().join(&repo_id);
-            if let Ok(entries) = fs::read_dir(&repo_dir) {
-                if entries.count() == 0 {
-                    let _ = fs::remove_dir(&repo_dir);
-                }
             }
         }
     }

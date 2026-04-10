@@ -109,6 +109,7 @@ mod tests {
                 session_id: None,
                 turn_id: None,
                 working_copy: Some("child-snapshot".to_string()),
+                instructions: None,
                 timestamp: timestamp(3),
             },
             TaskEvent::Started {
@@ -117,6 +118,7 @@ mod tests {
                 session_id: None,
                 turn_id: None,
                 working_copy: Some("parent-snapshot".to_string()),
+                instructions: None,
                 timestamp: timestamp(4),
             },
         ];

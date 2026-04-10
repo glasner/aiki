@@ -993,3 +993,269 @@ fn test_remove_plugin_cleans_up_directory_structure() {
     assert!(!tmp.path().join("myns").exists());
 }
 
+// ---------------------------------------------------------------------------
+// Auto-fetch: install() report and lock-file tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_install_already_installed_reports_correctly() {
+    use aiki::plugins::deps::install;
+
+    let tmp = TempDir::new().unwrap();
+    let base = tmp.path();
+
+    // Create a fully valid installed plugin
+    let dir = base.join("ns").join("root");
+    fs::create_dir_all(dir.join(".git")).unwrap();
+    fs::write(dir.join("plugin.yaml"), "name: Root Plugin\n").unwrap();
+
+    let root: PluginRef = "ns/root".parse().unwrap();
+    let report = install(&root, base, None, None).unwrap();
+
+    assert_eq!(report.already_installed.len(), 1);
+    assert!(report.installed.is_empty());
+    assert!(report.failed.is_empty());
+    assert!(report.rolled_back.is_empty());
+}
+
+#[test]
+fn test_install_lock_not_updated_when_dep_fails() {
+    use aiki::plugins::deps::install;
+
+    let tmp = TempDir::new().unwrap();
+    let project_root = tmp.path().join("project");
+    fs::create_dir_all(project_root.join(".aiki")).unwrap();
+
+    let plugins_base = tmp.path().join("plugins");
+    // Root is installed with a dep that will fail to clone
+    let root_dir = plugins_base.join("ns").join("root");
+    fs::create_dir_all(root_dir.join(".git")).unwrap();
+    fs::write(root_dir.join("plugin.yaml"), "name: Root\n").unwrap();
+    fs::write(
+        root_dir.join("hooks.yaml"),
+        "hook0:\n  template: ns/missing/tpl\n",
+    )
+    .unwrap();
+
+    let root: PluginRef = "ns/root".parse().unwrap();
+    let report = install(&root, &plugins_base, Some(&project_root), None).unwrap();
+
+    assert!(!report.failed.is_empty(), "Dep should have failed");
+    // Lock file should not be written
+    let lock_path = project_root.join(".aiki/plugins.lock");
+    assert!(
+        !lock_path.exists(),
+        "Lock file should not be created when a dependency fails"
+    );
+}
+
+#[test]
+fn test_install_chain_all_installed_preserves_existing_lock() {
+    use aiki::plugins::deps::install;
+    use aiki::plugins::lock::{PluginLock, PluginLockEntry};
+
+    let tmp = TempDir::new().unwrap();
+    let project_root = tmp.path().join("project");
+    fs::create_dir_all(project_root.join(".aiki")).unwrap();
+
+    // Write a pre-existing lock entry
+    let mut lock = PluginLock::default();
+    let existing: PluginRef = "other/plugin".parse().unwrap();
+    lock.insert(
+        &existing,
+        PluginLockEntry {
+            sha: "a".repeat(40),
+            source: "https://github.com/other/plugin.git".to_string(),
+            resolved: "2026-01-01T00:00:00Z".to_string(),
+        },
+    );
+    lock.save(&project_root).unwrap();
+
+    let plugins_base = tmp.path().join("plugins");
+    // Root → A, both installed
+    let root_dir = plugins_base.join("ns").join("root");
+    fs::create_dir_all(root_dir.join(".git")).unwrap();
+    fs::write(root_dir.join("plugin.yaml"), "name: Root\n").unwrap();
+    fs::write(
+        root_dir.join("hooks.yaml"),
+        "hook0:\n  template: ns/dep/tpl\n",
+    )
+    .unwrap();
+    let dep_dir = plugins_base.join("ns").join("dep");
+    fs::create_dir_all(dep_dir.join(".git")).unwrap();
+    fs::write(dep_dir.join("plugin.yaml"), "name: Dep\n").unwrap();
+
+    let root: PluginRef = "ns/root".parse().unwrap();
+    let report = install(&root, &plugins_base, Some(&project_root), None).unwrap();
+
+    assert!(report.failed.is_empty());
+    // Lock file should still have the pre-existing entry
+    let reloaded = PluginLock::load(&project_root).unwrap();
+    assert!(reloaded.get(&existing).is_some());
+}
+
+// ---------------------------------------------------------------------------
+// Template resolver: auto-fetch tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_template_three_part_ref_auto_fetch_failure_returns_error() {
+    use aiki::tasks::templates::resolver::load_template;
+
+    let tmp = TempDir::new().unwrap();
+    let aiki_home = TempDir::new().unwrap();
+
+    let project_templates = tmp.path().join(".aiki").join("tasks");
+    fs::create_dir_all(&project_templates).unwrap();
+
+    // No plugin installed, no project override
+    with_temp_aiki_home(aiki_home.path(), || {
+        let result = load_template("fakeorg/fakeplugin/review", &project_templates);
+        assert!(result.is_err(), "Should fail when plugin not installed");
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("fakeorg/fakeplugin"),
+            "Error should mention the plugin: {}",
+            msg
+        );
+    });
+}
+
+#[test]
+fn test_template_project_override_wins_over_plugin() {
+    use aiki::tasks::templates::resolver::load_template;
+
+    let tmp = TempDir::new().unwrap();
+    let aiki_home = TempDir::new().unwrap();
+
+    let project_templates = tmp.path().join(".aiki").join("tasks");
+
+    // Create project-level template
+    let project_tpl = project_templates.join("myns").join("myplugin");
+    fs::create_dir_all(&project_tpl).unwrap();
+    fs::write(
+        project_tpl.join("task.md"),
+        "---\nname: Project Version\n---\n# Project\n",
+    )
+    .unwrap();
+
+    // Create plugin-level template
+    let plugin_tasks = aiki_home
+        .path()
+        .join("plugins")
+        .join("myns")
+        .join("myplugin")
+        .join("tasks");
+    fs::create_dir_all(&plugin_tasks).unwrap();
+    fs::create_dir_all(
+        aiki_home
+            .path()
+            .join("plugins")
+            .join("myns")
+            .join("myplugin")
+            .join(".git"),
+    )
+    .unwrap();
+    fs::write(
+        plugin_tasks.join("task.md"),
+        "---\nname: Plugin Version\n---\n# Plugin\n",
+    )
+    .unwrap();
+
+    with_temp_aiki_home(aiki_home.path(), || {
+        let result = load_template("myns/myplugin/task", &project_templates);
+        assert!(result.is_ok(), "Should resolve: {:?}", result);
+
+        let template = result.unwrap();
+        let source = template.source_path.unwrap_or_default();
+        assert!(
+            source.starts_with(tmp.path().to_str().unwrap()),
+            "Project override should win. source_path: {}",
+            source
+        );
+    });
+}
+
+#[test]
+fn test_template_missing_plugin_returns_clear_error() {
+    use aiki::tasks::templates::resolver::load_template;
+
+    let tmp = TempDir::new().unwrap();
+    let aiki_home = TempDir::new().unwrap();
+
+    let project_templates = tmp.path().join(".aiki").join("tasks");
+    fs::create_dir_all(&project_templates).unwrap();
+
+    with_temp_aiki_home(aiki_home.path(), || {
+        let result = load_template("nonexist/plugin/template", &project_templates);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("not found"),
+            "Error should indicate not found: {}",
+            msg
+        );
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Skip-with-warning: loader behavior during hook resolution
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_hook_loader_auto_fetch_failure_returns_auto_fetch_error() {
+    use aiki::error::AikiError;
+    use aiki::flows::loader::HookLoader;
+
+    let temp_dir = TempDir::new().unwrap();
+    let aiki_home = TempDir::new().unwrap();
+
+    // Create minimal project structure
+    fs::create_dir_all(temp_dir.path().join(".aiki/hooks")).unwrap();
+
+    with_temp_aiki_home(aiki_home.path(), || {
+        let mut loader = HookLoader::with_start_dir(temp_dir.path()).unwrap();
+
+        // Loading a non-existent namespaced hook should return AutoFetchFailed
+        let result = loader.load("fake/nonexistent");
+        assert!(
+            matches!(result, Err(AikiError::AutoFetchFailed { .. })),
+            "Should return AutoFetchFailed for missing plugin, got: {:?}",
+            result
+        );
+    });
+}
+
+#[test]
+fn test_hook_loader_continues_after_auto_fetch_failure() {
+    use aiki::flows::loader::HookLoader;
+
+    let temp_dir = TempDir::new().unwrap();
+    let aiki_home = TempDir::new().unwrap();
+
+    // Create project with one real hook
+    fs::create_dir_all(temp_dir.path().join(".aiki/hooks/aiki")).unwrap();
+    let real_hook = temp_dir.path().join(".aiki/hooks/aiki/real.yml");
+    fs::write(
+        &real_hook,
+        "name: Real Hook\nversion: '1'\nchange.completed:\n  - log: done\n",
+    )
+    .unwrap();
+
+    with_temp_aiki_home(aiki_home.path(), || {
+        let mut loader = HookLoader::with_start_dir(temp_dir.path()).unwrap();
+
+        // First: auto-fetch failure
+        let result1 = loader.load("fake/missing");
+        assert!(result1.is_err(), "Auto-fetch should fail for missing plugin");
+
+        // Second: real hook should still be loadable
+        let result2 = loader.load("aiki/real");
+        assert!(
+            result2.is_ok(),
+            "Loader should continue working after auto-fetch failure: {:?}",
+            result2
+        );
+    });
+}
+

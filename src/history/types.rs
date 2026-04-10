@@ -89,6 +89,8 @@ pub enum ConversationEvent {
         cwd: Option<String>,
         /// Session mode (background or interactive)
         session_mode: Option<SessionMode>,
+        /// Path to the transcript file for this session
+        transcript_path: Option<String>,
     },
     /// Session ended
     SessionEnd {

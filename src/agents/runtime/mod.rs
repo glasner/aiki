@@ -11,6 +11,7 @@ pub use codex::CodexRuntime;
 
 use crate::error::Result;
 use crate::tasks::lanes::ThreadId;
+use crate::tasks::md::DONE_MESSAGE;
 use std::io::Read;
 use std::path::Path;
 use std::process::{Child, ChildStderr, ChildStdout, ExitStatus};
@@ -217,9 +218,10 @@ SCOPE: Only tasks in this thread. Do not pick up other work.
 START: Run `aiki task list` to see your backlog. Start the next task with
        `aiki task start <task-id>`. The start output includes the task's
        instructions and context; review that output, then begin working immediately.
-EXIT: When `aiki task list` returns "Done. No remaining tasks", you are finished — exit immediately.
+EXIT: When `aiki task list` returns "{done}", you are finished — exit immediately.
 "#,
             thread = self.thread,
+            done = DONE_MESSAGE,
         )
     }
 }
@@ -517,6 +519,7 @@ mod tests {
             repo_id: None,
             cwd: None,
             session_mode: None,
+            transcript_path: None,
         }];
 
         // Replicate the matching logic used by find_session_started_for_thread

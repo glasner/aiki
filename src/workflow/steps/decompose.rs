@@ -25,7 +25,6 @@ use crate::tasks::{find_task, get_subtasks, materialize_graph, read_events, writ
 pub struct DecomposeOptions {
     pub template: Option<String>,
     pub agent: Option<AgentType>,
-    pub instructions: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -44,7 +43,7 @@ enum EmptyDecomposePolicy {
 /// 5. Run decompose agent (spawn+drain when ctx provided, else blocking)
 /// 6. Return decompose task ID
 ///
-/// When `ctx` is provided with an active `event_rx`, uses spawn_monitored +
+/// When `ctx` is provided with an active `notify_rx`, uses spawn_monitored +
 /// event drain loop to show subtask creation in real-time. Otherwise falls
 /// back to `run_task_with_show_tui()`.
 pub fn run_decompose(
@@ -91,9 +90,9 @@ pub fn run_decompose(
         TaskRunOptions::new()
     };
 
-    // Use spawn+drain pattern when workflow context with event_rx is available
+    // Use spawn+drain pattern when workflow context with notify_rx is available
     if let Some(ctx) = ctx {
-        if ctx.event_rx.is_some() {
+        if ctx.notify_rx.is_some() {
             let output = ctx.output;
             let mut handler = super::SubtaskDrainHandler::new(
                 &mut ctx.task_names,
@@ -104,7 +103,7 @@ pub fn run_decompose(
                 cwd,
                 &decompose_task_id,
                 &run_options,
-                ctx.event_rx.as_ref(),
+                ctx.notify_rx.as_ref(),
                 output,
                 &mut handler,
             )?;
@@ -193,7 +192,7 @@ pub(crate) fn run(ctx: &mut WorkflowContext) -> anyhow::Result<StepResult> {
     let subtasks = get_subtasks(&graph, &epic_id);
     if subtasks.is_empty() {
         ctx.status("decomposing plan into subtasks");
-        let options = DecomposeOptions { template, agent, instructions: None };
+        let options = DecomposeOptions { template, agent };
         let cwd = ctx.cwd.clone();
         let decompose_task_id = run_decompose(&cwd, &plan_path, &epic_id, options, false, Some(ctx))?;
 
@@ -291,9 +290,6 @@ fn build_decompose_params(
     let mut data = HashMap::new();
     data.insert("plan".to_string(), plan_path.to_string());
     data.insert("target".to_string(), target_id.to_string());
-    if let Some(ref instructions) = options.instructions {
-        data.insert("instructions".to_string(), instructions.clone());
-    }
 
     TemplateTaskParams {
         template_name: template.to_string(),
@@ -360,7 +356,7 @@ mod tests {
             scope: None,
             assignee: None,
             iteration: 0,
-            event_rx: None,
+            notify_rx: None,
             task_names: HashMap::new(),
         };
 
@@ -379,7 +375,7 @@ mod tests {
             scope: None,
             assignee: None,
             iteration: 0,
-            event_rx: None,
+            notify_rx: None,
             task_names: HashMap::new(),
         };
 
@@ -391,7 +387,6 @@ mod tests {
         let options = DecomposeOptions {
             template: None,
             agent: None,
-            instructions: None,
         };
         let params = build_decompose_params(
             "ops/now/feat.md",
@@ -412,7 +407,6 @@ mod tests {
         let options = DecomposeOptions {
             template: Some("my/custom-decompose".to_string()),
             agent: None,
-            instructions: None,
         };
         let params = build_decompose_params("plan.md", "t1", "file:plan.md", &options);
 
@@ -424,7 +418,6 @@ mod tests {
         let options = DecomposeOptions {
             template: None,
             agent: Some(AgentType::Codex),
-            instructions: None,
         };
         let params = build_decompose_params("plan.md", "t1", "file:plan.md", &options);
 
@@ -436,7 +429,6 @@ mod tests {
         let options = DecomposeOptions {
             template: None,
             agent: None,
-            instructions: None,
         };
         let params = build_decompose_params("plan.md", "target_id", "file:plan.md", &options);
 

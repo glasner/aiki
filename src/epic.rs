@@ -284,12 +284,12 @@ pub fn find_or_create_epic(
             let subtasks = get_subtasks(&graph, &epic.id);
             if subtasks.is_empty() {
                 close_epic_as_invalid(cwd, &epic.id)?;
-                create_epic_with_decompose(cwd, plan_path, decompose_template, None, show_tui, None)
+                create_epic_with_decompose(cwd, plan_path, decompose_template, None, show_tui)
             } else {
                 Ok(epic.id.clone())
             }
         }
-        _ => create_epic_with_decompose(cwd, plan_path, decompose_template, None, show_tui, None),
+        _ => create_epic_with_decompose(cwd, plan_path, decompose_template, None, show_tui),
     }
 }
 
@@ -305,7 +305,6 @@ pub(crate) fn create_epic_with_decompose(
     template_name: Option<&str>,
     agent_type: Option<crate::agents::AgentType>,
     show_tui: bool,
-    instructions: Option<String>,
 ) -> AikiResult<String> {
     use crate::commands::decompose::{run_decompose, DecomposeOptions};
 
@@ -314,7 +313,6 @@ pub(crate) fn create_epic_with_decompose(
     let options = DecomposeOptions {
         template: template_name.map(|s| s.to_string()),
         agent: agent_type,
-        instructions,
     };
     run_decompose(cwd, plan_path, &epic_id, options, show_tui, None)?;
 

@@ -7,9 +7,67 @@ use crate::error::{AikiError, Result};
 use crate::jj::{jj_cmd, parse_change_id_from_stderr};
 use crate::session::isolation::acquire_named_lock;
 use chrono::{DateTime, Utc};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::RwLock;
 
 use super::types::{ConfidenceLevel, TaskEvent, TaskOutcome, TaskPriority};
+
+/// Global FIFO path for in-process callers (set/cleared by workflow runner).
+static EVENT_PIPE_PATH: RwLock<Option<PathBuf>> = RwLock::new(None);
+
+/// Get the event pipe path: checks the in-process RwLock first, then falls back
+/// to the `AIKI_EVENT_PIPE` env var (cached per-thread after first access).
+pub fn event_pipe_path() -> Option<PathBuf> {
+    // Fast path: check the in-process RwLock (cheap uncontended read lock)
+    if let Ok(guard) = EVENT_PIPE_PATH.read() {
+        if let Some(ref path) = *guard {
+            return Some(path.clone());
+        }
+    }
+
+    // Fallback: check env var, cached per-thread
+    thread_local! {
+        static CACHED_ENV: Option<PathBuf> = std::env::var_os("AIKI_EVENT_PIPE").map(PathBuf::from);
+    }
+    CACHED_ENV.with(|cached| cached.clone())
+}
+
+/// Set the global event pipe path (used by workflow runner at init).
+pub fn set_event_pipe_path(path: PathBuf) {
+    if let Ok(mut guard) = EVENT_PIPE_PATH.write() {
+        *guard = Some(path);
+    }
+}
+
+/// Clear the global event pipe path (used by workflow runner at cleanup).
+pub fn clear_event_pipe_path() {
+    if let Ok(mut guard) = EVENT_PIPE_PATH.write() {
+        *guard = None;
+    }
+}
+
+/// Best-effort FIFO notification: writes "{change_id}\n" to the event pipe.
+/// All errors are silently ignored.
+fn notify_fifo(change_id: &str) {
+    let Some(path) = event_pipe_path() else {
+        return;
+    };
+
+    // Open with O_WRONLY | O_NONBLOCK — returns ENXIO if no reader, which we skip
+    let c_path = match std::ffi::CString::new(path.as_os_str().as_encoded_bytes()) {
+        Ok(p) => p,
+        Err(_) => return,
+    };
+
+    let fd = unsafe { libc::open(c_path.as_ptr(), libc::O_WRONLY | libc::O_NONBLOCK) };
+    if fd < 0 {
+        return; // ENXIO (no reader) or other error — skip silently
+    }
+
+    let msg = format!("{change_id}\n");
+    let _ = unsafe { libc::write(fd, msg.as_ptr() as *const libc::c_void, msg.len()) };
+    unsafe { libc::close(fd) };
+}
 
 const TASKS_BRANCH: &str = "aiki/tasks";
 const METADATA_START: &str = "[aiki-task]";
@@ -85,6 +143,7 @@ pub fn write_event(cwd: &Path, event: &TaskEvent) -> Result<()> {
 
     let change_id = parse_change_id_from_stderr(&result.stderr)?;
     set_tasks_bookmark(cwd, &change_id)?;
+    notify_fifo(&change_id);
 
     Ok(())
 }
@@ -137,6 +196,7 @@ pub fn write_events_batch(cwd: &Path, events: &[TaskEvent]) -> Result<()> {
 
     let change_id = parse_change_id_from_stderr(&result.stderr)?;
     set_tasks_bookmark(cwd, &change_id)?;
+    notify_fifo(&change_id);
 
     Ok(())
 }
@@ -632,6 +692,7 @@ fn event_to_metadata_block(event: &TaskEvent) -> String {
             session_id,
             turn_id,
             working_copy,
+            instructions,
             timestamp,
         } => {
             add_metadata("event", "started", &mut lines);
@@ -647,6 +708,9 @@ fn event_to_metadata_block(event: &TaskEvent) -> String {
             }
             if let Some(wc) = working_copy {
                 add_metadata("working_copy", wc, &mut lines);
+            }
+            if let Some(instr) = instructions {
+                add_metadata_escaped("instructions", instr, &mut lines);
             }
             add_metadata_timestamp(timestamp, &mut lines);
         }
@@ -990,6 +1054,10 @@ fn parse_metadata_block(block: &str) -> Option<TaskEvent> {
                 .or_else(|| fields.get("snapshot"))
                 .and_then(|v| v.first())
                 .map(|s| s.to_string());
+            let instructions = fields
+                .get("instructions")
+                .and_then(|v| v.first())
+                .map(|s| unescape_metadata_value(s));
 
             Some(TaskEvent::Started {
                 task_ids,
@@ -997,6 +1065,7 @@ fn parse_metadata_block(block: &str) -> Option<TaskEvent> {
                 session_id,
                 turn_id,
                 working_copy,
+                instructions,
                 timestamp,
             })
         }
@@ -1479,6 +1548,7 @@ timestamp=2026-01-09T10:30:00Z
             session_id: Some("test-session-uuid".to_string()),
             turn_id: None,
             working_copy: None,
+            instructions: None,
             timestamp: Utc::now(),
         };
 
@@ -2870,6 +2940,7 @@ timestamp=2026-02-10T14:30:00Z
             session_id: Some("sess-123".to_string()),
             turn_id: Some("turn-abc-1".to_string()),
             working_copy: None,
+            instructions: None,
             timestamp: Utc::now(),
         };
 
@@ -2961,6 +3032,7 @@ timestamp=2026-02-10T14:30:00Z
             session_id: None,
             turn_id: None,
             working_copy: None,
+            instructions: None,
             timestamp: Utc::now(),
         };
 

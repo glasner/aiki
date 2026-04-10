@@ -98,10 +98,8 @@ pub(crate) fn workflow(
     review_id: &str,
     opts: &FixOpts,
     scope: &ReviewScope,
-    assignee: Option<&str>,
+    assignee: Option<AgentType>,
 ) -> Workflow {
-    let agent_type = assignee.and_then(AgentType::from_str);
-
     let steps = if opts.once {
         vec![Step::Fix, Step::Decompose, Step::Loop]
     } else {
@@ -116,8 +114,8 @@ pub(crate) fn workflow(
     };
 
     let mut workflow_opts = opts.workflow.clone();
-    workflow_opts.agent = agent_type;
-    workflow_opts.coder = assignee.map(|s| s.to_string());
+    workflow_opts.agent = assignee;
+    workflow_opts.coder = assignee.map(|a| a.as_str().to_string());
 
     Workflow {
         steps,
@@ -129,7 +127,7 @@ pub(crate) fn workflow(
             opts: workflow_opts,
             review_id: Some(review_id.to_string()),
             scope: Some(scope.clone()),
-            assignee: assignee.map(|s| s.to_string()),
+            assignee: assignee.map(|a| a.as_str().to_string()),
             iteration: 0,
             notify_rx: None,
             task_names: std::collections::HashMap::new(),
@@ -240,7 +238,8 @@ fn run_continue_async(cwd: &Path, cli_opts: &FixOpts) -> Result<WorkflowContext>
         .and_then(AgentType::from_str);
     let assignee = determine_followup_assignee(agent_type, Some(fix_parent), None, None).ok();
 
-    let wf = continue_async_workflow(cwd, &opts, &scope, assignee.as_deref(), fix_parent_id);
+    let assignee_type = assignee.as_deref().and_then(AgentType::from_str);
+    let wf = continue_async_workflow(cwd, &opts, &scope, assignee_type, fix_parent_id);
     wf.run().map_err(AikiError::Other)
 }
 
@@ -248,7 +247,7 @@ fn continue_async_workflow(
     cwd: &Path,
     opts: &FixOpts,
     scope: &ReviewScope,
-    assignee: Option<&str>,
+    assignee: Option<AgentType>,
     fix_parent_id: &str,
 ) -> Workflow {
     let mut wf = workflow(cwd, &opts.review_id, opts, scope, assignee);
@@ -266,14 +265,13 @@ fn run_foreground(cwd: &Path, opts: &FixOpts) -> Result<WorkflowContext> {
         assignee.as_deref(),
         false, // foreground = autonomous
     )?;
-    let resolved_assignee = Some(agent_type.as_str().to_string());
     let show_tui = io::stderr().is_terminal();
     let output = if show_tui {
         OutputKind::Text
     } else {
         OutputKind::Quiet
     };
-    let mut wf = workflow(cwd, &opts.review_id, opts, &scope, resolved_assignee.as_deref());
+    let mut wf = workflow(cwd, &opts.review_id, opts, &scope, Some(agent_type));
     wf.ctx.output = WorkflowOutput::new(output);
     wf.run().map_err(AikiError::Other)
 }
@@ -814,7 +812,7 @@ mod tests {
             &opts.review_id,
             &opts,
             &scope,
-            Some("codex"),
+            Some(AgentType::Codex),
         );
 
         assert_eq!(workflow.steps.len(), 6);
@@ -992,7 +990,7 @@ mod tests {
         };
 
         let wf =
-            continue_async_workflow(Path::new("."), &opts, &scope, Some("codex"), "fixparent789");
+            continue_async_workflow(Path::new("."), &opts, &scope, Some(AgentType::Codex), "fixparent789");
 
         assert_eq!(wf.ctx.task_id.as_deref(), Some("fixparent789"));
         assert!(matches!(wf.ctx.output.kind(), OutputKind::Quiet));

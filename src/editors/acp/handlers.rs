@@ -654,6 +654,7 @@ pub fn fire_session_start_event(
         session,
         cwd: working_dir,
         timestamp: chrono::Utc::now(),
+        transcript_path: None,
     });
 
     // Dispatch to event bus (non-blocking - errors are logged but don't fail the proxy)

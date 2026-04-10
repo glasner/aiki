@@ -157,6 +157,37 @@ fn resolve_template_path(name: &str, templates_dir: &Path) -> Result<PathBuf> {
             if plugin_path.is_file() {
                 return Ok(plugin_path);
             }
+
+            // 2c. Auto-fetch: install ns/plugin from GitHub, then retry
+            let plugin_ref_str = format!("{}/{}", ns, plugin);
+            if let Ok(plugin_ref) = plugin_ref_str.parse::<crate::plugins::PluginRef>() {
+                // Derive project_root from templates_dir (.aiki/tasks -> project root)
+                let project_root = templates_dir
+                    .parent()
+                    .and_then(|dot_aiki| dot_aiki.parent());
+
+                if crate::plugins::deps::install(
+                    &plugin_ref,
+                    &plugins_base,
+                    project_root,
+                    None,
+                )
+                .is_ok()
+                    && plugin_path.is_file()
+                {
+                    return Ok(plugin_path);
+                }
+            }
+
+            // Auto-fetch failed — return a specific error for three-part refs
+            return Err(AikiError::TemplateNotFound {
+                name: name.to_string(),
+                expected_path: full_path.display().to_string(),
+                suggestions: format!(
+                    "\n  Plugin {}/{} not found. Check the reference or your network connection.",
+                    ns, plugin
+                ),
+            });
         }
     }
 
@@ -2309,11 +2340,18 @@ Review the changes."#;
         let templates_dir = temp_dir.path();
         fs::create_dir_all(templates_dir).unwrap();
 
-        let result = resolve_template_path("nonexist/plugin/template", templates_dir);
+        // Use a fake AIKI_HOME to prevent real network calls during auto-fetch
+        let fake_aiki_home = temp_dir.path().join("aiki_home");
+        fs::create_dir_all(&fake_aiki_home).unwrap();
+
+        let result = with_aiki_home(&fake_aiki_home, || {
+            resolve_template_path("nonexist/plugin/template", templates_dir)
+        });
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("Template not found"));
         assert!(msg.contains("nonexist/plugin/template"));
+        assert!(msg.contains("Plugin nonexist/plugin not found"));
     }
 
     #[test]

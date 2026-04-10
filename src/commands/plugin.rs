@@ -6,10 +6,14 @@ use std::env;
 use std::fs;
 use std::path::Path;
 
+use chrono::Utc;
+
 use crate::error::{AikiError, Result};
-use crate::plugins::deps::{install_with_deps, resolve_deps, InstallReport};
+use crate::plugins::deps::{resolve_deps, InstallReport};
+use crate::plugins::install;
 use crate::plugins::graph::PluginGraph;
-use crate::plugins::git::{pull_plugin, remove_plugin};
+use crate::plugins::git::{clone_locked_plugin, get_head_sha, remove_plugin, resolve_remote_head};
+use crate::plugins::lock::{PluginLock, PluginLockEntry};
 use crate::plugins::scanner::derive_plugin_refs;
 use crate::plugins::{
     check_install_status, list_installed_plugins, plugins_base_dir, InstallStatus, PluginRef,
@@ -56,11 +60,13 @@ pub fn run(command: PluginCommands) -> Result<()> {
 
 fn run_install(reference: Option<String>) -> Result<()> {
     let plugins_base = plugins_base_dir()?;
+    let cwd = env::current_dir()?;
+    let project_root = find_project_root(&cwd);
 
     match reference {
         Some(ref_str) => {
             let plugin: PluginRef = ref_str.parse()?;
-            let report = install_with_deps(&plugin, &plugins_base)?;
+            let report = install(&plugin, &plugins_base, project_root.as_deref(), None)?;
             print_install_report(&report, &plugin);
 
             if !report.failed.is_empty() {
@@ -69,7 +75,6 @@ fn run_install(reference: Option<String>) -> Result<()> {
         }
         None => {
             // Scan current project for plugin references
-            let cwd = env::current_dir()?;
             let aiki_dir = find_aiki_dir(&cwd)?;
 
             let refs = derive_plugin_refs(&aiki_dir, None);
@@ -80,7 +85,7 @@ fn run_install(reference: Option<String>) -> Result<()> {
 
             let mut any_failed = false;
             for plugin in &refs {
-                let report = install_with_deps(plugin, &plugins_base)?;
+                let report = install(plugin, &plugins_base, project_root.as_deref(), None)?;
                 print_install_report(&report, plugin);
                 if !report.failed.is_empty() {
                     any_failed = true;
@@ -98,11 +103,13 @@ fn run_install(reference: Option<String>) -> Result<()> {
 
 fn run_update(reference: Option<String>) -> Result<()> {
     let plugins_base = plugins_base_dir()?;
+    let cwd = env::current_dir()?;
+    let project_root = find_project_root(&cwd);
 
     match reference {
         Some(ref_str) => {
             let plugin: PluginRef = ref_str.parse()?;
-            update_single(&plugin, &plugins_base)?;
+            update_single(&plugin, &plugins_base, project_root.as_deref())?;
         }
         None => {
             // Update all installed plugins
@@ -114,7 +121,7 @@ fn run_update(reference: Option<String>) -> Result<()> {
 
             let mut any_failed = false;
             for plugin in &installed {
-                if let Err(e) = update_single(plugin, &plugins_base) {
+                if let Err(e) = update_single(plugin, &plugins_base, project_root.as_deref()) {
                     eprintln!("Error: failed to update {} — {}", plugin, e);
                     any_failed = true;
                 }
@@ -129,44 +136,39 @@ fn run_update(reference: Option<String>) -> Result<()> {
     Ok(())
 }
 
-fn update_single(plugin: &PluginRef, plugins_base: &Path) -> Result<()> {
-    // 1. Pull the root plugin
-    pull_plugin(plugin, plugins_base)?;
-    println!("Updated: {}", plugin.display_name(plugins_base));
+fn update_single(plugin: &PluginRef, plugins_base: &Path, project_root: Option<&Path>) -> Result<()> {
+    let mut lock = match project_root {
+        Some(root) => PluginLock::load(root)?,
+        None => PluginLock::default(),
+    };
 
+    let mut summary: Vec<String> = Vec::new();
     let mut failures: Vec<String> = Vec::new();
 
-    // 2. Resolve deps after pulling root, then pull existing deps
-    let deps = resolve_deps(plugin, plugins_base);
-    let mut pulled: HashSet<PluginRef> = HashSet::new();
-    for dep in &deps {
-        if check_install_status(dep, plugins_base) == InstallStatus::Installed {
-            if let Err(e) = pull_plugin(dep, plugins_base) {
-                eprintln!("Error: failed to update dependency {}: {}", dep, e);
-                // Don't record failure yet — dep may be retried in second pass
-            } else {
-                pulled.insert(dep.clone());
-            }
-        }
-    }
+    // 1. Resolve remote HEAD and update the root plugin
+    update_plugin_via_lock(plugin, plugins_base, &mut lock, &mut summary, &mut failures)?;
 
-    // 3. Re-resolve deps after pulls — pulled deps may now reference new plugins
-    let deps_after = resolve_deps(plugin, plugins_base);
-    for dep in &deps_after {
+    // 2. Resolve deps after updating root, then update existing deps
+    let deps = resolve_deps(plugin, plugins_base);
+    let mut updated: HashSet<PluginRef> = HashSet::new();
+    updated.insert(plugin.clone());
+
+    for dep in &deps {
+        if updated.contains(dep) {
+            continue;
+        }
         match check_install_status(dep, plugins_base) {
             InstallStatus::Installed => {
-                // Pull deps discovered or retried after re-resolve (not yet pulled)
-                if !pulled.contains(dep) {
-                    if let Err(e) = pull_plugin(dep, plugins_base) {
-                        eprintln!("Error: failed to update dependency {}: {}", dep, e);
-                        failures.push(format!("{}: {}", dep, e));
-                    }
+                updated.insert(dep.clone());
+                if let Err(e) = update_plugin_via_lock(dep, plugins_base, &mut lock, &mut summary, &mut failures) {
+                    eprintln!("Error: failed to update dependency {}: {}", dep, e);
                 }
             }
             _ => {
-                // New dep — install with its own deps
-                let report = install_with_deps(dep, plugins_base)?;
+                // New dep — install with its own deps, sharing the parent lock
+                let report = install(dep, plugins_base, project_root, Some(&mut lock))?;
                 for (installed, _manifest) in &report.installed {
+                    summary.push(format!("{}  (new dependency)", installed));
                     println!("Installed (dependency): {}", installed.display_name(plugins_base));
                 }
                 for (failed, err) in &report.failed {
@@ -175,6 +177,43 @@ fn update_single(plugin: &PluginRef, plugins_base: &Path) -> Result<()> {
                 }
             }
         }
+    }
+
+    // 3. Re-resolve deps after updates — updated deps may now reference new plugins
+    let deps_after = resolve_deps(plugin, plugins_base);
+    for dep in &deps_after {
+        if updated.contains(dep) {
+            continue;
+        }
+        match check_install_status(dep, plugins_base) {
+            InstallStatus::Installed => {
+                updated.insert(dep.clone());
+                if let Err(e) = update_plugin_via_lock(dep, plugins_base, &mut lock, &mut summary, &mut failures) {
+                    eprintln!("Error: failed to update dependency {}: {}", dep, e);
+                }
+            }
+            _ => {
+                let report = install(dep, plugins_base, project_root, Some(&mut lock))?;
+                for (installed, _manifest) in &report.installed {
+                    summary.push(format!("{}  (new dependency)", installed));
+                    println!("Installed (dependency): {}", installed.display_name(plugins_base));
+                }
+                for (failed, err) in &report.failed {
+                    eprintln!("Error: failed to install {}: {}", failed, err);
+                    failures.push(format!("{}: {}", failed, err));
+                }
+            }
+        }
+    }
+
+    // 4. Save lock file
+    if let Some(root) = project_root {
+        lock.save(root)?;
+    }
+
+    // 5. Print summary
+    for line in &summary {
+        println!("{}", line);
     }
 
     if !failures.is_empty() {
@@ -186,6 +225,89 @@ fn update_single(plugin: &PluginRef, plugins_base: &Path) -> Result<()> {
                 failures.join("; ")
             ),
         });
+    }
+
+    Ok(())
+}
+
+/// Resolve remote HEAD for a plugin, compare with locked SHA, and reinstall if changed.
+fn update_plugin_via_lock(
+    plugin: &PluginRef,
+    plugins_base: &Path,
+    lock: &mut PluginLock,
+    summary: &mut Vec<String>,
+    failures: &mut Vec<String>,
+) -> Result<()> {
+    let remote_sha = resolve_remote_head(plugin)?;
+
+    let old_sha = lock
+        .get(plugin)
+        .map(|e| e.sha.clone())
+        .or_else(|| get_head_sha(plugin, plugins_base).ok());
+
+    if old_sha.as_deref() == Some(&remote_sha) {
+        summary.push(format!("{}  (unchanged)", plugin));
+        return Ok(());
+    }
+
+    // Clone-then-swap: clone new version to a temp dir first, so a failed clone
+    // doesn't leave the existing install deleted.
+    let install_dir = plugin.install_dir(plugins_base);
+    let temp_base = plugins_base.join(format!(".updating-{}", plugin.name));
+
+    // Clean up any stale temp dir from a previous interrupted update
+    if temp_base.exists() {
+        let _ = std::fs::remove_dir_all(&temp_base);
+    }
+
+    match clone_locked_plugin(plugin, &temp_base, &remote_sha) {
+        Ok(()) => {
+            let temp_install = plugin.install_dir(&temp_base);
+
+            // Remove the old install dir, then rename the temp one into place
+            if install_dir.exists() {
+                std::fs::remove_dir_all(&install_dir).map_err(|e| {
+                    let _ = std::fs::remove_dir_all(&temp_base);
+                    AikiError::PluginOperationFailed {
+                        plugin: plugin.to_string(),
+                        details: format!("Failed to remove old install: {}", e),
+                    }
+                })?;
+            }
+            // Ensure parent dir exists (in case install_dir was never created)
+            if let Some(parent) = install_dir.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            std::fs::rename(&temp_install, &install_dir).map_err(|e| {
+                AikiError::PluginOperationFailed {
+                    plugin: plugin.to_string(),
+                    details: format!("Failed to move new install into place: {}", e),
+                }
+            })?;
+            // Clean up the temp base directory structure
+            let _ = std::fs::remove_dir_all(&temp_base);
+
+            let old_display = old_sha
+                .as_deref()
+                .map(|s| &s[..s.len().min(12)])
+                .unwrap_or("(new)");
+            let new_display = &remote_sha[..remote_sha.len().min(12)];
+            summary.push(format!("{}  {} → {}", plugin, old_display, new_display));
+
+            lock.insert(
+                plugin,
+                PluginLockEntry {
+                    sha: remote_sha,
+                    source: plugin.github_url(),
+                    resolved: Utc::now().to_rfc3339(),
+                },
+            );
+        }
+        Err(e) => {
+            // Clone failed — clean up temp dir, leave old install untouched
+            let _ = std::fs::remove_dir_all(&temp_base);
+            failures.push(format!("{}: {}", plugin, e));
+        }
     }
 
     Ok(())
@@ -337,10 +459,20 @@ fn run_remove(reference: String, force: bool) -> Result<()> {
 
     remove_plugin(&plugin, &plugins_base)?;
 
-    // Remove from hooks.yml include references in the current project (if in one)
+    // Remove from hooks.yml include references and lock file in the current project (if in one)
     let cwd = env::current_dir()?;
     if let Some(aiki_dir) = find_aiki_dir_optional(&cwd) {
         remove_from_hooks_yml(&aiki_dir, &plugin);
+    }
+
+    if let Some(project_root) = find_project_root(&cwd) {
+        if let Ok(mut lock) = PluginLock::load(&project_root) {
+            if lock.remove(&plugin).is_some() {
+                if let Err(e) = lock.save(&project_root) {
+                    eprintln!("Warning: failed to update lock file: {}", e);
+                }
+            }
+        }
     }
 
     println!("Removed: {}", display_name);
@@ -348,6 +480,11 @@ fn run_remove(reference: String, force: bool) -> Result<()> {
 }
 
 // --- Helpers ---
+
+/// Find the project root (parent of `.aiki/` directory) if we're in a project.
+fn find_project_root(start: &Path) -> Option<std::path::PathBuf> {
+    find_aiki_dir_optional(start).and_then(|aiki_dir| aiki_dir.parent().map(|p| p.to_path_buf()))
+}
 
 fn find_aiki_dir(start: &Path) -> Result<std::path::PathBuf> {
     find_aiki_dir_optional(start).ok_or_else(|| AikiError::InvalidArgument(
@@ -389,6 +526,9 @@ fn print_install_report(report: &InstallReport, root: &PluginRef) {
             }
             _ => println!("{}: {}", label, plugin),
         }
+    }
+    for plugin in &report.rolled_back {
+        eprintln!("Rolled back: {}", plugin);
     }
     for (failed, err) in &report.failed {
         eprintln!("Error: failed to install {} — {}", failed, err);

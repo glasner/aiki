@@ -6,9 +6,12 @@
 pub mod deps;
 pub mod git;
 pub mod graph;
+pub mod lock;
 pub mod manifest;
 pub mod project;
 pub mod scanner;
+
+pub use deps::install;
 
 use std::fmt;
 use std::path::{Path, PathBuf};

@@ -139,6 +139,8 @@ Evaluate the plan for quality and readiness. For each issue found, add it as a s
 3. For each issue found, add a subtask:
    ```bash
    aiki task add --subtask-of {{parent.id}} "<Category>: <brief description>"
+   # If the subtask needs detailed instructions for a subagent:
+   # aiki task add --subtask-of {{parent.id}} "<description>" -i "detailed instructions here"
    ```
 4. Once all issues are identified, work through each subtask with the user:
    - Discuss the issue

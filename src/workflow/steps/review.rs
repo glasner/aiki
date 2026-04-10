@@ -28,7 +28,7 @@ pub(crate) fn run(ctx: &mut WorkflowContext) -> anyhow::Result<StepResult> {
 
     ctx.status("running review agent");
 
-    if ctx.event_rx.is_some() {
+    if ctx.notify_rx.is_some() {
         let output = ctx.output;
         let options = TaskRunOptions::new();
         let mut handler = super::ReviewDrainHandler::new(review_id.clone(), output);
@@ -36,7 +36,7 @@ pub(crate) fn run(ctx: &mut WorkflowContext) -> anyhow::Result<StepResult> {
             &ctx.cwd,
             &review_id,
             &options,
-            ctx.event_rx.as_ref(),
+            ctx.notify_rx.as_ref(),
             output,
             &mut handler,
         )?;

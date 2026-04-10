@@ -5,16 +5,17 @@ pub mod review;
 pub mod steps;
 
 use std::collections::HashMap;
+use std::fs;
+use std::io::{BufRead, BufReader};
+use std::os::fd::{FromRawFd, OwnedFd};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::thread::{self, JoinHandle};
 
 use anyhow::Result;
 use crossbeam_channel::Receiver;
 use serde::{Deserialize, Serialize};
 
-use crate::tasks::listener::TaskEventListener;
-use crate::tasks::types::TaskEvent;
+use crate::tasks::storage::{clear_event_pipe_path, set_event_pipe_path};
 
 use crate::agents::AgentType;
 use crate::reviews::ReviewScope;
@@ -71,18 +72,18 @@ pub struct WorkflowContext {
     pub assignee: Option<String>,
     /// Current iteration of the quality loop. Starts at 0.
     pub iteration: usize,
-    /// Receiver for raw task events. Present when a listener is active.
-    /// Started by the workflow runner, stopped when the workflow completes.
+    /// Receiver for FIFO change-ID notifications. Present when a FIFO listener
+    /// is active. The workflow runner creates a named pipe, spawns a read thread
+    /// that forwards each line (a change ID string) to this channel, and shares
+    /// it sequentially across steps.
     ///
-    /// **Single-consumer constraint:** This is a single crossbeam `Receiver`
-    /// shared sequentially across all workflow steps. Each step's `DrainHandler`
-    /// calls `rx.try_iter()`, which destructively consumes events — once a step
-    /// drains an event, no later step can see it. This is intentional: each step
-    /// only cares about events produced during its own agent run, and the
-    /// drain loop in `spawn_drain_finalize` runs only while that step's agent
-    /// is alive. Events from step A's agent are drained by step A's handler
-    /// before step B starts.
-    pub event_rx: Option<Receiver<TaskEvent>>,
+    /// **Single-consumer constraint:** Each step's drain loop calls
+    /// `rx.try_iter()`, which destructively consumes notifications — once a step
+    /// drains a notification, no later step can see it. This is intentional:
+    /// each step only cares about notifications produced during its own agent
+    /// run, and the drain loop in `spawn_drain_finalize` runs only while that
+    /// step's agent is alive.
+    pub notify_rx: Option<Receiver<String>>,
     /// Best-effort task-id -> task-name cache built from Created events
     /// so later steps can render names without re-reading JJ state.
     pub task_names: HashMap<String, String>,
@@ -232,6 +233,109 @@ impl RunKind {
     }
 }
 
+/// RAII guard for the workflow's event FIFO.
+///
+/// On creation, `mkfifo` creates a named pipe, a keep-alive fd keeps the pipe
+/// open (preventing reader EOF), and a read thread forwards each line (change
+/// ID) to a crossbeam channel. On drop, the keep-alive fd is closed (triggering
+/// reader EOF), the read thread is joined, the FIFO file is removed, and the
+/// global `EVENT_PIPE_PATH` is cleared.
+struct FifoGuard {
+    path: PathBuf,
+    keep_alive: Option<OwnedFd>,
+    read_handle: Option<JoinHandle<()>>,
+}
+
+impl FifoGuard {
+    /// Create the event FIFO and spawn the read thread.
+    ///
+    /// Returns `(guard, receiver)` where receiver yields change-ID strings.
+    fn new(workflow_id: &str) -> std::io::Result<(Self, Receiver<String>)> {
+        let dir = PathBuf::from("/tmp/aiki/events");
+        fs::create_dir_all(&dir)?;
+
+        let path = dir.join(format!("{workflow_id}.workflow.pipe"));
+
+        // Remove stale FIFO from a previous crashed run.
+        let _ = fs::remove_file(&path);
+
+        // Create the named pipe.
+        let c_path = std::ffi::CString::new(path.as_os_str().as_encoded_bytes())
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
+        let ret = unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) };
+        if ret != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+
+        // Keep-alive fd: O_RDWR never blocks and prevents reader EOF.
+        let ka_fd = unsafe { libc::open(c_path.as_ptr(), libc::O_RDWR | libc::O_CLOEXEC) };
+        if ka_fd < 0 {
+            let err = std::io::Error::last_os_error();
+            let _ = fs::remove_file(&path);
+            return Err(err);
+        }
+        let keep_alive = unsafe { OwnedFd::from_raw_fd(ka_fd) };
+
+        // Read fd: O_RDONLY succeeds immediately because keep-alive fd exists.
+        let rd_fd = unsafe { libc::open(c_path.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC) };
+        if rd_fd < 0 {
+            let err = std::io::Error::last_os_error();
+            let _ = fs::remove_file(&path);
+            return Err(err);
+        }
+        let rd_file = unsafe { std::fs::File::from_raw_fd(rd_fd) };
+
+        // Register the FIFO path so in-process `write_event` calls find it.
+        set_event_pipe_path(path.clone());
+
+        // Spawn read thread: blocking BufReader::lines → channel sender.
+        let (tx, rx) = crossbeam_channel::unbounded::<String>();
+        let read_handle = thread::spawn(move || {
+            let reader = BufReader::new(rd_file);
+            for line in reader.lines() {
+                match line {
+                    Ok(s) => {
+                        let trimmed = s.trim().to_string();
+                        if !trimmed.is_empty() {
+                            if tx.send(trimmed).is_err() {
+                                break; // receiver dropped
+                            }
+                        }
+                    }
+                    Err(_) => break, // EOF or error
+                }
+            }
+        });
+
+        Ok((
+            Self {
+                path,
+                keep_alive: Some(keep_alive),
+                read_handle: Some(read_handle),
+            },
+            rx,
+        ))
+    }
+}
+
+impl Drop for FifoGuard {
+    fn drop(&mut self) {
+        // Clear the global pipe path first so no new writes target this FIFO.
+        clear_event_pipe_path();
+
+        // Drop the keep-alive fd → triggers EOF on the read thread.
+        self.keep_alive.take();
+
+        // Join the read thread.
+        if let Some(handle) = self.read_handle.take() {
+            let _ = handle.join();
+        }
+
+        // Remove the FIFO file.
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
 /// A sequence of steps executed against a shared context.
 pub struct Workflow {
     pub steps: Vec<Step>,
@@ -265,20 +369,26 @@ impl Workflow {
     pub fn run(mut self) -> Result<WorkflowContext> {
         let verbose = matches!(self.ctx.output.kind(), OutputKind::Text);
 
-        // Start a single listener for the entire workflow. The resulting
-        // Receiver is shared sequentially across steps — each step's
-        // DrainHandler consumes only events produced during its own agent
-        // run (single-consumer-per-step design).
-        let stop = Arc::new(AtomicBool::new(false));
-        if verbose {
-            let listener = TaskEventListener::new(&self.ctx.cwd, Arc::clone(&stop));
-            self.ctx.event_rx = Some(listener.start());
-        }
+        // Create a FIFO for the entire workflow. The resulting Receiver is
+        // shared sequentially across steps — each step's DrainHandler consumes
+        // only notifications produced during its own agent run.
+        // FifoGuard's Drop cleans up the FIFO, joins the read thread, and
+        // clears the global EVENT_PIPE_PATH.
+        let _fifo_guard = if verbose {
+            match FifoGuard::new(&format!("{:x}", std::process::id())) {
+                Ok((guard, rx)) => {
+                    self.ctx.notify_rx = Some(rx);
+                    Some(guard)
+                }
+                Err(_) => None,
+            }
+        } else {
+            None
+        };
 
         let result = self.run_step_loop(verbose);
 
-        // Signal the listener thread to stop.
-        stop.store(true, Ordering::Relaxed);
+        // _fifo_guard drops here, cleaning up the FIFO.
 
         match result {
             Ok(()) => Ok(self.ctx),
@@ -441,7 +551,7 @@ mod tests {
                     scope: None,
                     assignee: None,
                     iteration: 0,
-                    event_rx: None,
+                    notify_rx: None,
                     task_names: std::collections::HashMap::new(),
                 };
                 ctx.emit("workflow-emit-line");
@@ -468,7 +578,7 @@ mod tests {
                     scope: None,
                     assignee: None,
                     iteration: 0,
-                    event_rx: None,
+                    notify_rx: None,
                     task_names: std::collections::HashMap::new(),
                 },
             },
@@ -484,7 +594,7 @@ mod tests {
                     scope: None,
                     assignee: None,
                     iteration: 0,
-                    event_rx: None,
+                    notify_rx: None,
                     task_names: std::collections::HashMap::new(),
                 },
             },
@@ -500,7 +610,7 @@ mod tests {
                     scope: None,
                     assignee: None,
                     iteration: 0,
-                    event_rx: None,
+                    notify_rx: None,
                     task_names: std::collections::HashMap::new(),
                 },
             },
@@ -516,7 +626,7 @@ mod tests {
                     scope: None,
                     assignee: None,
                     iteration: 0,
-                    event_rx: None,
+                    notify_rx: None,
                     task_names: std::collections::HashMap::new(),
                 },
             },
@@ -551,7 +661,7 @@ mod tests {
                 scope: None,
                 assignee: None,
                 iteration: 0,
-                event_rx: None,
+                notify_rx: None,
                 task_names: std::collections::HashMap::new(),
             },
         };
@@ -581,7 +691,7 @@ mod tests {
                 scope: None,
                 assignee: None,
                 iteration: 0,
-                event_rx: None,
+                notify_rx: None,
                 task_names: std::collections::HashMap::new(),
             },
         };
@@ -612,7 +722,7 @@ mod tests {
                 scope: None,
                 assignee: None,
                 iteration: 0,
-                event_rx: None,
+                notify_rx: None,
                 task_names: std::collections::HashMap::new(),
             },
         };
@@ -659,7 +769,7 @@ mod tests {
                 scope: None,
                 assignee: None,
                 iteration: 0,
-                event_rx: None,
+                notify_rx: None,
                 task_names: std::collections::HashMap::new(),
             },
         }
@@ -681,7 +791,7 @@ mod tests {
                 scope: None,
                 assignee: None,
                 iteration: 0,
-                event_rx: None,
+                notify_rx: None,
                 task_names: std::collections::HashMap::new(),
             },
         }
@@ -755,7 +865,7 @@ mod tests {
                 scope: None,
                 assignee: None,
                 iteration: 0,
-                event_rx: None,
+                notify_rx: None,
                 task_names: std::collections::HashMap::new(),
             },
         };
@@ -791,7 +901,7 @@ mod tests {
                 scope: None,
                 assignee: None,
                 iteration: 0,
-                event_rx: None,
+                notify_rx: None,
                 task_names: std::collections::HashMap::new(),
             },
         };
@@ -825,7 +935,7 @@ mod tests {
                 scope: None,
                 assignee: None,
                 iteration: 0,
-                event_rx: None,
+                notify_rx: None,
                 task_names: std::collections::HashMap::new(),
             },
         };

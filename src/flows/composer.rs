@@ -184,7 +184,14 @@ impl<'a> HookComposer<'a> {
         state: &mut AikiState,
     ) -> Result<HookOutcome> {
         // Load the flow (HookLoader uses HookResolver which returns canonical paths)
-        let (hook, canonical_path) = self.loader.load(flow_path)?;
+        let (hook, canonical_path) = match self.loader.load(flow_path) {
+            Ok(result) => result,
+            Err(AikiError::AutoFetchFailed { plugin, reason }) => {
+                Self::warn_auto_fetch_failed(&plugin, &reason);
+                return Ok(HookOutcome::Success);
+            }
+            Err(e) => return Err(e),
+        };
 
         // Check for circular dependency
         if self.call_stack.contains(&canonical_path) {
@@ -303,7 +310,14 @@ impl<'a> HookComposer<'a> {
         // then reverse for prepending)
         let mut loaded_includes: Vec<(Hook, PathBuf)> = Vec::new();
         for include_path in &includes {
-            let (included_hook, included_canonical) = self.loader.load(include_path)?;
+            let (included_hook, included_canonical) = match self.loader.load(include_path) {
+                Ok(result) => result,
+                Err(AikiError::AutoFetchFailed { plugin, reason }) => {
+                    Self::warn_auto_fetch_failed(&plugin, &reason);
+                    continue;
+                }
+                Err(e) => return Err(e),
+            };
 
             // Cycle detection for includes
             if self.call_stack.contains(&included_canonical) {
@@ -344,7 +358,14 @@ impl<'a> HookComposer<'a> {
 
         let mut loaded: Vec<(Hook, PathBuf)> = Vec::new();
         for include_path in &includes {
-            let (included_hook, included_canonical) = self.loader.load(include_path)?;
+            let (included_hook, included_canonical) = match self.loader.load(include_path) {
+                Ok(result) => result,
+                Err(AikiError::AutoFetchFailed { plugin, reason }) => {
+                    Self::warn_auto_fetch_failed(&plugin, &reason);
+                    continue;
+                }
+                Err(e) => return Err(e),
+            };
 
             if self.call_stack.contains(&included_canonical) {
                 return Err(AikiError::CircularHookDependency {
@@ -374,6 +395,16 @@ impl<'a> HookComposer<'a> {
         }
 
         Ok(())
+    }
+
+    /// Print a warning when auto-fetching a plugin fails.
+    fn warn_auto_fetch_failed(plugin: &str, reason: &str) {
+        eprintln!(
+            "Warning: Failed to install {} — {}\n\n\
+             Hooks referencing {} will be skipped this session.\n\
+             To retry: aiki plugin install {}\n",
+            plugin, reason, plugin, plugin
+        );
     }
 
     /// Prepend an included plugin's blocks and segments into the target hook.
@@ -617,7 +648,14 @@ impl<'a> HookComposer<'a> {
         state: &mut AikiState,
     ) -> Result<HookOutcome> {
         // 1. Load plugin
-        let (plugin, canonical_path) = self.loader.load(plugin_path)?;
+        let (plugin, canonical_path) = match self.loader.load(plugin_path) {
+            Ok(result) => result,
+            Err(AikiError::AutoFetchFailed { plugin, reason }) => {
+                Self::warn_auto_fetch_failed(&plugin, &reason);
+                return Ok(HookOutcome::Success);
+            }
+            Err(e) => return Err(e),
+        };
 
         // 2. Cycle detection
         if self.call_stack.contains(&canonical_path) {
@@ -920,17 +958,48 @@ version: "1"
     }
 
     #[test]
-    fn test_flow_not_found() {
+    fn test_flow_not_found_auto_fetch_skipped() {
         let temp_dir = create_test_project();
 
         let mut loader = HookLoader::with_start_dir(temp_dir.path()).unwrap();
         let mut composer = HookComposer::new(&mut loader);
         let mut state = create_test_state(&temp_dir);
 
+        // Auto-fetch failures are caught and skipped with a warning
         let result =
             composer.compose_hook("aiki/nonexistent", EventType::ChangeCompleted, &mut state);
 
-        assert!(matches!(result, Err(AikiError::HookNotFound { .. })));
+        assert!(matches!(result, Ok(HookOutcome::Success)));
+    }
+
+    #[test]
+    fn test_session_continues_after_auto_fetch_skip() {
+        let temp_dir = create_test_project();
+
+        // Create a real hook that can execute
+        let flow_path = temp_dir.path().join(".aiki/hooks/aiki/real.yml");
+        create_flow_file(&flow_path, "Real Hook", &[], &[], true);
+
+        let mut loader = HookLoader::with_start_dir(temp_dir.path()).unwrap();
+        let mut composer = HookComposer::new(&mut loader);
+        let mut state = create_test_state(&temp_dir);
+
+        // First: auto-fetch failure is skipped with warning
+        let result1 =
+            composer.compose_hook("fake/nonexistent", EventType::ChangeCompleted, &mut state);
+        assert!(
+            matches!(result1, Ok(HookOutcome::Success)),
+            "Auto-fetch failure should be skipped"
+        );
+
+        // Second: a real hook should still execute successfully
+        let result2 =
+            composer.compose_hook("aiki/real", EventType::ChangeCompleted, &mut state);
+        assert!(
+            result2.is_ok(),
+            "Session should continue after auto-fetch skip: {:?}",
+            result2
+        );
     }
 
     #[test]

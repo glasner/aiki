@@ -60,8 +60,15 @@ fn run_session_end_maybe_async(agent: &str) -> Result<()> {
     let cwd = extract_cwd_from_payload(&stdin_payload)
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
 
+    let agent_flag = match agent {
+        "claude-code" => "--claude",
+        "codex" => "--codex",
+        "cursor" => "--cursor",
+        "gemini" => "--gemini",
+        _ => "--claude", // fallback; parse_agent_type will reject unknown agents earlier
+    };
     let args = [
-        "hooks", "stdin", "--agent", agent, "--event", "SessionEnd", "--_continue-async",
+        "hooks", "stdin", agent_flag, "SessionEnd", "--_continue-async",
     ];
 
     match crate::workflow::async_run::spawn_with_stdin(&cwd, &args, &stdin_payload) {

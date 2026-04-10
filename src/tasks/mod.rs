@@ -124,6 +124,7 @@ pub fn start_task_core(cwd: &Path, task_ids: &[String]) -> Result<StartTaskResul
         session_id,
         turn_id,
         working_copy: crate::jj::get_working_copy_snapshot_rev(cwd),
+        instructions: None,
         timestamp,
     };
     write_event(cwd, &start_event)?;

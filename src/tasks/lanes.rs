@@ -628,6 +628,7 @@ mod tests {
             session_id: None,
             turn_id: None,
             working_copy: None,
+            instructions: None,
             timestamp: Utc::now(),
         }
     }

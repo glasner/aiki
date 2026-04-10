@@ -151,6 +151,18 @@ enum Commands {
         /// Override assignee agent (claude-code, codex)
         #[arg(long)]
         agent: Option<String>,
+        /// Shorthand for --agent claude-code
+        #[arg(long, group = "agent_shorthand", conflicts_with = "agent")]
+        claude: bool,
+        /// Shorthand for --agent codex
+        #[arg(long, group = "agent_shorthand", conflicts_with = "agent")]
+        codex: bool,
+        /// Shorthand for --agent cursor
+        #[arg(long, group = "agent_shorthand", conflicts_with = "agent")]
+        cursor: bool,
+        /// Shorthand for --agent gemini
+        #[arg(long, group = "agent_shorthand", conflicts_with = "agent")]
+        gemini: bool,
         /// Create task from template before running
         #[arg(long, conflicts_with_all = ["id", "next_thread"])]
         template: Option<String>,
@@ -217,6 +229,18 @@ enum Commands {
         /// Agent for plan session (default: claude-code)
         #[arg(long)]
         agent: Option<String>,
+        /// Shorthand for --agent claude-code
+        #[arg(long, group = "plan_agent_shorthand", conflicts_with = "agent")]
+        claude: bool,
+        /// Shorthand for --agent codex
+        #[arg(long, group = "plan_agent_shorthand", conflicts_with = "agent")]
+        codex: bool,
+        /// Shorthand for --agent cursor
+        #[arg(long, group = "plan_agent_shorthand", conflicts_with = "agent")]
+        cursor: bool,
+        /// Shorthand for --agent gemini
+        #[arg(long, group = "plan_agent_shorthand", conflicts_with = "agent")]
+        gemini: bool,
         /// Output format (e.g., `id` for bare task ID on stdout)
         #[arg(long, short = 'o', value_name = "FORMAT")]
         output: Option<commands::OutputFormat>,
@@ -247,9 +271,18 @@ enum HooksCommands {
     #[command(hide = true)]
     Stdin {
         #[arg(long)]
-        agent: String,
+        agent: Option<String>,
         #[arg(long)]
-        event: String,
+        event: Option<String>,
+        /// Shorthand for --agent claude-code --event <EVENT>
+        #[arg(long, value_name = "EVENT", group = "agent_shorthand", conflicts_with = "agent")]
+        claude: Option<String>,
+        /// Shorthand for --agent codex --event <EVENT>
+        #[arg(long, value_name = "EVENT", group = "agent_shorthand", conflicts_with = "agent")]
+        codex: Option<String>,
+        /// Shorthand for --agent cursor --event <EVENT>
+        #[arg(long, value_name = "EVENT", group = "agent_shorthand", conflicts_with = "agent")]
+        cursor: Option<String>,
         /// Hidden flag: when set, this is the background continuation of an async hook.
         /// The original hook payload is piped via stdin.
         #[arg(long = "_continue-async", hide = true)]
@@ -261,7 +294,19 @@ enum HooksCommands {
     #[command(hide = true)]
     Acp {
         #[arg(long)]
-        agent: String,
+        agent: Option<String>,
+        /// Shorthand for --agent claude-code
+        #[arg(long, group = "agent_shorthand", conflicts_with = "agent")]
+        claude: bool,
+        /// Shorthand for --agent codex
+        #[arg(long, group = "agent_shorthand", conflicts_with = "agent")]
+        codex: bool,
+        /// Shorthand for --agent cursor
+        #[arg(long, group = "agent_shorthand", conflicts_with = "agent")]
+        cursor: bool,
+        /// Shorthand for --agent gemini
+        #[arg(long, group = "agent_shorthand", conflicts_with = "agent")]
+        gemini: bool,
         #[arg(short, long)]
         bin: Option<String>,
         #[arg(last = true)]
@@ -293,21 +338,46 @@ fn run() -> Result<()> {
             HooksCommands::Stdin {
                 agent,
                 event,
+                claude,
+                codex,
+                cursor,
                 continue_async,
                 payload,
             } => {
+                let (agent_type, event) = session::flags::resolve_agent_event_shorthand(
+                    agent, event, claude, codex, cursor, None,
+                )
+                .ok_or_else(|| {
+                    error::AikiError::MissingArgument(
+                        "--agent and --event, or an agent shorthand (--claude, --codex, --cursor)".into(),
+                    )
+                })?;
                 let payload_str = if payload.is_empty() {
                     None
                 } else {
                     Some(payload.join(" "))
                 };
-                commands::hooks::run_stdin(agent, event, continue_async, payload_str)
+                commands::hooks::run_stdin(agent_type.as_str().to_string(), event, continue_async, payload_str)
             }
             HooksCommands::Acp {
                 agent,
+                claude,
+                codex,
+                cursor,
+                gemini,
                 bin,
                 agent_args,
-            } => commands::acp::run(agent, bin, agent_args),
+            } => {
+                let agent_type = session::flags::resolve_agent_shorthand(
+                    agent, claude, codex, cursor, gemini,
+                )
+                .ok_or_else(|| {
+                    error::AikiError::MissingArgument(
+                        "--agent or an agent shorthand (--claude, --codex, --cursor, --gemini)".into(),
+                    )
+                })?;
+                commands::acp::run(agent_type.as_str().to_string(), bin, agent_args)
+            }
             HooksCommands::Otel { agent } => commands::otel_receive::run(agent),
         },
         Commands::Blame { file, agent } => commands::blame::run(file, agent),
@@ -320,6 +390,10 @@ fn run() -> Result<()> {
             next_thread,
             lane,
             agent,
+            claude,
+            codex,
+            cursor,
+            gemini,
             template,
             data,
             output,
@@ -329,7 +403,7 @@ fn run() -> Result<()> {
             force,
             next_thread,
             lane,
-            agent,
+            session::flags::resolve_agent_shorthand(agent, claude, codex, cursor, gemini),
             template,
             data,
             output,
@@ -353,15 +427,24 @@ fn run() -> Result<()> {
             args,
             template,
             agent,
+            claude,
+            codex,
+            cursor,
+            gemini,
             output,
-        } => commands::plan::run(args, template, agent, output),
+        } => commands::plan::run(
+            args,
+            template,
+            session::flags::resolve_agent_shorthand(agent, claude, codex, cursor, gemini),
+            output,
+        ),
         Commands::Spec {
             args,
             template,
             agent,
         } => {
             eprintln!("Warning: 'aiki spec' is deprecated, use 'aiki plan' instead.");
-            commands::plan::run(args, template, agent, None)
+            commands::plan::run(args, template, agent.as_deref().and_then(agents::AgentType::from_str), None)
         }
     }
 }

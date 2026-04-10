@@ -6,7 +6,6 @@
 use std::env;
 
 use super::OutputFormat;
-use crate::agents::AgentType;
 use crate::error::{AikiError, Result};
 pub use crate::workflow::steps::decompose::{run_decompose, DecomposeOptions};
 
@@ -28,6 +27,19 @@ pub struct DecomposeArgs {
     #[arg(long)]
     pub agent: Option<String>,
 
+    /// Shorthand for --agent claude-code
+    #[arg(long, group = "agent_shorthand", conflicts_with = "agent")]
+    pub claude: bool,
+    /// Shorthand for --agent codex
+    #[arg(long, group = "agent_shorthand", conflicts_with = "agent")]
+    pub codex: bool,
+    /// Shorthand for --agent cursor
+    #[arg(long, group = "agent_shorthand", conflicts_with = "agent")]
+    pub cursor: bool,
+    /// Shorthand for --agent gemini
+    #[arg(long, group = "agent_shorthand", conflicts_with = "agent")]
+    pub gemini: bool,
+
     /// Output format (e.g., `id` for bare task ID)
     #[arg(long, short = 'o', value_name = "FORMAT")]
     pub output: Option<OutputFormat>,
@@ -35,22 +47,15 @@ pub struct DecomposeArgs {
 
 /// CLI entry point for `aiki decompose`.
 pub fn run(args: DecomposeArgs) -> Result<()> {
+    use crate::session::flags::resolve_agent_shorthand;
+    let agent_type = resolve_agent_shorthand(args.agent, args.claude, args.codex, args.cursor, args.gemini);
+
     let cwd = env::current_dir()
         .map_err(|_| AikiError::InvalidArgument("Failed to get current directory".to_string()))?;
-
-    let agent_type = if let Some(ref agent_str) = args.agent {
-        Some(
-            AgentType::from_str(agent_str)
-                .ok_or_else(|| AikiError::UnknownAgentType(agent_str.clone()))?,
-        )
-    } else {
-        None
-    };
 
     let options = DecomposeOptions {
         template: args.template,
         agent: agent_type,
-        instructions: None,
     };
 
     let decompose_task_id = run_decompose(&cwd, &args.plan_path, &args.target, options, false, None)?;

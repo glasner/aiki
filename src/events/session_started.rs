@@ -10,6 +10,8 @@ pub struct AikiSessionStartPayload {
     pub session: AikiSession,
     pub cwd: PathBuf,
     pub timestamp: DateTime<Utc>,
+    #[serde(default)]
+    pub transcript_path: Option<String>,
 }
 
 /// Handle session.started event
@@ -51,6 +53,7 @@ pub fn handle_session_started(payload: AikiSessionStartPayload) -> Result<HookRe
         payload.timestamp,
         repo_id.as_deref(),
         Some(&cwd_str),
+        payload.transcript_path.as_deref(),
     ) {
         debug_log(|| format!("Failed to record session start: {}", e));
     }
