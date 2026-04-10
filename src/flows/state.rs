@@ -57,6 +57,11 @@ pub struct AikiState {
     /// Used by session.end action to defer termination until hooks are done
     pending_session_ends: Vec<u32>,
 
+    /// Set by the `end_session` action to signal that the session should end.
+    /// The turn.completed handler reads this to set Decision::Block, which
+    /// the Codex stop output builder translates to `{ "continue": false }`.
+    pub end_session: bool,
+
     /// Cached expression evaluator for compile-once/eval-many condition evaluation.
     /// Persists compiled ASTs across multiple condition evaluations within a session.
     expression_evaluator: crate::expressions::ExpressionEvaluator,
@@ -102,6 +107,7 @@ impl AikiState {
             context_assembler,
             failures: Vec::new(),
             pending_session_ends: Vec::new(),
+            end_session: false,
             expression_evaluator: crate::expressions::ExpressionEvaluator::new(),
             task_closed_thread_session: Rc::new(OnceCell::new()),
         }

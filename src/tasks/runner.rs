@@ -192,6 +192,48 @@ impl LoadingPhase {
     }
 }
 
+/// Validate that all non-closed tasks in a thread have instructions.
+///
+/// Walks the needs-context chain for the thread head. If the chain is empty or
+/// doesn't include the head, falls back to `[head]`. Returns an error listing
+/// every non-closed task that is missing instructions.
+fn validate_thread_instructions(graph: &TaskGraph, thread: &ThreadId) -> Result<()> {
+    let full_chain = graph.get_needs_context_chain(&thread.head);
+
+    // Slice the chain to only include tasks between thread.head and thread.tail.
+    let chain = if let Some(head_idx) = full_chain.iter().position(|id| id == &thread.head) {
+        let tail_idx = full_chain
+            .iter()
+            .position(|id| id == &thread.tail)
+            .unwrap_or(head_idx);
+        full_chain[head_idx..=tail_idx].to_vec()
+    } else {
+        vec![thread.head.clone()]
+    };
+
+    let mut missing: Vec<(String, String)> = Vec::new();
+    for id in &chain {
+        if let Some(task) = graph.tasks.get(id) {
+            if task.status == TaskStatus::Closed {
+                continue;
+            }
+            let has_instructions = task
+                .instructions
+                .as_ref()
+                .is_some_and(|s| !s.trim().is_empty());
+            if !has_instructions {
+                missing.push((id.clone(), task.name.clone()));
+            }
+        }
+    }
+
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(AikiError::ThreadMissingInstructions { missing })
+    }
+}
+
 /// Validate a task, resolve the agent, emit a Started event, and build spawn options.
 ///
 /// Calls `on_phase` at each preparation step so callers can show loading progress.
@@ -206,16 +248,20 @@ pub(crate) fn prepare_task_run(
     // Phase 1.0a: Reading task graph
     on_phase(&LoadingPhase::ReadingGraph);
     let events = read_events(cwd)?;
-    let tasks = materialize_graph(&events).tasks;
+    let graph = materialize_graph(&events);
 
     // Find the task
-    let task = find_task(&tasks, task_id)?;
+    let task = find_task(&graph.tasks, task_id)?;
     let task_id = &task.id; // rebind to canonical ID
 
     // Validate task can be run
     if task.status == TaskStatus::Closed {
         return Err(AikiError::TaskAlreadyClosed(task_id.to_string()));
     }
+
+    // Validate all non-closed tasks in the thread have instructions
+    let spawn_thread = thread.unwrap_or_else(|| ThreadId::single(task_id.to_string()));
+    validate_thread_instructions(&graph, &spawn_thread)?;
 
     // Phase 1.0b: Resolving agent
     on_phase(&LoadingPhase::ResolvingAgent);
@@ -255,9 +301,10 @@ pub(crate) fn prepare_task_run(
 
     // Build spawn options with parent session UUID for workspace isolation chaining
     let parent_uuid = find_active_session(cwd).map(|s| s.session_id);
-    let spawn_thread = thread.unwrap_or_else(|| ThreadId::single(task_id.to_string()));
     let spawn_options =
-        AgentSpawnOptions::new(cwd, spawn_thread).with_parent_session_uuid(parent_uuid);
+        AgentSpawnOptions::new(cwd, spawn_thread)
+            .with_parent_session_uuid(parent_uuid)
+            .with_event_pipe(crate::tasks::storage::event_pipe_path());
 
     // Phase 1.0d: Starting session
     on_phase(&LoadingPhase::StartingSession { agent: agent_name });
@@ -540,38 +587,42 @@ pub fn handle_session_result(
             );
         }
         AgentSessionResult::Failed { error } => {
-            // Agent failed - emit Stopped event even if task never reached InProgress
-            // This handles spawn failures where the agent never claimed the task
+            // Agent process exited abnormally. Check actual task state before
+            // declaring failure — the agent may have completed the work but
+            // exited with a signal (common with codex exec).
             let refreshed_events = read_events(cwd)?;
             let mut refreshed_graph = materialize_graph(&refreshed_events);
             if let Ok(refreshed_task) = find_task(&refreshed_graph.tasks, task_id) {
-                if refreshed_task.status != TaskStatus::Closed {
-                    let is_orchestrator = refreshed_task.is_orchestrator();
-                    let stop_event = TaskEvent::Stopped {
-                        task_ids: vec![task_id.to_string()],
-                        reason: Some(format!("Session failed: {}", error)),
-                        session_id: None,
-                        turn_id: None,
-                        timestamp: chrono::Utc::now(),
-                    };
-                    write_event(cwd, &stop_event)?;
+                if refreshed_task.status == TaskStatus::Closed {
+                    // Task completed despite unclean exit — trust the task state
+                    return Ok(());
+                }
 
-                    // Cascade-close subtasks if this is an orchestrator task
-                    if is_orchestrator {
-                        use crate::commands::task::cascade_close_tasks;
-                        use crate::tasks::manager::get_all_unclosed_descendants;
-                        let unclosed = get_all_unclosed_descendants(&refreshed_graph, task_id);
-                        if !unclosed.is_empty() {
-                            let cascade_ids: Vec<String> =
-                                unclosed.iter().map(|t| t.id.clone()).collect();
-                            cascade_close_tasks(
-                                cwd,
-                                &mut refreshed_graph.tasks,
-                                &cascade_ids,
-                                crate::tasks::types::TaskOutcome::WontDo,
-                                "Parent orchestrator failed",
-                            )?;
-                        }
+                let is_orchestrator = refreshed_task.is_orchestrator();
+                let stop_event = TaskEvent::Stopped {
+                    task_ids: vec![task_id.to_string()],
+                    reason: Some(format!("Session failed: {}", error)),
+                    session_id: None,
+                    turn_id: None,
+                    timestamp: chrono::Utc::now(),
+                };
+                write_event(cwd, &stop_event)?;
+
+                // Cascade-close subtasks if this is an orchestrator task
+                if is_orchestrator {
+                    use crate::commands::task::cascade_close_tasks;
+                    use crate::tasks::manager::get_all_unclosed_descendants;
+                    let unclosed = get_all_unclosed_descendants(&refreshed_graph, task_id);
+                    if !unclosed.is_empty() {
+                        let cascade_ids: Vec<String> =
+                            unclosed.iter().map(|t| t.id.clone()).collect();
+                        cascade_close_tasks(
+                            cwd,
+                            &mut refreshed_graph.tasks,
+                            &cascade_ids,
+                            crate::tasks::types::TaskOutcome::WontDo,
+                            "Parent orchestrator failed",
+                        )?;
                     }
                 }
             }
@@ -658,16 +709,23 @@ pub fn task_run_async(
 ) -> Result<BackgroundHandle> {
     // Load task from events
     let events = read_events(cwd)?;
-    let tasks = materialize_graph(&events).tasks;
+    let graph = materialize_graph(&events);
 
     // Find the task
-    let task = find_task(&tasks, task_id)?;
+    let task = find_task(&graph.tasks, task_id)?;
     let task_id = &task.id; // rebind to canonical ID
 
     // Validate task can be run
     if task.status == TaskStatus::Closed {
         return Err(AikiError::TaskAlreadyClosed(task_id.to_string()));
     }
+
+    // Validate all non-closed tasks in the thread have instructions
+    let spawn_thread = options
+        .thread
+        .clone()
+        .unwrap_or_else(|| ThreadId::single(task_id.to_string()));
+    validate_thread_instructions(&graph, &spawn_thread)?;
 
     // Determine which agent to use
     let agent_type = resolve_agent_type(cwd, task_id, &task, &options)?;
@@ -700,11 +758,10 @@ pub fn task_run_async(
 
     // Build spawn options with parent session UUID for workspace isolation chaining
     let parent_uuid = find_active_session(cwd).map(|s| s.session_id);
-    let spawn_thread = options
-        .thread
-        .unwrap_or_else(|| ThreadId::single(task_id.to_string()));
     let spawn_options =
-        AgentSpawnOptions::new(cwd, spawn_thread).with_parent_session_uuid(parent_uuid);
+        AgentSpawnOptions::new(cwd, spawn_thread)
+            .with_parent_session_uuid(parent_uuid)
+            .with_event_pipe(crate::tasks::storage::event_pipe_path());
 
     // Spawn agent session in background
     // The agent inherits AIKI_THREAD env var which gets recorded in its session file
@@ -1119,6 +1176,7 @@ mod tests {
             session_id: None,
             turn_id: None,
             working_copy: None,
+            instructions: None,
             timestamp: Utc::now(),
         }
     }
@@ -1214,4 +1272,224 @@ mod tests {
     // InProgress, Closed, Open, and absent-from-graph (None path).
     // rollback_if_still_reserved is a thin wrapper that delegates to
     // try_rollback_reserved in run.rs.
+
+    // --- validate_thread_instructions tests ---
+
+    use crate::tasks::lanes::ThreadId;
+
+    fn make_created_with_instructions(id: &str, name: &str, instructions: Option<&str>) -> TaskEvent {
+        TaskEvent::Created {
+            task_id: id.to_string(),
+            name: name.to_string(),
+            slug: None,
+            task_type: None,
+            priority: TaskPriority::P2,
+            assignee: None,
+            sources: Vec::new(),
+            template: None,
+            instructions: instructions.map(|s| s.to_string()),
+            data: HashMap::new(),
+            timestamp: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn test_validate_thread_single_task_with_instructions() {
+        let events = vec![make_created_with_instructions("A", "Task A", Some("Do the thing"))];
+        let graph = materialize_graph(&events);
+        let thread = ThreadId { head: "A".to_string(), tail: "A".to_string() };
+        assert!(validate_thread_instructions(&graph, &thread).is_ok());
+    }
+
+    #[test]
+    fn test_validate_thread_single_task_missing_instructions() {
+        let events = vec![make_created("A", "Task A")];
+        let graph = materialize_graph(&events);
+        let thread = ThreadId { head: "A".to_string(), tail: "A".to_string() };
+        let err = validate_thread_instructions(&graph, &thread).unwrap_err();
+        match err {
+            AikiError::ThreadMissingInstructions { missing } => {
+                assert_eq!(missing.len(), 1);
+                assert_eq!(missing[0].0, "A");
+            }
+            other => panic!("Expected ThreadMissingInstructions, got: {other}"),
+        }
+    }
+
+    #[test]
+    fn test_validate_thread_single_task_empty_instructions() {
+        let events = vec![make_created_with_instructions("A", "Task A", Some("   "))];
+        let graph = materialize_graph(&events);
+        let thread = ThreadId { head: "A".to_string(), tail: "A".to_string() };
+        let err = validate_thread_instructions(&graph, &thread).unwrap_err();
+        match err {
+            AikiError::ThreadMissingInstructions { missing } => {
+                assert_eq!(missing.len(), 1);
+                assert_eq!(missing[0].0, "A");
+            }
+            other => panic!("Expected ThreadMissingInstructions, got: {other}"),
+        }
+    }
+
+    #[test]
+    fn test_validate_thread_multi_task_all_have_instructions() {
+        let events = vec![
+            make_created_with_instructions("A", "Task A", Some("Step 1")),
+            make_created_with_instructions("B", "Task B", Some("Step 2")),
+            make_created_with_instructions("C", "Task C", Some("Step 3")),
+            make_link("B", "A", "needs-context"),
+            make_link("C", "B", "needs-context"),
+        ];
+        let graph = materialize_graph(&events);
+        let thread = ThreadId { head: "A".to_string(), tail: "C".to_string() };
+        assert!(validate_thread_instructions(&graph, &thread).is_ok());
+    }
+
+    #[test]
+    fn test_validate_thread_multi_task_one_missing() {
+        let events = vec![
+            make_created_with_instructions("A", "Task A", Some("Step 1")),
+            make_created("B", "Task B"), // no instructions
+            make_created_with_instructions("C", "Task C", Some("Step 3")),
+            make_link("B", "A", "needs-context"),
+            make_link("C", "B", "needs-context"),
+        ];
+        let graph = materialize_graph(&events);
+        let thread = ThreadId { head: "A".to_string(), tail: "C".to_string() };
+        let err = validate_thread_instructions(&graph, &thread).unwrap_err();
+        match err {
+            AikiError::ThreadMissingInstructions { missing } => {
+                assert_eq!(missing.len(), 1);
+                assert_eq!(missing[0].0, "B");
+            }
+            other => panic!("Expected ThreadMissingInstructions, got: {other}"),
+        }
+    }
+
+    #[test]
+    fn test_validate_thread_multi_task_all_missing() {
+        let events = vec![
+            make_created("A", "Task A"),
+            make_created("B", "Task B"),
+            make_created("C", "Task C"),
+            make_link("B", "A", "needs-context"),
+            make_link("C", "B", "needs-context"),
+        ];
+        let graph = materialize_graph(&events);
+        let thread = ThreadId { head: "A".to_string(), tail: "C".to_string() };
+        let err = validate_thread_instructions(&graph, &thread).unwrap_err();
+        match err {
+            AikiError::ThreadMissingInstructions { missing } => {
+                assert_eq!(missing.len(), 3);
+                let ids: Vec<&str> = missing.iter().map(|(id, _)| id.as_str()).collect();
+                assert!(ids.contains(&"A"));
+                assert!(ids.contains(&"B"));
+                assert!(ids.contains(&"C"));
+            }
+            other => panic!("Expected ThreadMissingInstructions, got: {other}"),
+        }
+    }
+
+    #[test]
+    fn test_validate_thread_closed_task_missing_instructions_skipped() {
+        let events = vec![
+            make_created("A", "Task A"), // no instructions, but will be closed
+            make_closed("A"),
+        ];
+        let graph = materialize_graph(&events);
+        let thread = ThreadId { head: "A".to_string(), tail: "A".to_string() };
+        assert!(validate_thread_instructions(&graph, &thread).is_ok());
+    }
+
+    #[test]
+    fn test_validate_thread_mix_closed_no_instructions_and_open_with_instructions() {
+        let events = vec![
+            make_created("A", "Task A"),                                     // no instructions, closed
+            make_created_with_instructions("B", "Task B", Some("Step 2")),   // has instructions, open
+            make_created("C", "Task C"),                                     // no instructions, closed
+            make_link("B", "A", "needs-context"),
+            make_link("C", "B", "needs-context"),
+            make_closed("A"),
+            make_closed("C"),
+        ];
+        let graph = materialize_graph(&events);
+        let thread = ThreadId { head: "A".to_string(), tail: "C".to_string() };
+        assert!(validate_thread_instructions(&graph, &thread).is_ok());
+    }
+
+    #[test]
+    fn test_validate_thread_single_task_in_chain_ignores_siblings() {
+        // Chain: A → B → C. Only B is in the thread. A and C lack instructions
+        // but should not be validated.
+        let events = vec![
+            make_created("A", "Task A"),                                     // no instructions
+            make_created_with_instructions("B", "Task B", Some("Step 2")),   // has instructions
+            make_created("C", "Task C"),                                     // no instructions
+            make_link("B", "A", "needs-context"),
+            make_link("C", "B", "needs-context"),
+        ];
+        let graph = materialize_graph(&events);
+        let thread = ThreadId { head: "B".to_string(), tail: "B".to_string() };
+        assert!(validate_thread_instructions(&graph, &thread).is_ok());
+    }
+
+    #[test]
+    fn test_validate_thread_subrange_of_chain() {
+        // Chain: A → B → C → D → E. Thread covers B..D only.
+        // A and E lack instructions but should not be validated.
+        // C lacks instructions and IS in the thread, so it should fail.
+        let events = vec![
+            make_created("A", "Task A"),                                     // no instructions (outside thread)
+            make_created_with_instructions("B", "Task B", Some("Step 2")),
+            make_created("C", "Task C"),                                     // no instructions (inside thread)
+            make_created_with_instructions("D", "Task D", Some("Step 4")),
+            make_created("E", "Task E"),                                     // no instructions (outside thread)
+            make_link("B", "A", "needs-context"),
+            make_link("C", "B", "needs-context"),
+            make_link("D", "C", "needs-context"),
+            make_link("E", "D", "needs-context"),
+        ];
+        let graph = materialize_graph(&events);
+        let thread = ThreadId { head: "B".to_string(), tail: "D".to_string() };
+        let err = validate_thread_instructions(&graph, &thread).unwrap_err();
+        match err {
+            AikiError::ThreadMissingInstructions { missing } => {
+                assert_eq!(missing.len(), 1);
+                assert_eq!(missing[0].0, "C");
+            }
+            other => panic!("Expected ThreadMissingInstructions, got: {other}"),
+        }
+    }
+
+    #[test]
+    fn test_validate_thread_subrange_all_have_instructions() {
+        // Chain: A → B → C → D → E. Thread covers B..D, all have instructions.
+        let events = vec![
+            make_created("A", "Task A"),                                     // no instructions (outside)
+            make_created_with_instructions("B", "Task B", Some("Step 2")),
+            make_created_with_instructions("C", "Task C", Some("Step 3")),
+            make_created_with_instructions("D", "Task D", Some("Step 4")),
+            make_created("E", "Task E"),                                     // no instructions (outside)
+            make_link("B", "A", "needs-context"),
+            make_link("C", "B", "needs-context"),
+            make_link("D", "C", "needs-context"),
+            make_link("E", "D", "needs-context"),
+        ];
+        let graph = materialize_graph(&events);
+        let thread = ThreadId { head: "B".to_string(), tail: "D".to_string() };
+        assert!(validate_thread_instructions(&graph, &thread).is_ok());
+    }
+
+    #[test]
+    fn test_validate_thread_task_not_in_graph_skipped() {
+        // Thread references a task ID that doesn't exist in the graph.
+        // The validation should skip it (not panic) and pass.
+        let events = vec![
+            make_created_with_instructions("A", "Task A", Some("Step 1")),
+            make_link("GHOST", "A", "needs-context"),
+        ];
+        let graph = materialize_graph(&events);
+        let thread = ThreadId { head: "A".to_string(), tail: "GHOST".to_string() };
+        assert!(validate_thread_instructions(&graph, &thread).is_ok());
+    }
 }

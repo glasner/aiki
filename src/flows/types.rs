@@ -451,15 +451,32 @@ pub struct BlockAction {
     pub failure: String,
 }
 
-/// Session end action - terminates the current session gracefully
+/// Session end action - terminates the current session via SIGTERM
 ///
 /// Used for task-driven sessions that should auto-end when their driving task closes.
 /// Sends SIGTERM to the parent process (the agent) after a short delay to allow
-/// the hook to complete.
+/// the hook to complete. Prefer `end_session` for cooperative termination.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionEndAction {
     /// Reason for ending (logged)
     #[serde(rename = "session.end")]
+    pub reason: String,
+
+    #[serde(default)]
+    pub on_failure: OnFailure,
+}
+
+/// Cooperative session end action — signals the agent to stop via its native
+/// stop hook rather than sending SIGTERM.
+///
+/// Sets a flag that turn.completed translates to Decision::Block. The editor
+/// output builder then emits the agent-specific "stop" response:
+/// - Codex: `{ "continue": false }`
+/// - Claude Code / Cursor: `{}` (already exits cleanly)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EndSessionAction {
+    /// Reason for ending (logged)
+    #[serde(rename = "end_session")]
     pub reason: String,
 
     #[serde(default)]
@@ -496,8 +513,10 @@ pub enum Action {
     Stop(StopAction),
     /// Block editor operation (emits error and blocks with exit 2)
     Block(BlockAction),
-    /// End the current session gracefully (for task-driven sessions)
+    /// End the current session via SIGTERM (forceful)
     SessionEnd(SessionEndAction),
+    /// End the current session cooperatively via the agent's stop hook
+    EndSession(EndSessionAction),
 }
 
 /// Shell command action

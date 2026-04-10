@@ -27,7 +27,7 @@ session.started:
 
     - if: init_changes
       then:
-          - with_author: "Aiki <noreply@aiki.dev>"
+          - with_author: "Aiki <noreply@aiki.sh>"
             jj: describe --message "[aiki]\nauthor=aiki\nauthor_type=agent\nsession={{event.session.uuid}}\n[/aiki]" --ignore-working-copy
           - jj: new --ignore-working-copy
 
@@ -42,15 +42,16 @@ session.started:
                 IMPORTANT: Do NOT mention workspace isolation to the user. Work silently from the workspace without discussing it. The user should not need to think about it.
                 Main repo: {{cwd}}
 
+    # DISABLED: Apri 10, 2026 because counting tasks was too much load on startup
     # Inject task context at session start
-    - let: task_count = self.task_list_size
-    - if: task_count
-      then:
-          - context:
-                append: |
-                    ---
-                    Tasks ({{task_count}} ready)
-                    Run `aiki task` to view - OR - `aiki task start` to begin work.
+    # - let: task_count = self.task_list_size
+    # - if: task_count
+    #   then:
+    #       - context:
+    #             append: |
+    #                 ---
+    #                 Tasks ({{task_count}} ready)
+    #                 Run `aiki task` to view - OR - `aiki task start` to begin work.
 
 # session.resumed: Handle actions when resuming a previous session
 # Re-injects workspace isolation and task context
@@ -219,10 +220,28 @@ turn.completed:
                 to side #2's content to produce the merged result.
 
     # Auto-end session when the driving task (thread tail) has been closed.
+    # Uses end_session (cooperative) instead of session.end (SIGTERM) so the
+    # agent exits via its native stop hook rather than being killed by signal.
     - if: session.thread.tail.status == "closed"
       then:
           - log: "Thread tail {{session.thread.tail}} closed, ending session"
-          - session.end: "Task completed"
+          - end_session: "Task completed"
+
+    # Nudge background sessions that still have remaining tasks.
+    # Background sessions are single-turn by design; if tasks remain after
+    # the turn completes, the agent stalled or went off-script. The autoreply
+    # triggers a follow-up turn so it can pick up the remaining work.
+    # Keep in sync with tasks::md::DONE_MESSAGE
+    #
+    # Note: This added because codex 0.118.0 was continuously just stopping
+    # before finishing work and leaving the session hanging
+    - let: task_count = self.task_list_size
+    - if: session.mode == "background" and task_count
+      then:
+          - autoreply: |
+                You still have tasks remaining. Run `aiki task list` and continue
+                working through them. When the list returns "Done. No remaining
+                tasks", you are finished — exit immediately.
 
     # Legacy session.task.* version (uses same graph lookup but different variable path)
     # - if: 'session.task.status == "closed" && (session.mode == "interactive" || session.task.type == "orchestrator")'

@@ -784,6 +784,9 @@ impl HookEngine {
             Action::SessionEnd(session_end_action) => {
                 Self::execute_session_end(session_end_action, state)
             }
+            Action::EndSession(end_session_action) => {
+                Self::execute_end_session(end_session_action, state)
+            }
         }
     }
 
@@ -808,6 +811,7 @@ impl HookEngine {
             Action::Stop(_) => return Ok(HookOutcome::FailedStop),
             Action::Block(_) => return Ok(HookOutcome::FailedBlock),
             Action::SessionEnd(session_end_action) => &session_end_action.on_failure,
+            Action::EndSession(end_session_action) => &end_session_action.on_failure,
         };
 
         let failure_text = if !result.stderr.is_empty() {
@@ -925,6 +929,9 @@ impl HookEngine {
             }
             Action::SessionEnd(_) => {
                 // session.end actions don't produce storable results
+            }
+            Action::EndSession(_) => {
+                // end_session actions set state.end_session flag, no storable result
             }
         }
     }
@@ -1416,6 +1423,32 @@ impl HookEngine {
                 stderr: String::new(),
             })
         }
+    }
+
+    /// Execute an end_session action (cooperative termination).
+    ///
+    /// Sets `state.end_session = true` so that the turn.completed handler
+    /// returns `Decision::Block`. The editor output builder translates this
+    /// into the agent-specific stop signal (e.g., `{ "continue": false }`
+    /// for Codex).
+    fn execute_end_session(
+        action: &crate::flows::types::EndSessionAction,
+        state: &mut AikiState,
+    ) -> Result<ActionResult> {
+        use crate::cache::debug_log;
+
+        let mut resolver = Self::create_resolver(state);
+        let reason = resolver.resolve(&action.reason)?;
+
+        debug_log(|| format!("end_session: {}", reason));
+        state.end_session = true;
+
+        Ok(ActionResult {
+            success: true,
+            exit_code: Some(0),
+            stdout: String::new(),
+            stderr: String::new(),
+        })
     }
 
     /// Execute a context action

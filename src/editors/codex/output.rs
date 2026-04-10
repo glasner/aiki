@@ -110,17 +110,20 @@ fn build_pre_tool_use_output(response: &HookResult) -> HookCommandOutput {
 ///
 /// - Continue/block: `{ "decision": "block", "reason": "..." }` with the reason
 ///   serving as a continuation prompt
-/// - Allow stop: empty JSON object
-/// - No additionalContext support for Stop
+/// - End session: `{ "continue": false }` when end_session action fired
+/// - Allow stop: empty JSON object (no opinion — codex decides)
 fn build_stop_output(response: &HookResult) -> HookCommandOutput {
     if response.context.is_some() {
-        // Block the stop to continue the session
+        // Block the stop to continue the session (autoreply)
         let reason = response.context.as_deref().unwrap_or("Continue session");
         let json_value = json!({
             "decision": "block",
             "reason": reason
         });
         HookCommandOutput::new(Some(json_value), 0)
+    } else if response.decision.is_block() {
+        // end_session action fired — explicitly tell codex to stop
+        HookCommandOutput::new(Some(json!({ "continue": false })), 0)
     } else {
         HookCommandOutput::new(Some(json!({})), 0)
     }
@@ -243,6 +246,19 @@ mod tests {
             value["reason"].as_str().unwrap(),
             "Continue working on the task"
         );
+    }
+
+    #[test]
+    fn test_stop_end_session_emits_continue_false() {
+        // end_session action sets Decision::Block without context
+        let response = HookResult {
+            context: None,
+            decision: Decision::Block,
+            failures: vec![],
+        };
+        let output = build_command_output(response, "Stop");
+        assert_eq!(output.exit_code, 0);
+        assert_eq!(output.json_value.unwrap(), json!({ "continue": false }));
     }
 
     // UserPromptSubmit output tests

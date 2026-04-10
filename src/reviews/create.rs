@@ -2,10 +2,10 @@
 
 use std::path::Path;
 
-use crate::agents::{determine_reviewer, is_agent_available, AgentType};
+use crate::agents::{determine_default_coder, determine_reviewer, is_agent_available, AgentType};
 use crate::error::{AikiError, Result};
 use crate::reviews::{ReviewScope, ReviewScopeKind};
-use crate::session::find_active_session;
+use crate::session::find_own_session;
 use crate::tasks::templates::create_review_task_from_template;
 use crate::tasks::{find_task, materialize_graph, read_events, write_link_event_with_autorun};
 
@@ -45,8 +45,9 @@ pub fn create_review(cwd: &Path, params: CreateReviewParams) -> Result<CreateRev
 
     // Determine worker for reviewer assignment.
     // For task scope, use the task's assignee. For all other scopes (code, plan,
-    // session), detect the current agent from the active session so that
-    // determine_reviewer() can pick a cross-reviewer.
+    // session), check if we're running inside an agent session (PID ancestry).
+    // If not (user terminal), fall back to the default coder so that
+    // determine_reviewer() picks the correct cross-reviewer.
     let worker = match scope.kind {
         ReviewScopeKind::Task => {
             let events = read_events(cwd)?;
@@ -54,7 +55,9 @@ pub fn create_review(cwd: &Path, params: CreateReviewParams) -> Result<CreateRev
             let task = find_task(&tasks, &scope.id)?;
             task.assignee.as_deref().map(|s| s.to_string())
         }
-        _ => find_active_session(cwd).map(|s| s.agent_type.as_str().to_string()),
+        _ => find_own_session(cwd)
+            .map(|s| s.agent_type.as_str().to_string())
+            .or_else(|| determine_default_coder().ok().map(|a| a.as_str().to_string())),
     };
 
     // Determine assignee for review task

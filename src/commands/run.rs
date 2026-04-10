@@ -33,7 +33,7 @@ pub fn run(
     force: bool,
     next_thread: bool,
     lane: Option<String>,
-    agent: Option<String>,
+    agent: Option<AgentType>,
     template: Option<String>,
     data: Option<Vec<String>>,
     output: Option<OutputFormat>,
@@ -61,22 +61,14 @@ fn run_impl(
     force: bool,
     next_thread: bool,
     lane: Option<String>,
-    agent: Option<String>,
+    agent: Option<AgentType>,
     template: Option<String>,
     data: Option<Vec<String>>,
     output: Option<OutputFormat>,
 ) -> Result<()> {
     let output_id = output.as_ref() == Some(&OutputFormat::Id);
 
-    // Parse and validate agent override early, before claiming any subtask.
-    let agent_override = if let Some(ref agent_str) = agent {
-        match AgentType::from_str(agent_str) {
-            Some(agent_type) => Some(agent_type),
-            None => return Err(AikiError::UnknownAgentType(agent_str.clone())),
-        }
-    } else {
-        None
-    };
+    let agent_override = agent;
 
     // Handle template creation if --template provided
     let id = if let Some(template_name) = template {
@@ -147,7 +139,7 @@ fn run_impl(
 
                 let reserved_event = TaskEvent::Reserved {
                     task_ids: vec![task.id.clone()],
-                    agent_type: agent.clone().unwrap_or_default(),
+                    agent_type: agent.map(|a| a.as_str().to_string()).unwrap_or_default(),
                     timestamp: chrono::Utc::now(),
                 };
                 write_event(cwd, &reserved_event)?;
@@ -177,7 +169,7 @@ fn run_impl(
 
                 let reserved_event = TaskEvent::Reserved {
                     task_ids: vec![head_id.clone()],
-                    agent_type: agent.clone().unwrap_or_default(),
+                    agent_type: agent.map(|a| a.as_str().to_string()).unwrap_or_default(),
                     timestamp: chrono::Utc::now(),
                 };
                 write_event(cwd, &reserved_event)?;
@@ -402,39 +394,9 @@ fn spawn_and_discover(
     // Always spawn async first to get the handle
     let handle = task_run_async(cwd, task_id, options)?;
 
-    // Codex doesn't yet support session discovery via conversation history,
-    // so fall back to task-based completion tracking.
-    let codex_fallback = handle.agent_type == AgentType::Codex;
-
     let head_id = &handle.thread.head;
 
-    if codex_fallback {
-        if is_async {
-            if output_id {
-                // Codex session discovery not yet supported — no session ID available
-                println!("{}", head_id);
-            } else {
-                let md = MdBuilder::new().build(&format!(
-                    "## Run Started\n- **Session:** pending (Codex hook-based discovery)\n- **Task:** {}\n- Task started asynchronously.\n",
-                    short_id(head_id),
-                ));
-                println!("{}", md);
-            }
-            return Ok(());
-        }
-
-        if !output_id {
-            let md = MdBuilder::new().build(&format!(
-                "## Running\n- **Session:** pending (Codex hook-based discovery)\n- **Task:** {}\n",
-                short_id(head_id),
-            ));
-            eprintln!("{}", md);
-        }
-
-        return wait_for_task_completion(cwd, head_id, None);
-    }
-
-    // Discover session UUID
+    // Discover session UUID (works for all agents with native hooks)
     let session_id = match discover_session_id(&handle.thread) {
         Ok(sid) => sid,
         Err(_) if output_id => {

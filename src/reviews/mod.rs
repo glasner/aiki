@@ -285,4 +285,87 @@ mod tests {
         let result = determine_followup_assignee(None, None, Some("codex"), Some(&agents));
         assert_eq!(result.unwrap(), "codex");
     }
+
+    /// Validates the review→fix agent assignment chain for plan reviews.
+    ///
+    /// When a user runs `aiki review <plan> -f` from their terminal (no active
+    /// agent session), the worker should default to the default coder (claude-code).
+    /// The reviewer is then the cross-review agent (codex). The fix followup
+    /// excludes the reviewer and picks claude-code — the coder does the fix.
+    ///
+    /// Previously, `find_active_session` could match a stale repo session
+    /// (e.g. codex), making the system think codex was the worker. This flipped
+    /// the reviewer to claude-code and the fix agent to codex — the opposite
+    /// of the intended behavior.
+    #[test]
+    fn plan_review_fix_chain_terminal_user_assigns_coder_to_fix() {
+        use crate::agents::determine_reviewer_with;
+
+        let agents = [AgentType::ClaudeCode, AgentType::Codex];
+
+        // Simulate: user runs from terminal, find_own_session returns None,
+        // falls back to determine_default_coder → "claude-code"
+        let worker = Some("claude-code");
+
+        // Step 1: determine_reviewer picks cross-review agent for the review task
+        let reviewer = determine_reviewer_with(worker, &agents).unwrap();
+        assert_eq!(reviewer, "codex", "reviewer should be cross-review of worker");
+
+        // Step 2: fix followup excludes the reviewer, picks the coder
+        let fix_agent =
+            determine_followup_assignee(None, None, Some(&reviewer), Some(&agents)).unwrap();
+        assert_eq!(
+            fix_agent, "claude-code",
+            "fix agent should be the coder, not the reviewer"
+        );
+    }
+
+    /// Validates the chain when an agent (e.g. codex) runs `aiki review` on
+    /// its own work — find_own_session detects it, reviewer is cross-review,
+    /// fix goes back to the original agent.
+    #[test]
+    fn plan_review_fix_chain_agent_session_assigns_coder_to_fix() {
+        use crate::agents::determine_reviewer_with;
+
+        let agents = [AgentType::ClaudeCode, AgentType::Codex];
+
+        // Simulate: codex is running and reviews its own plan
+        let worker = Some("codex");
+
+        // Step 1: reviewer is cross-review
+        let reviewer = determine_reviewer_with(worker, &agents).unwrap();
+        assert_eq!(reviewer, "claude-code");
+
+        // Step 2: fix excludes reviewer, picks codex (original worker)
+        let fix_agent =
+            determine_followup_assignee(None, None, Some(&reviewer), Some(&agents)).unwrap();
+        assert_eq!(
+            fix_agent, "codex",
+            "fix should go back to the original worker"
+        );
+    }
+
+    /// The bug scenario: if worker is incorrectly detected as codex (stale
+    /// repo session), reviewer becomes claude-code, and fix goes to codex.
+    /// This test documents the wrong behavior to prevent regression.
+    #[test]
+    fn plan_review_fix_chain_wrong_worker_causes_wrong_fix_agent() {
+        use crate::agents::determine_reviewer_with;
+
+        let agents = [AgentType::ClaudeCode, AgentType::Codex];
+
+        // BUG: find_active_session matched a stale codex session
+        let wrong_worker = Some("codex");
+
+        let reviewer = determine_reviewer_with(wrong_worker, &agents).unwrap();
+        assert_eq!(reviewer, "claude-code", "reviewer flipped to claude-code");
+
+        let fix_agent =
+            determine_followup_assignee(None, None, Some(&reviewer), Some(&agents)).unwrap();
+        // This is the WRONG result — codex does the fix instead of claude-code
+        assert_eq!(
+            fix_agent, "codex",
+            "demonstrates the bug: fix goes to codex instead of claude-code"
+        );
+    }
 }

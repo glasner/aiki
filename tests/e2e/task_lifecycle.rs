@@ -196,9 +196,10 @@ fn e2e_subtasks_visible_in_ready_queue_when_parent_in_progress() {
         list.contains("Child A"),
         "Subtask should appear in ready queue: {list}"
     );
-    // Parent should NOT appear in ready queue (it's in-progress)
+    // Parent should NOT appear in the Ready section (it's in-progress)
+    let ready_section = list.split("Ready").nth(1).unwrap_or("");
     assert!(
-        !list.contains("Parent with children"),
+        !ready_section.contains("Parent with children"),
         "Parent should not appear in ready queue: {list}"
     );
 }
@@ -347,18 +348,8 @@ fn e2e_claude_review_follows_subtask_workflow() {
 // Background session ends when thread tail closes
 // =============================================================================
 
-#[test]
-#[ignore] // e2e: requires codex binary + API key
-fn e2e_background_session_ends_when_task_closes() {
-    if !jj_available() {
-        eprintln!("Skipping: jj not available");
-        return;
-    }
-    if !agent_available("codex") {
-        eprintln!("Skipping: codex binary not available");
-        return;
-    }
-
+/// Shared logic: run a task that creates done.txt and closes itself, verify session ends.
+fn run_session_ends_on_close(agent_args: &[&str]) {
     let temp = tempdir().unwrap();
     let repo = temp.path();
     init_aiki_repo(repo);
@@ -372,15 +363,24 @@ fn e2e_background_session_ends_when_task_closes() {
          Your task ID is shown when you run `aiki task list`.",
     );
 
-    // Run with timeout — if session-end hook works, this should return
-    // within a reasonable time after the task closes
-    let (success, stdout, stderr) = aiki_run(repo, &task_id, Duration::from_secs(180));
+    let mut args = vec!["run", &task_id];
+    args.extend_from_slice(agent_args);
+
+    let output = Command::cargo_bin("aiki")
+        .unwrap()
+        .current_dir(repo)
+        .args(&args)
+        .timeout(Duration::from_secs(180))
+        .output()
+        .expect("Failed to run aiki run");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
     eprintln!("aiki run stdout: {stdout}");
     eprintln!("aiki run stderr: {stderr}");
 
-    // The run command should complete (the session-end hook fires on task close)
     assert!(
-        success,
+        output.status.success(),
         "aiki run should complete when task closes: {stderr}"
     );
 
@@ -388,4 +388,145 @@ fn e2e_background_session_ends_when_task_closes() {
         wait_for_task_closed(repo, &task_id, Duration::from_secs(10)),
         "Task should be closed"
     );
+}
+
+#[test]
+#[ignore] // e2e: requires claude binary + API key
+fn e2e_claude_background_session_ends_when_task_closes() {
+    if !jj_available() {
+        eprintln!("Skipping: jj not available");
+        return;
+    }
+    if !agent_available("claude") {
+        eprintln!("Skipping: claude binary not available");
+        return;
+    }
+    run_session_ends_on_close(&[]);
+}
+
+#[test]
+#[ignore] // e2e: requires codex binary + API key
+fn e2e_codex_background_session_ends_when_task_closes() {
+    if !jj_available() {
+        eprintln!("Skipping: jj not available");
+        return;
+    }
+    if !agent_available("codex") {
+        eprintln!("Skipping: codex binary not available");
+        return;
+    }
+    run_session_ends_on_close(&["--agent", "codex"]);
+}
+
+// =============================================================================
+// Loop: subtask orchestration exits cleanly via end_session
+// =============================================================================
+
+/// Shared logic: run `aiki loop` with a given agent on a parent with subtasks.
+/// Verifies:
+/// 1. All subtasks complete
+/// 2. The loop command exits with success (no AgentSpawnFailed)
+/// 3. Parent task is closed
+fn run_loop_exits_cleanly(agent: &str, agent_flag: &str) {
+    let temp = tempdir().unwrap();
+    let repo = temp.path();
+    init_aiki_repo(repo);
+
+    // Create parent with 2 subtasks
+    let parent_id = create_task(repo, "Loop test parent");
+
+    let sub1 = Command::cargo_bin("aiki")
+        .unwrap()
+        .current_dir(repo)
+        .args([
+            "task",
+            "add",
+            "--subtask-of",
+            &parent_id,
+            "Step 1: echo hello",
+            "-i",
+            "Run 'echo hello' then close this task with confidence 4.",
+            agent_flag,
+        ])
+        .output()
+        .expect("Failed to add subtask 1");
+    assert!(sub1.status.success());
+
+    let sub2 = Command::cargo_bin("aiki")
+        .unwrap()
+        .current_dir(repo)
+        .args([
+            "task",
+            "add",
+            "--subtask-of",
+            &parent_id,
+            "Step 2: echo world",
+            "-i",
+            "Run 'echo world' then close this task with confidence 4.",
+            agent_flag,
+        ])
+        .output()
+        .expect("Failed to add subtask 2");
+    assert!(sub2.status.success());
+
+    // Start the parent
+    start_task(repo, &parent_id);
+
+    // Run loop with the specified agent
+    let output = Command::cargo_bin("aiki")
+        .unwrap()
+        .current_dir(repo)
+        .args(["loop", &parent_id, agent_flag])
+        .timeout(Duration::from_secs(180))
+        .output()
+        .expect("Failed to run aiki loop");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    eprintln!("[{agent}] loop stdout: {stdout}");
+    eprintln!("[{agent}] loop stderr: {stderr}");
+
+    // Loop should exit successfully (no AgentSpawnFailed)
+    assert!(
+        output.status.success(),
+        "[{agent}] aiki loop should exit cleanly: {stderr}"
+    );
+    assert!(
+        !stderr.contains("Failed to spawn agent"),
+        "[{agent}] Should not report spawn failure: {stderr}"
+    );
+
+    // Parent task should be closed
+    assert!(
+        wait_for_task_closed(repo, &parent_id, Duration::from_secs(10)),
+        "[{agent}] Parent task should be closed after loop completes"
+    );
+}
+
+#[test]
+#[ignore] // e2e: requires codex binary + API key
+fn e2e_codex_loop_exits_cleanly() {
+    if !jj_available() {
+        eprintln!("Skipping: jj not available");
+        return;
+    }
+    if !agent_available("codex") {
+        eprintln!("Skipping: codex binary not available");
+        return;
+    }
+    run_loop_exits_cleanly("codex", "--codex");
+}
+
+#[test]
+#[ignore] // e2e: requires claude binary + API key
+fn e2e_claude_loop_exits_cleanly() {
+    if !jj_available() {
+        eprintln!("Skipping: jj not available");
+        return;
+    }
+    if !agent_available("claude") {
+        eprintln!("Skipping: claude binary not available");
+        return;
+    }
+    run_loop_exits_cleanly("claude", "--claude");
 }
