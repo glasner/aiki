@@ -459,7 +459,7 @@ pub struct BlockAction {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionEndAction {
     /// Reason for ending (logged)
-    #[serde(rename = "session.end")]
+    #[serde(rename = "sigterm_to_end_session", alias = "session.end")]
     pub reason: String,
 
     #[serde(default)]
@@ -474,10 +474,24 @@ pub struct SessionEndAction {
 /// - Codex: `{ "continue": false }`
 /// - Claude Code / Cursor: `{}` (already exits cleanly)
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EndSessionAction {
+pub struct AutoreplyToEndSessionAction {
     /// Reason for ending (logged)
-    #[serde(rename = "end_session")]
+    #[serde(rename = "autoreply_to_end_session")]
     pub reason: String,
+
+    #[serde(default)]
+    pub on_failure: OnFailure,
+}
+
+/// Autoreply with conflict resolution instructions after workspace absorption.
+///
+/// Takes the list of conflicted files and wraps them in a standard conflict
+/// resolution message with JJ conflict marker documentation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AutoreplyToFixConflictsAction {
+    /// Conflicted file list (from workspace_absorb_all)
+    #[serde(rename = "autoreply_to_fix_conflicts")]
+    pub conflicted_files: String,
 
     #[serde(default)]
     pub on_failure: OnFailure,
@@ -516,7 +530,9 @@ pub enum Action {
     /// End the current session via SIGTERM (forceful)
     SessionEnd(SessionEndAction),
     /// End the current session cooperatively via the agent's stop hook
-    EndSession(EndSessionAction),
+    AutoreplyToEndSession(AutoreplyToEndSessionAction),
+    /// Autoreply with conflict resolution instructions
+    AutoreplyToFixConflicts(AutoreplyToFixConflictsAction),
 }
 
 /// Shell command action

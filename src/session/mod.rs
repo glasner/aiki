@@ -1000,6 +1000,31 @@ pub struct ThreadSessionInfo {
     pub pid: u32,
     /// Session mode (interactive or background)
     pub mode: SessionMode,
+    /// Agent type (claude-code, codex, etc.)
+    pub agent_type: String,
+    /// Aiki session UUID (8-char hex)
+    pub session_id: String,
+    /// External session ID (from the agent)
+    pub external_session_id: String,
+}
+
+impl ThreadSessionInfo {
+    /// Reconstruct an AikiSession from the session file info.
+    ///
+    /// Used by `sigterm_to_end_session` to fire synthetic lifecycle events
+    /// (session.ended) before killing the agent process.
+    pub fn to_aiki_session(&self) -> AikiSession {
+        let agent = AgentType::from_str(&self.agent_type).unwrap_or(AgentType::Unknown);
+        AikiSession::new(
+            agent,
+            &self.external_session_id,
+            None::<&str>,
+            DetectionMethod::Hook,
+            self.mode,
+        )
+        .with_parent_pid(Some(self.pid))
+        .with_thread(Some(self.thread.clone()))
+    }
 }
 
 /// Find a thread-driven session by task ID (matches against thread tail)
@@ -1052,6 +1077,8 @@ pub fn find_thread_session(task_id: &str) -> Option<ThreadSessionInfo> {
         let mut parent_pid: Option<u32> = None;
         let mut session_id: Option<String> = None;
         let mut mode: Option<SessionMode> = None;
+        let mut agent_type: Option<String> = None;
+        let mut external_session_id: Option<String> = None;
 
         for line in content.lines() {
             let line = line.trim();
@@ -1063,6 +1090,10 @@ pub fn find_thread_session(task_id: &str) -> Option<ThreadSessionInfo> {
                 session_id = Some(val.to_string());
             } else if let Some(val) = line.strip_prefix("mode=") {
                 mode = SessionMode::from_str(val);
+            } else if let Some(val) = line.strip_prefix("agent=") {
+                agent_type = Some(val.to_string());
+            } else if let Some(val) = line.strip_prefix("external_session_id=") {
+                external_session_id = Some(val.to_string());
             }
         }
 
@@ -1083,6 +1114,9 @@ pub fn find_thread_session(task_id: &str) -> Option<ThreadSessionInfo> {
                         thread,
                         pid,
                         mode: mode.unwrap_or(SessionMode::Interactive),
+                        agent_type: agent_type.clone().unwrap_or_default(),
+                        session_id: sid.clone(),
+                        external_session_id: external_session_id.clone().unwrap_or_default(),
                     });
                 }
             }

@@ -205,8 +205,8 @@ pub fn handle_turn_completed(mut payload: AikiTurnCompletedPayload) -> Result<Ho
         }
     }
 
-    // end_session action sets Decision::Block so the agent's stop hook
-    // receives a "stop" signal (e.g., { "continue": false } for Codex).
+    // autoreply_to_end_session action sets Decision::Block so the agent's
+    // stop hook receives a "stop" signal (e.g., { "continue": false } for Codex).
     let decision = if state.end_session {
         Decision::Block
     } else {

@@ -10,6 +10,41 @@ use clap::Subcommand;
 use std::collections::HashMap;
 use std::path::Path;
 
+/// Resolve a session ID from a thread task ID.
+///
+/// Scans SessionStart events for one whose `run_thread_id` contains the given
+/// task ID as head or tail.
+fn resolve_session_from_thread(task_id: &str) -> Result<String> {
+    let aiki_dir = global::global_aiki_dir();
+    let events = history::storage::read_events(&aiki_dir)?;
+
+    // Search in reverse (most recent first) for a SessionStart whose
+    // run_thread_id head or tail starts with the given prefix.
+    for event in events.iter().rev() {
+        if let ConversationEvent::SessionStart {
+            session_id,
+            run_thread_id: Some(thread_wire),
+            ..
+        } = event
+        {
+            // thread_wire is "head:tail" or "head" (single-task)
+            let (head, tail) = thread_wire
+                .split_once(':')
+                .map(|(h, t)| (h, t))
+                .unwrap_or((thread_wire.as_str(), thread_wire.as_str()));
+
+            if head.starts_with(task_id) || tail.starts_with(task_id) {
+                return Ok(session_id.clone());
+            }
+        }
+    }
+
+    Err(AikiError::InvalidArgument(format!(
+        "No session found with thread matching '{}'",
+        task_id
+    )))
+}
+
 /// Output format for the `transcript` subcommand.
 #[derive(Clone, Debug, PartialEq, clap::ValueEnum)]
 pub enum TranscriptOutput {
@@ -37,14 +72,18 @@ pub enum SessionCommands {
         #[command(flatten)]
         agent: AgentFilterFlags,
     },
-    /// Show turns for a specific session
+    /// Show summary for a specific session
     Show {
         /// Session ID (or unique prefix)
-        #[arg(conflicts_with = "agent_session")]
+        #[arg(conflicts_with_all = ["agent_session", "thread"])]
         id: Option<String>,
 
         #[command(flatten)]
         session: SessionIdFlags,
+
+        /// Look up session by thread task ID (or prefix)
+        #[arg(long, conflicts_with = "agent_session")]
+        thread: Option<String>,
     },
     /// Wait for session(s) to complete
     Wait {
@@ -60,11 +99,15 @@ pub enum SessionCommands {
     /// Show the transcript for a session
     Transcript {
         /// Session ID (or unique prefix)
-        #[arg(conflicts_with = "agent_session")]
+        #[arg(conflicts_with_all = ["agent_session", "thread"])]
         id: Option<String>,
 
         #[command(flatten)]
         session: SessionIdFlags,
+
+        /// Look up session by thread task ID (or prefix)
+        #[arg(long, conflicts_with = "agent_session")]
+        thread: Option<String>,
 
         /// Output format: `path` to print just the file path
         #[arg(long, short = 'o')]
@@ -81,17 +124,30 @@ pub fn run(command: SessionCommands) -> Result<()> {
             number,
             agent,
         } => run_list(active, background, interactive, number, agent),
-        SessionCommands::Show { id, session } => {
-            let effective_id = resolve_effective_id(id, &session)?;
+        SessionCommands::Show {
+            id,
+            session,
+            thread,
+        } => {
+            let effective_id = if let Some(task_id) = thread {
+                resolve_session_from_thread(&task_id)?
+            } else {
+                resolve_effective_id(id, &session)?
+            };
             run_show(&effective_id)
         }
         SessionCommands::Wait { ids, any, output } => run_wait(ids, any, output),
         SessionCommands::Transcript {
             id,
             session,
+            thread,
             output,
         } => {
-            let effective_id = resolve_effective_id(id, &session)?;
+            let effective_id = if let Some(task_id) = thread {
+                resolve_session_from_thread(&task_id)?
+            } else {
+                resolve_effective_id(id, &session)?
+            };
             run_transcript(&effective_id, output)
         }
     }
@@ -137,8 +193,6 @@ fn format_duration_between(
         }
     }
 }
-
-const SEPARATOR_WIDTH: usize = 50;
 
 struct SessionRow {
     session_id: String,
@@ -445,31 +499,16 @@ fn run_show(id: &str) -> Result<()> {
     let aiki_dir = global::global_aiki_dir();
     let events = history::storage::read_events(&aiki_dir)?;
 
-    // Filter events whose session_id starts with the given prefix
+    // Resolve prefix to full session ID
+    let full_id = resolve_session_id(&events, id)?;
+
+    // Filter events for this session
     let matching: Vec<&ConversationEvent> = events
         .iter()
-        .filter(|e| event_session_id(e).starts_with(id))
+        .filter(|e| event_session_id(e) == full_id)
         .collect();
 
-    if matching.is_empty() {
-        println!("No session found with ID: {}", id);
-        return Ok(());
-    }
-
-    // Check for ambiguous prefix (multiple distinct session IDs)
-    let mut session_ids: Vec<&str> = matching.iter().map(|e| event_session_id(e)).collect();
-    session_ids.sort();
-    session_ids.dedup();
-
-    if session_ids.len() > 1 {
-        println!("Ambiguous ID '{}', matches:", id);
-        for sid in &session_ids {
-            println!("  {}", sid);
-        }
-        return Ok(());
-    }
-
-    // Extract session metadata for the header
+    // Extract session metadata
     let session_start = matching
         .iter()
         .find(|e| matches!(e, ConversationEvent::SessionStart { .. }));
@@ -477,134 +516,125 @@ fn run_show(id: &str) -> Result<()> {
         .iter()
         .find(|e| matches!(e, ConversationEvent::SessionEnd { .. }));
 
-    // Print header line: "Session: <agent> · <date> <start>–<end> (<duration>)"
+    // Session ID
+    println!("Session: {}", full_id);
+
+    // Agent, mode, status, timing
     if let Some(ConversationEvent::SessionStart {
         timestamp: start_ts,
         agent_type,
+        session_mode,
         ..
     }) = session_start
     {
-        let date = start_ts.format("%Y-%m-%d").to_string();
-        let start_time = format_time_only(start_ts);
+        println!("Agent: {}", agent_type);
 
-        let end_part = if let Some(ConversationEvent::SessionEnd {
-            timestamp: end_ts, ..
+        let mode = session_mode.unwrap_or(SessionMode::Interactive);
+        println!("Mode: {}", mode.to_string());
+
+        if let Some(ConversationEvent::SessionEnd {
+            timestamp: end_ts,
+            reason,
+            ..
         }) = session_end
         {
             let duration = format_duration_between(start_ts, end_ts);
-            format!("\u{2013}{} ({})", format_time_only(end_ts), duration)
+            println!("Status: ended ({})", reason);
+            println!(
+                "Started: {} {}",
+                start_ts.format("%Y-%m-%d"),
+                format_time_only(start_ts)
+            );
+            println!(
+                "Ended: {} {}",
+                end_ts.format("%Y-%m-%d"),
+                format_time_only(end_ts)
+            );
+            println!("Duration: {}", duration);
         } else {
-            String::from(" (active)")
-        };
-
-        println!(
-            "Session: {} \u{00b7} {} {}{}",
-            agent_type, date, start_time, end_part
-        );
+            let now = chrono::Utc::now();
+            let duration = format_duration_between(start_ts, &now);
+            println!("Status: active");
+            println!(
+                "Started: {} {}",
+                start_ts.format("%Y-%m-%d"),
+                format_time_only(start_ts)
+            );
+            println!("Duration: {} (ongoing)", duration);
+        }
     }
 
-    // Print transcript path if available
-    if let Ok(path) = resolve_transcript_path(id) {
-        println!("Transcript: {}", path.display());
-    }
+    // Turn count
+    let turn_count = matching
+        .iter()
+        .filter_map(|e| match e {
+            ConversationEvent::Prompt { turn, .. } => Some(*turn),
+            _ => None,
+        })
+        .max()
+        .unwrap_or(0);
+    println!("Turns: {}", turn_count);
 
-    // Group events by turn number for display
-    let mut last_turn: Option<u32> = None;
-    let mut last_prompt_ts: Option<chrono::DateTime<chrono::Utc>> = None;
+    // Tasks associated with this session
+    let cwd = std::env::current_dir().unwrap_or_default();
+    if let Ok(task_events) = tasks::storage::read_events(&cwd) {
+        let task_graph = tasks::materialize_graph(&task_events);
+        let mut session_tasks: Vec<&tasks::types::Task> = task_graph
+            .tasks
+            .values()
+            .filter(|t| t.last_session_id.as_deref() == Some(&full_id))
+            .collect();
+        session_tasks.sort_by(|a, b| a.started_at.cmp(&b.started_at).then(a.name.cmp(&b.name)));
 
-    for event in &matching {
-        match event {
-            ConversationEvent::SessionStart { .. } | ConversationEvent::SessionEnd { .. } => {
-                // Already handled in header; skip
-            }
-            ConversationEvent::Prompt {
-                timestamp,
-                turn,
-                content,
-                ..
-            } => {
-                // Print turn separator when turn number changes
-                if last_turn != Some(*turn) {
-                    println!(
-                        "\n\u{2500}\u{2500} Turn {} {}",
-                        turn,
-                        "\u{2500}".repeat(SEPARATOR_WIDTH - 9 - turn.to_string().len())
-                    );
-                    last_turn = Some(*turn);
-                }
-                last_prompt_ts = Some(*timestamp);
+        if !session_tasks.is_empty() {
+            println!("\nTasks:");
+            for task in &session_tasks {
+                let icon = match task.status {
+                    TaskStatus::Closed => {
+                        match task.closed_outcome {
+                            Some(tasks::types::TaskOutcome::WontDo) => "\u{2298}", // ⊘
+                            _ => "\u{2714}",                                        // ✔
+                        }
+                    }
+                    TaskStatus::Stopped => "\u{2718}",    // ✘
+                    TaskStatus::InProgress => "\u{25b8}", // ▸
+                    _ => "\u{25cb}",                       // ○
+                };
 
-                println!(
-                    "\n  \u{1f9d1}\u{200d}\u{1f4bb} prompt  ({})",
-                    format_time_only(timestamp)
-                );
-                for line in content.lines() {
-                    println!("  {}", line);
-                }
-            }
-            ConversationEvent::Response {
-                timestamp,
-                content,
-                files_written,
-                ..
-            } => {
-                let elapsed = last_prompt_ts
-                    .map(|pt| format!(", {}", format_duration_between(&pt, timestamp)))
+                let confidence_str = task
+                    .confidence
+                    .map(|c| format!(" (confidence: {})", c))
                     .unwrap_or_default();
 
                 println!(
-                    "\n  \u{1f916} response  ({}{})",
-                    format_time_only(timestamp),
-                    elapsed
+                    "  {} {}  {}{}",
+                    icon,
+                    short_id(&task.id),
+                    task.name,
+                    confidence_str
                 );
-                if let Some(s) = content {
-                    for line in s.lines() {
-                        println!("  {}", line);
+
+                if let Some(summary) = task.effective_summary() {
+                    let indent_len = 2 + 1 + short_id(&task.id).len() + 2 + 1;
+                    let indent: String = " ".repeat(indent_len);
+                    for line in summary.lines() {
+                        println!("{}{}", indent, line);
                     }
                 }
-                if !files_written.is_empty() {
-                    println!("  Files: {}", files_written.join(", "));
-                }
-            }
-            ConversationEvent::Autoreply {
-                timestamp,
-                turn,
-                content,
-                ..
-            } => {
-                if last_turn != Some(*turn) {
-                    println!(
-                        "\n\u{2500}\u{2500} Turn {} {}",
-                        turn,
-                        "\u{2500}".repeat(SEPARATOR_WIDTH - 9 - turn.to_string().len())
-                    );
-                    last_turn = Some(*turn);
-                }
-
-                println!("\n  \u{1f504} autoreply  ({})", format_time_only(timestamp));
-                for line in content.lines() {
-                    println!("  {}", line);
-                }
-            }
-            ConversationEvent::ModelChanged {
-                timestamp,
-                previous_model,
-                new_model,
-                ..
-            } => {
-                let from = previous_model.as_deref().unwrap_or("unknown");
-                println!(
-                    "\n  \u{1f500} model changed  ({})  {} \u{2192} {}",
-                    format_time_only(timestamp),
-                    from,
-                    new_model,
-                );
             }
         }
     }
 
-    // Footer separator
-    println!("\n{}", "\u{2500}".repeat(SEPARATOR_WIDTH));
+    // Hint
+    let display_id = if full_id.len() > 8 {
+        &full_id[..8]
+    } else {
+        &full_id
+    };
+    println!(
+        "\n---\nRun `aiki session transcript {}` to view raw conversation.",
+        display_id
+    );
 
     Ok(())
 }

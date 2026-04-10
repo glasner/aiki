@@ -110,7 +110,7 @@ fn build_pre_tool_use_output(response: &HookResult) -> HookCommandOutput {
 ///
 /// - Continue/block: `{ "decision": "block", "reason": "..." }` with the reason
 ///   serving as a continuation prompt
-/// - End session: `{ "continue": false }` when end_session action fired
+/// - End session: `{ "continue": false }` when autoreply_to_end_session action fired
 /// - Allow stop: empty JSON object (no opinion — codex decides)
 fn build_stop_output(response: &HookResult) -> HookCommandOutput {
     if response.context.is_some() {
@@ -122,8 +122,11 @@ fn build_stop_output(response: &HookResult) -> HookCommandOutput {
         });
         HookCommandOutput::new(Some(json_value), 0)
     } else if response.decision.is_block() {
-        // end_session action fired — explicitly tell codex to stop
-        HookCommandOutput::new(Some(json!({ "continue": false })), 0)
+        // autoreply_to_end_session action fired — explicitly tell codex to stop
+        HookCommandOutput::new(
+            Some(json!({ "continue": false, "reason": "All tasks done. Exit immediately." })),
+            0,
+        )
     } else {
         HookCommandOutput::new(Some(json!({})), 0)
     }
@@ -249,8 +252,8 @@ mod tests {
     }
 
     #[test]
-    fn test_stop_end_session_emits_continue_false() {
-        // end_session action sets Decision::Block without context
+    fn test_stop_autoreply_to_end_session_emits_continue_false() {
+        // autoreply_to_end_session action sets Decision::Block without context
         let response = HookResult {
             context: None,
             decision: Decision::Block,
@@ -258,7 +261,10 @@ mod tests {
         };
         let output = build_command_output(response, "Stop");
         assert_eq!(output.exit_code, 0);
-        assert_eq!(output.json_value.unwrap(), json!({ "continue": false }));
+        assert_eq!(
+            output.json_value.unwrap(),
+            json!({ "continue": false, "reason": "All tasks done. Exit immediately." })
+        );
     }
 
     // UserPromptSubmit output tests

@@ -42,6 +42,10 @@ use error::Result;
 #[command(disable_help_subcommand = true)]
 #[command(help_template = HELP_TEMPLATE)]
 struct Cli {
+    /// Enable debug output (equivalent to AIKI_DEBUG=1)
+    #[arg(long, global = true)]
+    debug: bool,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -79,6 +83,7 @@ For Everyone:
   benchmark   Run end-to-end performance benchmark
 
 Options:
+      --debug    Enable debug output
   -h, --help     Print help
   -V, --version  Print version
 ";
@@ -329,6 +334,10 @@ fn main() {
 
 fn run() -> Result<()> {
     let cli = Cli::parse();
+
+    if cli.debug {
+        std::env::set_var("AIKI_DEBUG", "1");
+    }
 
     match cli.command {
         Commands::Init { quiet } => commands::init::run(quiet),

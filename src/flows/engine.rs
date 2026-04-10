@@ -592,7 +592,7 @@ impl HookEngine {
                 result
             });
 
-            let resolve_thread_session_for_mode = resolve_thread_session;
+            let resolve_thread_session_for_mode = resolve_thread_session.clone();
             resolver.add_lazy_var("session.mode", move || {
                 // Read the session file to get the actual mode
                 let result = if let Some(session_info) = resolve_thread_session_for_mode() {
@@ -601,6 +601,17 @@ impl HookEngine {
                     String::new()
                 };
                 debug_log(|| format!("task.closed: session.mode resolved to '{}'", result));
+                result
+            });
+
+            let resolve_thread_session_for_agent = resolve_thread_session;
+            resolver.add_lazy_var("session.agent", move || {
+                let result = if let Some(session_info) = resolve_thread_session_for_agent() {
+                    session_info.agent_type.clone()
+                } else {
+                    String::new()
+                };
+                debug_log(|| format!("task.closed: session.agent resolved to '{}'", result));
                 result
             });
         }
@@ -784,8 +795,11 @@ impl HookEngine {
             Action::SessionEnd(session_end_action) => {
                 Self::execute_session_end(session_end_action, state)
             }
-            Action::EndSession(end_session_action) => {
-                Self::execute_end_session(end_session_action, state)
+            Action::AutoreplyToEndSession(action) => {
+                Self::execute_autoreply_to_end_session(action, state)
+            }
+            Action::AutoreplyToFixConflicts(action) => {
+                Self::execute_autoreply_to_fix_conflicts(action, state)
             }
         }
     }
@@ -811,7 +825,8 @@ impl HookEngine {
             Action::Stop(_) => return Ok(HookOutcome::FailedStop),
             Action::Block(_) => return Ok(HookOutcome::FailedBlock),
             Action::SessionEnd(session_end_action) => &session_end_action.on_failure,
-            Action::EndSession(end_session_action) => &end_session_action.on_failure,
+            Action::AutoreplyToEndSession(action) => &action.on_failure,
+            Action::AutoreplyToFixConflicts(action) => &action.on_failure,
         };
 
         let failure_text = if !result.stderr.is_empty() {
@@ -930,8 +945,11 @@ impl HookEngine {
             Action::SessionEnd(_) => {
                 // session.end actions don't produce storable results
             }
-            Action::EndSession(_) => {
-                // end_session actions set state.end_session flag, no storable result
+            Action::AutoreplyToEndSession(_) => {
+                // autoreply_to_end_session sets state.end_session flag, no storable result
+            }
+            Action::AutoreplyToFixConflicts(_) => {
+                // autoreply_to_fix_conflicts adds to context assembler, no storable result
             }
         }
     }
@@ -1368,11 +1386,11 @@ impl HookEngine {
         })
     }
 
-    /// Execute a session.end action - terminates the current session gracefully
+    /// Execute a sigterm_to_end_session action - terminates the current session via SIGTERM
     ///
-    /// This action is used for task-driven sessions that should auto-end when their
-    /// driving task closes. It spawns a thread that waits briefly then sends SIGTERM
-    /// to the parent process (the agent), allowing the hook to complete first.
+    /// This action is used for agents (like Codex) whose SDK doesn't fire the Stop
+    /// hook in exec mode, so cooperative termination via autoreply_to_end_session
+    /// cannot work. Sends SIGTERM to the agent process after hooks complete.
     fn execute_session_end(
         action: &crate::flows::types::SessionEndAction,
         state: &mut AikiState,
@@ -1385,26 +1403,64 @@ impl HookEngine {
         // Resolve variables in reason text
         let reason = resolver.resolve(&action.reason)?;
 
-        debug_log(|| format!("session.end: {}", reason));
+        debug_log(|| format!("sigterm_to_end_session: {}", reason));
 
-        // Get the session's parent PID (the agent process).
-        // Most events carry a session directly; task.closed is the exception
-        // (task events represent lifecycle, not agent sessions) and needs a
-        // reverse lookup from session files.
+        // Get session info. For task.closed events, reverse-lookup from session files.
+        // For session-bearing events, extract directly from the event payload.
+        let session_info = state.resolve_task_closed_thread_session();
         let parent_pid = extract_session(&state.event)
             .ok()
             .and_then(|s| s.parent_pid())
-            .or_else(|| {
-                state
-                    .resolve_task_closed_thread_session()
-                    .map(|info| info.pid)
-            });
+            .or_else(|| session_info.as_ref().map(|info| info.pid));
 
         if let Some(pid) = parent_pid {
+            // Fire synthetic turn.completed → session.ended to complete the
+            // session lifecycle. Codex exec doesn't fire Stop, so the last
+            // turn's turn.completed (workspace absorption) was never run.
+            // session.ended handles history recording and session file cleanup.
+            if let Some(ref info) = session_info {
+                let session = info.to_aiki_session();
+                let cwd = state.cwd().to_path_buf();
+
+                // 1. Synthetic turn.completed — absorbs workspace changes
+                debug_log(|| format!("sigterm_to_end_session: Dispatching synthetic turn.completed for {}", info.session_id));
+                let turn_event = crate::events::AikiEvent::TurnCompleted(
+                    crate::events::AikiTurnCompletedPayload {
+                        session: session.clone(),
+                        cwd: cwd.clone(),
+                        timestamp: chrono::Utc::now(),
+                        turn: crate::events::Turn::unknown(),
+                        response: String::new(),
+                        modified_files: vec![],
+                        tasks: Default::default(),
+                        tokens: None,
+                        model: None,
+                    },
+                );
+                if let Err(e) = crate::event_bus::dispatch(turn_event) {
+                    debug_log(|| format!("sigterm_to_end_session: turn.completed dispatch failed (non-fatal): {}", e));
+                }
+
+                // 2. Synthetic session.ended — history, session file cleanup
+                debug_log(|| format!("sigterm_to_end_session: Dispatching synthetic session.ended for {}", info.session_id));
+                let ended_event = crate::events::AikiEvent::SessionEnded(
+                    crate::events::AikiSessionEndedPayload {
+                        session,
+                        cwd,
+                        timestamp: chrono::Utc::now(),
+                        reason: reason.clone(),
+                        tokens: None,
+                    },
+                );
+                if let Err(e) = crate::event_bus::dispatch(ended_event) {
+                    debug_log(|| format!("sigterm_to_end_session: session.ended dispatch failed (non-fatal): {}", e));
+                }
+            }
+
             // Defer SIGTERM until after all hooks complete
             // The actual termination happens in execute_pending_session_ends()
             // which is called by the event handler after hook execution
-            debug_log(|| format!("session.end: Deferring SIGTERM to PID {}", pid));
+            debug_log(|| format!("sigterm_to_end_session: Deferring SIGTERM to PID {}", pid));
             state.add_pending_session_end(pid);
 
             Ok(ActionResult {
@@ -1415,7 +1471,7 @@ impl HookEngine {
             })
         } else {
             // No parent PID found - log warning but don't fail
-            debug_log(|| "session.end: No parent PID available, skipping termination".to_string());
+            debug_log(|| "sigterm_to_end_session: No parent PID available, skipping termination".to_string());
             Ok(ActionResult {
                 success: true,
                 exit_code: Some(0),
@@ -1425,14 +1481,14 @@ impl HookEngine {
         }
     }
 
-    /// Execute an end_session action (cooperative termination).
+    /// Execute an autoreply_to_end_session action (cooperative termination).
     ///
     /// Sets `state.end_session = true` so that the turn.completed handler
     /// returns `Decision::Block`. The editor output builder translates this
     /// into the agent-specific stop signal (e.g., `{ "continue": false }`
     /// for Codex).
-    fn execute_end_session(
-        action: &crate::flows::types::EndSessionAction,
+    fn execute_autoreply_to_end_session(
+        action: &crate::flows::types::AutoreplyToEndSessionAction,
         state: &mut AikiState,
     ) -> Result<ActionResult> {
         use crate::cache::debug_log;
@@ -1440,8 +1496,69 @@ impl HookEngine {
         let mut resolver = Self::create_resolver(state);
         let reason = resolver.resolve(&action.reason)?;
 
-        debug_log(|| format!("end_session: {}", reason));
+        debug_log(|| format!("autoreply_to_end_session: {}", reason));
         state.end_session = true;
+
+        Ok(ActionResult {
+            success: true,
+            exit_code: Some(0),
+            stdout: String::new(),
+            stderr: String::new(),
+        })
+    }
+
+    /// Execute an autoreply_to_fix_conflicts action.
+    ///
+    /// Builds a conflict resolution autoreply message from the conflicted file
+    /// list and adds it to the context assembler, just like a regular autoreply.
+    fn execute_autoreply_to_fix_conflicts(
+        action: &crate::flows::types::AutoreplyToFixConflictsAction,
+        state: &mut AikiState,
+    ) -> Result<ActionResult> {
+        use crate::cache::debug_log;
+        use crate::events::AikiEvent;
+
+        if !matches!(&state.event, AikiEvent::TurnCompleted(_)) {
+            return Err(AikiError::Other(anyhow::anyhow!(
+                "autoreply_to_fix_conflicts can only be used in turn.completed events"
+            )));
+        }
+
+        let mut resolver = Self::create_resolver(state);
+        let conflicted_files = resolver.resolve(&action.conflicted_files)?;
+
+        debug_log(|| format!("autoreply_to_fix_conflicts: {}", conflicted_files));
+
+        let message = format!(
+            "CONFLICT RESOLUTION REQUIRED\n\
+             \n\
+             Absorption introduced conflicts in the working copy.\n\
+             Conflicted files:\n\
+             {conflicted_files}\n\
+             \n\
+             To resolve: edit the conflicted files to remove JJ conflict\n\
+             markers, then continue working. JJ parses your edits back\n\
+             automatically on snapshot. Alternatively, run\n\
+             `aiki resolve <change-id>` to delegate conflict resolution.\n\
+             \n\
+             JJ conflict marker format (NOT Git's format):\n\
+             \x20 <<<<<<< Conflict N of M\n\
+             \x20 %%%%%%% Changes from base to side #1 (this is a DIFF, not content)\n\
+             \x20 +++++++ Contents of side #2 (this is literal content)\n\
+             \x20 >>>>>>> Conflict N of M ends\n\
+             \n\
+             The %%%%%%% section shows a diff (additions/removals from base),\n\
+             NOT a middle version like Git's =======. Apply the diff's intent\n\
+             to side #2's content to produce the merged result."
+        );
+
+        let chunk = crate::flows::context::ContextChunk {
+            prepend: None,
+            append: Some(crate::flows::context::TextLines::Single(message)),
+        };
+
+        let assembler = state.get_context_assembler_mut()?;
+        assembler.add_chunk(chunk);
 
         Ok(ActionResult {
             success: true,

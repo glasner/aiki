@@ -530,3 +530,82 @@ fn e2e_claude_loop_exits_cleanly() {
     }
     run_loop_exits_cleanly("claude", "--claude");
 }
+
+// =============================================================================
+// Build: codex builds a plan and changes are absorbed into the repo
+// =============================================================================
+
+#[test]
+#[ignore] // e2e: requires codex binary + API key
+fn e2e_codex_build_absorbs_changes() {
+    if !jj_available() {
+        eprintln!("Skipping: jj not available");
+        return;
+    }
+    if !agent_available("codex") {
+        eprintln!("Skipping: codex binary not available");
+        return;
+    }
+
+    let temp = tempdir().unwrap();
+    let repo = temp.path();
+    init_aiki_repo(repo);
+
+    // Create a plan file
+    let plan_dir = repo.join("ops").join("now");
+    std::fs::create_dir_all(&plan_dir).unwrap();
+    std::fs::write(
+        plan_dir.join("e2e-greeting.md"),
+        "---\nstatus: ready\n---\n\n\
+         # Greeting Module\n\n\
+         ## Summary\n\n\
+         Create a simple greeting module with two files.\n\n\
+         ## Requirements\n\n\
+         1. Create `src/greet.py` with a function `greet(name)` that returns `Hello, {name}!`\n\
+         2. Create `tests/test_greet.py` with a test that calls `greet('World')` and asserts the result\n\n\
+         ## Acceptance Criteria\n\n\
+         - `greet('World')` returns `'Hello, World!'`\n\
+         - Test file exists and contains at least one assertion\n",
+    )
+    .unwrap();
+
+    // Build with codex as the agent
+    let build_output = Command::cargo_bin("aiki")
+        .unwrap()
+        .current_dir(repo)
+        .args(["build", "ops/now/e2e-greeting.md", "--codex"])
+        .timeout(Duration::from_secs(600))
+        .output()
+        .expect("Failed to run aiki build");
+
+    let build_stdout = String::from_utf8_lossy(&build_output.stdout);
+    let build_stderr = String::from_utf8_lossy(&build_output.stderr);
+    eprintln!("Build stdout: {build_stdout}");
+    eprintln!("Build stderr: {build_stderr}");
+    assert!(
+        build_output.status.success(),
+        "aiki build --codex failed: {build_stderr}"
+    );
+
+    // Verify build changes were absorbed into the main working copy.
+    // The plan asks for src/greet.py — check it exists in the repo root,
+    // not just inside an isolated workspace.
+    let greet_exists = repo.join("src").join("greet.py").exists();
+    let test_exists = repo.join("tests").join("test_greet.py").exists();
+
+    // List what's actually in the repo for debugging
+    let files_output = std::process::Command::new("find")
+        .args([".", "-name", "*.py", "-not", "-path", "./.jj/*"])
+        .current_dir(repo)
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+        .unwrap_or_default();
+    eprintln!("Python files in repo: {files_output}");
+
+    assert!(
+        greet_exists || test_exists,
+        "No build artifacts found in repo — workspace changes were not absorbed.\n\
+         Expected src/greet.py or tests/test_greet.py in {repo:?}",
+        repo = repo,
+    );
+}
