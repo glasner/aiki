@@ -66,6 +66,8 @@ fn run_install(reference: Option<String>) -> Result<()> {
     match reference {
         Some(ref_str) => {
             let plugin: PluginRef = ref_str.parse()?;
+            // Clear any fetch-failure marker so the install is attempted fresh.
+            crate::plugins::clear_fetch_failed(&plugin, &plugins_base);
             let report = install(&plugin, &plugins_base, project_root.as_deref(), None)?;
             print_install_report(&report, &plugin);
 
@@ -82,6 +84,9 @@ fn run_install(reference: Option<String>) -> Result<()> {
                 println!("No plugin references found in project.");
                 return Ok(());
             }
+
+            // Clear all markers — explicit install-all should retry everything.
+            crate::plugins::clear_all_fetch_failed(&plugins_base);
 
             let mut any_failed = false;
             for plugin in &refs {
@@ -109,10 +114,12 @@ fn run_update(reference: Option<String>) -> Result<()> {
     match reference {
         Some(ref_str) => {
             let plugin: PluginRef = ref_str.parse()?;
+            crate::plugins::clear_fetch_failed(&plugin, &plugins_base);
             update_single(&plugin, &plugins_base, project_root.as_deref())?;
         }
         None => {
             // Update all installed plugins
+            crate::plugins::clear_all_fetch_failed(&plugins_base);
             let installed = list_installed_plugins(&plugins_base);
             if installed.is_empty() {
                 println!("No plugins installed.");
@@ -434,13 +441,41 @@ fn run_list(number: Option<usize>) -> Result<()> {
 
 fn run_remove(reference: String, force: bool) -> Result<()> {
     let plugins_base = plugins_base_dir()?;
+    remove_plugin_from(&reference, force, &plugins_base)?;
+
+    // Remove from hooks.yml include references and lock file in the current project (if in one)
+    let plugin: PluginRef = reference.parse()?;
+    let cwd = env::current_dir()?;
+    if let Some(aiki_dir) = find_aiki_dir_optional(&cwd) {
+        remove_from_hooks_yml(&aiki_dir, &plugin);
+    }
+
+    if let Some(project_root) = find_project_root(&cwd) {
+        if let Ok(mut lock) = PluginLock::load(&project_root) {
+            if lock.remove(&plugin).is_some() {
+                if let Err(e) = lock.save(&project_root) {
+                    eprintln!("Warning: failed to update lock file: {}", e);
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Core remove logic: build graph, check dependents, delete plugin directory.
+/// Extracted so regression tests can exercise the same code path as `run_remove`
+/// without needing a global plugins_base_dir or a real project directory.
+pub(crate) fn remove_plugin_from(reference: &str, force: bool, plugins_base: &Path) -> Result<()> {
     let plugin: PluginRef = reference.parse()?;
 
+    let graph = PluginGraph::build(plugins_base);
+
     // Capture display name before removing (removal deletes the directory)
-    let display_name = plugin.display_name(&plugins_base);
+    let display_name = plugin.display_name(plugins_base);
 
     // Error if other installed plugins depend on this one (unless --force)
-    let dependents = find_dependents(&plugin, &plugins_base);
+    let dependents = graph.dependents(&plugin);
     if !dependents.is_empty() {
         let names: Vec<String> = dependents.iter().map(|d| d.to_string()).collect();
         if force {
@@ -457,23 +492,7 @@ fn run_remove(reference: String, force: bool) -> Result<()> {
         }
     }
 
-    remove_plugin(&plugin, &plugins_base)?;
-
-    // Remove from hooks.yml include references and lock file in the current project (if in one)
-    let cwd = env::current_dir()?;
-    if let Some(aiki_dir) = find_aiki_dir_optional(&cwd) {
-        remove_from_hooks_yml(&aiki_dir, &plugin);
-    }
-
-    if let Some(project_root) = find_project_root(&cwd) {
-        if let Ok(mut lock) = PluginLock::load(&project_root) {
-            if lock.remove(&plugin).is_some() {
-                if let Err(e) = lock.save(&project_root) {
-                    eprintln!("Warning: failed to update lock file: {}", e);
-                }
-            }
-        }
-    }
+    remove_plugin(&plugin, plugins_base)?;
 
     println!("Removed: {}", display_name);
     Ok(())
@@ -501,11 +520,6 @@ fn find_aiki_dir_optional(start: &Path) -> Option<std::path::PathBuf> {
         }
         current = current.parent()?;
     }
-}
-
-/// Find installed plugins that depend on the given plugin (direct dependents only).
-pub(crate) fn find_dependents(plugin: &PluginRef, plugins_base: &Path) -> Vec<PluginRef> {
-    PluginGraph::build(plugins_base).dependents(plugin)
 }
 
 /// Print install report.
@@ -556,8 +570,7 @@ fn remove_from_hooks_yml(aiki_dir: &Path, plugin: &PluginRef) {
     // We operate on raw lines to preserve formatting/comments.
     // TODO: This removes ALL list items matching the plugin name regardless of
     // which YAML key they appear under (not just `include:` blocks). Should be
-    // replaced with YAML-aware removal when PluginGraph lands
-    // (see ops/now/plugins/dependency-graph.md).
+    // replaced with YAML-aware removal (see ops/now/plugins/yaml-aware-hooks-removal.md).
     let lines: Vec<&str> = content.lines().collect();
     let mut new_lines: Vec<&str> = Vec::with_capacity(lines.len());
     let mut changed = false;
@@ -744,76 +757,91 @@ mod tests {
         }
     }
 
+    // --- Regression tests for the plugin remove consumer path ---
+    // These exercise remove_plugin_from() — the same code path run_remove() uses —
+    // to catch miswiring between graph construction, dependent checking, and removal.
+
     #[test]
-    fn test_find_dependents_no_dependents() {
+    fn test_remove_no_dependents_succeeds() {
         let tmp = TempDir::new().unwrap();
         create_fake_plugin(tmp.path(), "aiki", "alpha", &[]);
 
-        let plugin: PluginRef = "aiki/alpha".parse().unwrap();
-        let deps = find_dependents(&plugin, tmp.path());
-        assert!(deps.is_empty());
+        // Should succeed: no dependents, plugin gets removed
+        remove_plugin_from("aiki/alpha", false, tmp.path()).unwrap();
+        assert!(!tmp.path().join("aiki").join("alpha").exists());
     }
 
     #[test]
-    fn test_find_dependents_direct_dependent() {
+    fn test_remove_blocked_by_direct_dependent() {
         let tmp = TempDir::new().unwrap();
         create_fake_plugin(tmp.path(), "aiki", "alpha", &[]);
         create_fake_plugin(tmp.path(), "aiki", "beta", &["aiki/alpha/tmpl"]);
 
-        let plugin: PluginRef = "aiki/alpha".parse().unwrap();
-        let deps = find_dependents(&plugin, tmp.path());
-        assert_eq!(deps.len(), 1);
-        assert_eq!(deps[0].to_string(), "aiki/beta");
+        // Should fail: beta depends on alpha
+        let err = remove_plugin_from("aiki/alpha", false, tmp.path()).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("aiki/beta"), "error should name the dependent: {msg}");
+        // Plugin should NOT have been removed
+        assert!(tmp.path().join("aiki").join("alpha").exists());
     }
 
     #[test]
-    fn test_find_dependents_not_a_dependent() {
+    fn test_remove_unrelated_plugin_not_blocked() {
         let tmp = TempDir::new().unwrap();
         create_fake_plugin(tmp.path(), "aiki", "alpha", &[]);
         create_fake_plugin(tmp.path(), "aiki", "beta", &["aiki/gamma/tmpl"]);
         create_fake_plugin(tmp.path(), "aiki", "gamma", &[]);
 
-        let plugin: PluginRef = "aiki/alpha".parse().unwrap();
-        let deps = find_dependents(&plugin, tmp.path());
-        assert!(deps.is_empty());
+        // alpha has no dependents — removal should succeed
+        remove_plugin_from("aiki/alpha", false, tmp.path()).unwrap();
+        assert!(!tmp.path().join("aiki").join("alpha").exists());
     }
 
     #[test]
-    fn test_find_dependents_multiple_dependents() {
+    fn test_remove_blocked_by_multiple_dependents() {
         let tmp = TempDir::new().unwrap();
         create_fake_plugin(tmp.path(), "aiki", "alpha", &[]);
         create_fake_plugin(tmp.path(), "aiki", "beta", &["aiki/alpha/tmpl"]);
         create_fake_plugin(tmp.path(), "aiki", "gamma", &["aiki/alpha/tmpl"]);
 
-        let plugin: PluginRef = "aiki/alpha".parse().unwrap();
-        let deps = find_dependents(&plugin, tmp.path());
-        let names: Vec<String> = deps.iter().map(|d| d.to_string()).collect();
-        assert_eq!(names.len(), 2);
-        assert!(names.contains(&"aiki/beta".to_string()));
-        assert!(names.contains(&"aiki/gamma".to_string()));
+        let err = remove_plugin_from("aiki/alpha", false, tmp.path()).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("aiki/beta"), "error should name beta: {msg}");
+        assert!(msg.contains("aiki/gamma"), "error should name gamma: {msg}");
     }
 
     #[test]
-    fn test_find_dependents_direct_only() {
+    fn test_remove_only_blocked_by_direct_dependents() {
         let tmp = TempDir::new().unwrap();
         // A depends on B, B depends on C
         create_fake_plugin(tmp.path(), "aiki", "a", &["aiki/b/tmpl"]);
         create_fake_plugin(tmp.path(), "aiki", "b", &["aiki/c/tmpl"]);
         create_fake_plugin(tmp.path(), "aiki", "c", &[]);
 
-        // find_dependents(C) should return only B (direct dependent)
-        let plugin: PluginRef = "aiki/c".parse().unwrap();
-        let deps = find_dependents(&plugin, tmp.path());
-        let names: Vec<String> = deps.iter().map(|d| d.to_string()).collect();
-        assert_eq!(names, vec!["aiki/b".to_string()]);
+        // Removing C should be blocked by B (direct dependent), not A (transitive)
+        let err = remove_plugin_from("aiki/c", false, tmp.path()).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("aiki/b"), "error should name direct dependent b: {msg}");
+        assert!(!msg.contains("aiki/a"), "error should NOT name transitive dependent a: {msg}");
     }
 
     #[test]
-    fn test_find_dependents_plugin_not_installed() {
+    fn test_remove_nonexistent_plugin_fails() {
         let tmp = TempDir::new().unwrap();
-        // No plugins installed at all
-        let plugin: PluginRef = "aiki/nonexistent".parse().unwrap();
-        let deps = find_dependents(&plugin, tmp.path());
-        assert!(deps.is_empty());
+        // No plugins installed — remove should fail at the removal step (not installed)
+        let err = remove_plugin_from("aiki/nonexistent", false, tmp.path()).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("not installed") || msg.contains("nonexistent"), "expected not-installed error: {msg}");
+    }
+
+    #[test]
+    fn test_remove_force_bypasses_dependent_check() {
+        let tmp = TempDir::new().unwrap();
+        create_fake_plugin(tmp.path(), "aiki", "alpha", &[]);
+        create_fake_plugin(tmp.path(), "aiki", "beta", &["aiki/alpha/tmpl"]);
+
+        // With force=true, removal should succeed despite dependents
+        remove_plugin_from("aiki/alpha", true, tmp.path()).unwrap();
+        assert!(!tmp.path().join("aiki").join("alpha").exists());
     }
 }

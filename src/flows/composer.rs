@@ -190,6 +190,10 @@ impl<'a> HookComposer<'a> {
                 Self::warn_auto_fetch_failed(&plugin, &reason);
                 return Ok(HookOutcome::Success);
             }
+            Err(AikiError::AutoFetchCached { .. }) => {
+                // Already warned on a prior event or earlier in this event; skip silently.
+                return Ok(HookOutcome::Success);
+            }
             Err(e) => return Err(e),
         };
 
@@ -316,6 +320,7 @@ impl<'a> HookComposer<'a> {
                     Self::warn_auto_fetch_failed(&plugin, &reason);
                     continue;
                 }
+                Err(AikiError::AutoFetchCached { .. }) => continue,
                 Err(e) => return Err(e),
             };
 
@@ -364,6 +369,7 @@ impl<'a> HookComposer<'a> {
                     Self::warn_auto_fetch_failed(&plugin, &reason);
                     continue;
                 }
+                Err(AikiError::AutoFetchCached { .. }) => continue,
                 Err(e) => return Err(e),
             };
 
@@ -652,6 +658,9 @@ impl<'a> HookComposer<'a> {
             Ok(result) => result,
             Err(AikiError::AutoFetchFailed { plugin, reason }) => {
                 Self::warn_auto_fetch_failed(&plugin, &reason);
+                return Ok(HookOutcome::Success);
+            }
+            Err(AikiError::AutoFetchCached { .. }) => {
                 return Ok(HookOutcome::Success);
             }
             Err(e) => return Err(e),
@@ -2524,12 +2533,13 @@ after:
 
     #[test]
     fn test_include_expansion_failure_cleans_call_stack() {
-        // Regression test: if include expansion fails (e.g., missing nested include),
-        // the call_stack must be cleaned up so subsequent compose_hook calls on the
-        // same composer don't get false CircularHookDependency errors.
+        // Regression test: if include expansion encounters a missing nested include,
+        // it must (a) gracefully skip it and (b) clean up the call_stack so subsequent
+        // compose_hook calls on the same composer don't get false CircularHookDependency
+        // errors.
         let temp_dir = create_test_project();
 
-        // aiki/mid.yml includes a non-existent plugin (will cause load failure)
+        // aiki/mid.yml includes a non-existent plugin (auto-fetch fails, skipped gracefully)
         let mid_path = temp_dir.path().join(".aiki/hooks/aiki/mid.yml");
         let mid_content = r#"name: Mid
 version: "1"
@@ -2555,20 +2565,22 @@ change.completed:
         let mut composer = HookComposer::new(&mut loader);
         let mut state = create_test_state(&temp_dir);
 
-        // First call: should fail because aiki/mid includes aiki/nonexistent
+        // First call: aiki/mid's missing include is gracefully skipped,
+        // composition succeeds with the missing plugin omitted.
         let result = composer.compose_hook("aiki/outer", EventType::ChangeCompleted, &mut state);
         assert!(
-            result.is_err(),
-            "Expected error from missing nested include"
+            result.is_ok(),
+            "Expected graceful skip of missing nested include, got: {:?}",
+            result
         );
 
         // Second call: compose aiki/mid directly. Before the fix, aiki/mid's
-        // canonical path was left on the call_stack from the failed first call,
+        // canonical path was left on the call_stack from the first call,
         // causing a false CircularHookDependency here.
         let result2 = composer.compose_hook("aiki/mid", EventType::ChangeCompleted, &mut state);
         assert!(
             !matches!(result2, Err(AikiError::CircularHookDependency { .. })),
-            "call_stack leaked from failed include expansion: {:?}",
+            "call_stack leaked from include expansion: {:?}",
             result2
         );
     }

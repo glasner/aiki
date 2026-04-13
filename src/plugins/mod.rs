@@ -172,6 +172,53 @@ pub fn check_install_status(plugin: &PluginRef, plugins_base: &Path) -> InstallS
     }
 }
 
+// ---------------------------------------------------------------------------
+// Fetch-failure markers
+//
+// When auto-fetch fails, a marker file is written to
+// `~/.aiki/plugins/.fetch-failed/{ns}/{name}` containing the error reason.
+// Subsequent process invocations (each event fires a separate process) check
+// the marker before hitting the network, preventing repeated clone attempts
+// and warning spam within a session.
+// ---------------------------------------------------------------------------
+
+const FETCH_FAILED_DIR: &str = ".fetch-failed";
+
+/// Path to a fetch-failure marker for `plugin` under `plugins_base`.
+fn fetch_failed_path(plugin: &PluginRef, plugins_base: &Path) -> PathBuf {
+    plugins_base
+        .join(FETCH_FAILED_DIR)
+        .join(&plugin.namespace)
+        .join(&plugin.name)
+}
+
+/// If `plugin` has a persisted fetch-failure marker, return the reason string.
+pub fn check_fetch_failed(plugin: &PluginRef, plugins_base: &Path) -> Option<String> {
+    let path = fetch_failed_path(plugin, plugins_base);
+    fs::read_to_string(path).ok()
+}
+
+/// Record that auto-fetch for `plugin` failed with `reason`.
+pub fn mark_fetch_failed(plugin: &PluginRef, plugins_base: &Path, reason: &str) {
+    let path = fetch_failed_path(plugin, plugins_base);
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let _ = fs::write(path, reason);
+}
+
+/// Remove the fetch-failure marker for `plugin` (e.g. before an explicit install).
+pub fn clear_fetch_failed(plugin: &PluginRef, plugins_base: &Path) {
+    let path = fetch_failed_path(plugin, plugins_base);
+    let _ = fs::remove_file(path);
+}
+
+/// Remove all fetch-failure markers (called on session start).
+pub fn clear_all_fetch_failed(plugins_base: &Path) {
+    let dir = plugins_base.join(FETCH_FAILED_DIR);
+    let _ = fs::remove_dir_all(dir);
+}
+
 /// List all installed plugins (directories with `.git/`) under `plugins_base`.
 pub fn list_installed_plugins(plugins_base: &Path) -> Vec<PluginRef> {
     let mut plugins = Vec::new();
@@ -359,5 +406,41 @@ mod tests {
         let r: PluginRef = "aiki/way".parse().unwrap();
         // No plugin dir, no manifest — falls back to namespace/name
         assert_eq!(r.display_name(tmp.path()), "aiki/way");
+    }
+
+    #[test]
+    fn test_fetch_failed_marker_round_trip() {
+        let tmp = TempDir::new().unwrap();
+        let r: PluginRef = "aiki/broken".parse().unwrap();
+
+        // Initially no marker
+        assert!(check_fetch_failed(&r, tmp.path()).is_none());
+
+        // Write marker
+        mark_fetch_failed(&r, tmp.path(), "repository not found");
+        assert_eq!(
+            check_fetch_failed(&r, tmp.path()).as_deref(),
+            Some("repository not found")
+        );
+
+        // Clear individual marker
+        clear_fetch_failed(&r, tmp.path());
+        assert!(check_fetch_failed(&r, tmp.path()).is_none());
+    }
+
+    #[test]
+    fn test_clear_all_fetch_failed() {
+        let tmp = TempDir::new().unwrap();
+        let a: PluginRef = "aiki/one".parse().unwrap();
+        let b: PluginRef = "other/two".parse().unwrap();
+
+        mark_fetch_failed(&a, tmp.path(), "reason a");
+        mark_fetch_failed(&b, tmp.path(), "reason b");
+        assert!(check_fetch_failed(&a, tmp.path()).is_some());
+        assert!(check_fetch_failed(&b, tmp.path()).is_some());
+
+        clear_all_fetch_failed(tmp.path());
+        assert!(check_fetch_failed(&a, tmp.path()).is_none());
+        assert!(check_fetch_failed(&b, tmp.path()).is_none());
     }
 }

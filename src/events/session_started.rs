@@ -24,6 +24,11 @@ pub fn handle_session_started(payload: AikiSessionStartPayload) -> Result<HookRe
 
     debug_log(|| format!("Session started by {:?}", payload.session.agent_type()));
 
+    // Clear fetch-failure markers from a prior session so plugins are retried.
+    if let Ok(plugins_base) = crate::plugins::plugins_base_dir() {
+        crate::plugins::clear_all_fetch_failed(&plugins_base);
+    }
+
     // Clean up sessions from crashed agents (PID-based)
     prune_dead_pid_sessions();
 

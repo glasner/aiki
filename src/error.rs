@@ -186,6 +186,11 @@ Alternatively, install the agent globally:
     #[error("Failed to auto-fetch plugin '{plugin}': {reason}")]
     AutoFetchFailed { plugin: String, reason: String },
 
+    /// Like `AutoFetchFailed` but from a disk-persisted marker. The warning was
+    /// already printed on the first failure; callers should skip silently.
+    #[error("Plugin '{plugin}' previously failed to fetch: {reason}")]
+    AutoFetchCached { plugin: String, reason: String },
+
     #[error("{plugin} is a dependency of: {dependents}. Use --force to remove anyway.")]
     PluginHasDependents { plugin: String, dependents: String },
 

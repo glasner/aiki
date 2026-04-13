@@ -91,8 +91,10 @@ impl HookLoader {
     /// - `AikiError::HookNotFound` if the file doesn't exist
     /// - `AikiError::Other` if YAML parsing fails
     pub fn load(&mut self, path: &str) -> Result<(Hook, PathBuf)> {
+        // Return cached failure. Use AutoFetchCached so the composer skips
+        // silently — the warning was already printed on the first occurrence.
         if let Some(original_reason) = self.failed_fetches.get(path) {
-            return Err(AikiError::AutoFetchFailed {
+            return Err(AikiError::AutoFetchCached {
                 plugin: path.to_string(),
                 reason: original_reason.clone(),
             });
@@ -114,7 +116,8 @@ impl HookLoader {
                 Ok((hook, canonical_path))
             }
             Err(ref resolve_err @ AikiError::HookNotFound { .. })
-            | Err(ref resolve_err @ AikiError::AutoFetchFailed { .. }) => {
+            | Err(ref resolve_err @ AikiError::AutoFetchFailed { .. })
+            | Err(ref resolve_err @ AikiError::AutoFetchCached { .. }) => {
                 // Fallback: check built-in plugin registry
                 let synthetic_path = PathBuf::from(format!("builtin://{}", path));
 
@@ -140,6 +143,13 @@ impl HookLoader {
                     AikiError::AutoFetchFailed { reason, .. } => {
                         self.failed_fetches.insert(path.to_string(), reason.clone());
                         Err(AikiError::AutoFetchFailed {
+                            plugin: path.to_string(),
+                            reason: reason.clone(),
+                        })
+                    }
+                    AikiError::AutoFetchCached { reason, .. } => {
+                        self.failed_fetches.insert(path.to_string(), reason.clone());
+                        Err(AikiError::AutoFetchCached {
                             plugin: path.to_string(),
                             reason: reason.clone(),
                         })
@@ -404,7 +414,9 @@ version: "1"
         let result = loader.load("aiki/nonexistent");
         assert!(matches!(
             result,
-            Err(AikiError::AutoFetchFailed { .. }) | Err(AikiError::HookNotFound { .. })
+            Err(AikiError::AutoFetchFailed { .. })
+                | Err(AikiError::AutoFetchCached { .. })
+                | Err(AikiError::HookNotFound { .. })
         ));
     }
 
@@ -488,13 +500,13 @@ version: "1"
         loader.mark_fetch_failed("fakens/fakeplugin", "registry returned 404");
         assert_eq!(loader.failed_fetches_count(), 1);
 
-        // Loading should return memoized AutoFetchFailed with original reason
+        // Loading should return memoized AutoFetchCached (warning already shown)
         let result = loader.load("fakens/fakeplugin");
         assert!(matches!(
             result,
-            Err(AikiError::AutoFetchFailed { ref reason, .. })
+            Err(AikiError::AutoFetchCached { ref reason, .. })
                 if reason == "registry returned 404"
-        ), "Expected memoized AutoFetchFailed with original reason, got: {:?}", result);
+        ), "Expected memoized AutoFetchCached with original reason, got: {:?}", result);
 
         // Cache size should remain 0 — the resolver was never called
         assert_eq!(loader.cache_size(), 0);
@@ -503,7 +515,7 @@ version: "1"
         let result2 = loader.load("fakens/fakeplugin");
         assert!(matches!(
             result2,
-            Err(AikiError::AutoFetchFailed { ref reason, .. })
+            Err(AikiError::AutoFetchCached { ref reason, .. })
                 if reason == "registry returned 404"
         ));
     }
@@ -517,9 +529,9 @@ version: "1"
         loader.mark_fetch_failed("fakens/someplugin", "network timeout");
         assert_eq!(loader.failed_fetches_count(), 1);
 
-        // Verify it's memoized
+        // Verify it's memoized (returns AutoFetchCached since warning was already shown)
         let result = loader.load("fakens/someplugin");
-        assert!(matches!(result, Err(AikiError::AutoFetchFailed { .. })));
+        assert!(matches!(result, Err(AikiError::AutoFetchCached { .. })));
 
         // Also load a successful hook to populate the main cache
         let flow_path = temp_dir.path().join(".aiki/hooks/aiki/cleartest.yml");
@@ -537,7 +549,7 @@ version: "1"
         // but the error message should NOT be the original memoized reason.
         let result2 = loader.load("fakens/someplugin");
         assert!(result2.is_err());
-        if let Err(AikiError::AutoFetchFailed { reason, .. }) = &result2 {
+        if let Err(AikiError::AutoFetchFailed { reason, .. } | AikiError::AutoFetchCached { reason, .. }) = &result2 {
             assert_ne!(
                 reason, "network timeout",
                 "After clear_cache, load should re-attempt resolution, not return memoized error"
@@ -564,7 +576,7 @@ version: "1"
         let result = loader.load("fakens/badplugin");
         assert!(matches!(
             result,
-            Err(AikiError::AutoFetchFailed { ref reason, .. })
+            Err(AikiError::AutoFetchCached { ref reason, .. })
                 if reason == "plugin not found in registry"
         ));
     }
@@ -588,16 +600,16 @@ version: "1"
                 "AutoFetchFailed should be memoized in failed_fetches"
             );
 
-            // Second call should return the memoized version with original reason
+            // Second call should return AutoFetchCached (warning already shown)
             let result2 = loader.load("aiki/nonexistent");
             match (&result, &result2) {
                 (
                     Err(AikiError::AutoFetchFailed { reason: original, .. }),
-                    Err(AikiError::AutoFetchFailed { reason: memoized, .. }),
+                    Err(AikiError::AutoFetchCached { reason: memoized, .. }),
                 ) => {
                     assert_eq!(original, memoized, "Memoized reason should match original");
                 }
-                _ => panic!("Expected memoized AutoFetchFailed, got: {:?}", result2),
+                _ => panic!("Expected memoized AutoFetchCached, got: {:?}", result2),
             }
         }
     }

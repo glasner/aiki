@@ -187,11 +187,23 @@ impl HookResolver {
         let plugins_base = plugins::plugins_base_dir()?;
         let plugin_name = format!("{namespace}/{name}");
 
+        // 4a. Check for a persisted fetch-failure marker (written by a prior
+        //     event in this session). Avoids repeated network calls and warning
+        //     spam across events.
+        if let Some(reason) = plugins::check_fetch_failed(&plugin_ref, &plugins_base) {
+            return Err(AikiError::AutoFetchCached {
+                plugin: plugin_name,
+                reason,
+            });
+        }
+
         match plugins::install(&plugin_ref, &plugins_base, Some(self.project_root()), None) {
             Err(e) => {
+                let reason = e.to_string();
+                plugins::mark_fetch_failed(&plugin_ref, &plugins_base, &reason);
                 return Err(AikiError::AutoFetchFailed {
                     plugin: plugin_name,
-                    reason: e.to_string(),
+                    reason,
                 });
             }
             Ok(ref report) if !report.failed.is_empty() => {
@@ -204,6 +216,7 @@ impl HookResolver {
                         failed_ref, failed_msg
                     )
                 };
+                plugins::mark_fetch_failed(&plugin_ref, &plugins_base, &reason);
                 return Err(AikiError::AutoFetchFailed {
                     plugin: plugin_name,
                     reason,
@@ -221,9 +234,11 @@ impl HookResolver {
             return Ok(installed_path);
         }
 
+        let reason = "auto-fetch succeeded but hooks.yaml missing".to_string();
+        plugins::mark_fetch_failed(&plugin_ref, &plugins_base, &reason);
         Err(AikiError::AutoFetchFailed {
             plugin: plugin_name,
-            reason: "auto-fetch succeeded but hooks.yaml missing".to_string(),
+            reason,
         })
     }
 
@@ -354,7 +369,9 @@ version: "1"
         let result = resolver.resolve("aiki/nonexistent");
         assert!(matches!(
             result,
-            Err(AikiError::AutoFetchFailed { .. }) | Err(AikiError::HookNotFound { .. })
+            Err(AikiError::AutoFetchFailed { .. })
+                | Err(AikiError::AutoFetchCached { .. })
+                | Err(AikiError::HookNotFound { .. })
         ));
     }
 
