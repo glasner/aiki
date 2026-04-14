@@ -62,6 +62,38 @@ fn resolve_deps_recursive(
     }
 }
 
+/// Remove lock entries for plugins not reachable from the declared project refs.
+///
+/// Call this before project-wide install so that orphaned entries from previously
+/// removed plugins don't cause stale SHAs to be used when the same dep is
+/// re-introduced by a different parent.
+pub fn prune_orphaned_entries(
+    lock: &mut PluginLock,
+    declared_refs: &[PluginRef],
+    plugins_base: &Path,
+) -> Vec<String> {
+    let mut keep = HashSet::new();
+    for r in declared_refs {
+        keep.insert(r.to_string());
+        for dep in resolve_deps(r, plugins_base) {
+            keep.insert(dep.to_string());
+        }
+    }
+
+    let orphaned: Vec<String> = lock
+        .entries
+        .keys()
+        .filter(|k| !keep.contains(k.as_str()))
+        .cloned()
+        .collect();
+
+    for key in &orphaned {
+        lock.entries.remove(key);
+    }
+
+    orphaned
+}
+
 /// Install a plugin and all its transitive dependencies.
 ///
 /// When `project_root` is provided, the lock file is consulted: locked plugins
@@ -572,5 +604,113 @@ mod tests {
             1,
             "No new entries should be added on failure"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // prune_orphaned_entries() tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_prune_removes_orphaned_transitive_dep() {
+        // Scenario: plugin A used to depend on B. A was removed (lock entry
+        // cleaned up), but B's lock entry was left behind (orphaned transitive
+        // dep). Now the project references C (which also depends on B), but
+        // neither C nor B is installed yet (fresh machine / first install).
+        //
+        // Prune runs before install. Since C isn't installed, resolve_deps
+        // can't discover B as a dep of C. B's lock entry is orphaned → pruned.
+        // When install then clones C and discovers dep B, B is resolved fresh
+        // to HEAD instead of using the stale SHA from the A era.
+        let tmp = TempDir::new().unwrap();
+        let plugins_base = tmp.path().join("plugins");
+        fs::create_dir_all(&plugins_base).unwrap();
+
+        // Neither C nor B is installed — fresh machine scenario.
+
+        let mut lock = PluginLock::default();
+        // Orphaned entry for B from the old A days
+        lock.insert(
+            &"ns/b".parse().unwrap(),
+            PluginLockEntry {
+                sha: "stale_sha_from_old_plugin_a_padding0".to_string(),
+                source: "https://github.com/ns/b.git".to_string(),
+                resolved: "2026-01-01T00:00:00Z".to_string(),
+            },
+        );
+
+        // Project declares only C (C isn't installed, so its deps are unknown)
+        let declared: Vec<PluginRef> = vec!["ns/c".parse().unwrap()];
+
+        let pruned = prune_orphaned_entries(&mut lock, &declared, &plugins_base);
+
+        // B is not declared and not in any installed plugin's dep tree → pruned
+        assert!(
+            pruned.contains(&"ns/b".to_string()),
+            "orphaned lock entry for ns/b should be pruned"
+        );
+        assert!(
+            lock.get(&"ns/b".parse::<PluginRef>().unwrap()).is_none(),
+            "ns/b should no longer be in the lock"
+        );
+    }
+
+    #[test]
+    fn test_prune_keeps_declared_ref() {
+        let tmp = TempDir::new().unwrap();
+        let plugins_base = tmp.path().join("plugins");
+        create_valid_plugin(&plugins_base, "ns", "root", &[]);
+
+        let mut lock = PluginLock::default();
+        lock.insert(
+            &"ns/root".parse().unwrap(),
+            PluginLockEntry {
+                sha: "valid_sha_for_declared_ref_padding0".to_string(),
+                source: "https://github.com/ns/root.git".to_string(),
+                resolved: "2026-01-01T00:00:00Z".to_string(),
+            },
+        );
+
+        let declared: Vec<PluginRef> = vec!["ns/root".parse().unwrap()];
+        let pruned = prune_orphaned_entries(&mut lock, &declared, &plugins_base);
+
+        assert!(pruned.is_empty(), "declared ref should not be pruned");
+        assert!(
+            lock.get(&"ns/root".parse::<PluginRef>().unwrap()).is_some(),
+            "ns/root should still be in the lock"
+        );
+    }
+
+    #[test]
+    fn test_prune_keeps_installed_transitive_dep() {
+        let tmp = TempDir::new().unwrap();
+        let plugins_base = tmp.path().join("plugins");
+
+        // Root depends on dep, both installed
+        create_valid_plugin(&plugins_base, "ns", "root", &["ns/dep/tpl"]);
+        create_valid_plugin(&plugins_base, "ns", "dep", &[]);
+
+        let mut lock = PluginLock::default();
+        lock.insert(
+            &"ns/root".parse().unwrap(),
+            PluginLockEntry {
+                sha: "root_sha_padding_to_fill_space000".to_string(),
+                source: "https://github.com/ns/root.git".to_string(),
+                resolved: "2026-01-01T00:00:00Z".to_string(),
+            },
+        );
+        lock.insert(
+            &"ns/dep".parse().unwrap(),
+            PluginLockEntry {
+                sha: "dep_sha_padding_to_fill_the_space0".to_string(),
+                source: "https://github.com/ns/dep.git".to_string(),
+                resolved: "2026-01-01T00:00:00Z".to_string(),
+            },
+        );
+
+        let declared: Vec<PluginRef> = vec!["ns/root".parse().unwrap()];
+        let pruned = prune_orphaned_entries(&mut lock, &declared, &plugins_base);
+
+        assert!(pruned.is_empty(), "installed transitive dep should not be pruned");
+        assert_eq!(lock.entries.len(), 2);
     }
 }

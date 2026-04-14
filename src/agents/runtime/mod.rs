@@ -12,9 +12,8 @@ pub use codex::CodexRuntime;
 use crate::error::Result;
 use crate::tasks::lanes::ThreadId;
 use crate::tasks::md::DONE_MESSAGE;
-use std::io::Read;
 use std::path::Path;
-use std::process::{Child, ChildStderr, ChildStdout, ExitStatus};
+use std::process::{Child, ExitStatus};
 
 pub(crate) use super::AgentType;
 
@@ -38,26 +37,39 @@ pub struct BackgroundHandle {
 /// Unlike `BackgroundHandle`, this keeps the `Child` handle so we can properly
 /// detect when the process exits (including zombie processes). This is used
 /// for real-time status monitoring where we need accurate exit detection.
-#[allow(dead_code)]pub struct MonitoredChild {
+///
+/// Stdout and stderr are drained by background threads to prevent the child
+/// from blocking on a full pipe buffer (agents like codex write their entire
+/// session log to stderr, easily exceeding the ~64KB OS pipe limit).
+pub struct MonitoredChild {
     /// The child process handle
     child: Child,
-    /// Stdout handle for capturing agent output on failure
-    stdout: Option<ChildStdout>,
-    /// Stderr handle for capturing error output
-    stderr: Option<ChildStderr>,
+    /// Drain threads for stdout/stderr (joined on drop)
+    _drain_threads: Vec<std::thread::JoinHandle<()>>,
 }
 
-#[allow(dead_code)]impl MonitoredChild {
+impl MonitoredChild {
     /// Create a new monitored child from a Child process
     #[must_use]
     pub fn new(mut child: Child) -> Self {
-        let stdout = child.stdout.take();
-        // Take stderr handle from child so we can read it later
-        let stderr = child.stderr.take();
+        let mut drain_threads = Vec::new();
+
+        // Spawn background threads that read-and-discard stdout/stderr so the
+        // child process never blocks on a full pipe buffer.
+        if let Some(mut stdout) = child.stdout.take() {
+            drain_threads.push(std::thread::spawn(move || {
+                let _ = std::io::copy(&mut stdout, &mut std::io::sink());
+            }));
+        }
+        if let Some(mut stderr) = child.stderr.take() {
+            drain_threads.push(std::thread::spawn(move || {
+                let _ = std::io::copy(&mut stderr, &mut std::io::sink());
+            }));
+        }
+
         Self {
             child,
-            stdout,
-            stderr,
+            _drain_threads: drain_threads,
         }
     }
 
@@ -80,39 +92,6 @@ pub struct BackgroundHandle {
     pub fn wait(&mut self) -> std::io::Result<ExitStatus> {
         self.child.wait()
     }
-
-    /// Read any captured stdout/stderr output
-    ///
-    /// Should be called after the process has exited to get diagnostic messages.
-    /// Returns empty strings when a stream wasn't captured or had no output.
-    pub fn read_output(&mut self) -> ProcessOutput {
-        let mut stdout_output = String::new();
-        if let Some(ref mut stdout) = self.stdout {
-            let _ = stdout.read_to_string(&mut stdout_output);
-        }
-
-        let mut stderr_output = String::new();
-        if let Some(ref mut stderr) = self.stderr {
-            // Read whatever is available in the stderr buffer
-            // This is non-blocking since the process has already exited
-            let _ = stderr.read_to_string(&mut stderr_output);
-        }
-
-        ProcessOutput {
-            stdout: stdout_output,
-            stderr: stderr_output,
-        }
-    }
-}
-
-/// Captured output from an exited agent process.
-#[derive(Debug, Clone, Default)]
-#[allow(dead_code)]
-pub struct ProcessOutput {
-    /// Anything the agent wrote to stdout before exiting.
-    pub stdout: String,
-    /// Anything the agent wrote to stderr before exiting.
-    pub stderr: String,
 }
 
 /// Result of an agent session

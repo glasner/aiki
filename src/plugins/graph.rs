@@ -1,5 +1,6 @@
 //! Plugin dependency graph for querying relationships between installed plugins.
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
 
@@ -82,11 +83,11 @@ impl PluginGraph {
     }
 
     /// Cached display name for a plugin (falls back to `namespace/name` path).
-    pub fn display_name(&self, plugin: &PluginRef) -> &str {
+    pub fn display_name<'a>(&'a self, plugin: &'a PluginRef) -> Cow<'a, str> {
         self.display_names
             .get(plugin)
-            .map(|s| s.as_str())
-            .unwrap_or_else(|| "unknown")
+            .map(|s| Cow::Borrowed(s.as_str()))
+            .unwrap_or_else(|| Cow::Owned(plugin.to_string()))
     }
 
     /// Direct dependents of a plugin (plugins that depend on it).

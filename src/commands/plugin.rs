@@ -9,7 +9,7 @@ use std::path::Path;
 use chrono::Utc;
 
 use crate::error::{AikiError, Result};
-use crate::plugins::deps::{resolve_deps, InstallReport};
+use crate::plugins::deps::{prune_orphaned_entries, resolve_deps, InstallReport};
 use crate::plugins::install;
 use crate::plugins::graph::PluginGraph;
 use crate::plugins::git::{clone_locked_plugin, get_head_sha, remove_plugin, resolve_remote_head};
@@ -83,6 +83,17 @@ fn run_install(reference: Option<String>) -> Result<()> {
             if refs.is_empty() {
                 println!("No plugin references found in project.");
                 return Ok(());
+            }
+
+            // Prune orphaned lock entries before resolution so stale SHAs
+            // from previously removed plugins don't get reused.
+            if let Some(ref root) = project_root {
+                if let Ok(mut lock) = PluginLock::load(root) {
+                    let pruned = prune_orphaned_entries(&mut lock, &refs, &plugins_base);
+                    if !pruned.is_empty() {
+                        lock.save(root)?;
+                    }
+                }
             }
 
             // Clear all markers — explicit install-all should retry everything.

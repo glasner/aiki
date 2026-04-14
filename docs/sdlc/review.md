@@ -37,7 +37,9 @@ A review runs through three phases as subtasks:
 
 3. **Record issues** — Each problem found is tracked as a review issue:
    ```bash
-   aiki review issue add <review-id> "Description of the issue"
+   aiki review issue add <review-id> - <<'ISSUE'
+   Description of the issue
+   ISSUE
    ```
    Issues are distinct from regular comments — only issues trigger followup tasks when piped to `aiki fix`.
 
@@ -102,10 +104,18 @@ aiki review list --all    # include closed reviews
 aiki review show <review-id>
 
 # Manage issues on a review
-aiki review issue add <review-id> "Issue description"
-aiki review issue add <review-id> "Bug in auth" --high --file src/auth.rs:42
-aiki review issue add <review-id> "Style nit" --low --file src/utils.rs
-aiki review issue add <review-id> "Cross-file issue" --file src/a.rs:10 --file src/b.rs:20
+aiki review issue add <review-id> - <<'ISSUE'
+Issue description
+ISSUE
+aiki review issue add <review-id> - --high --file src/auth.rs:42 <<'ISSUE'
+Bug in auth
+ISSUE
+aiki review issue add <review-id> - --low --file src/utils.rs <<'ISSUE'
+Style nit
+ISSUE
+aiki review issue add <review-id> - --file src/a.rs:10 --file src/b.rs:20 <<'ISSUE'
+Cross-file issue
+ISSUE
 aiki review issue list <review-id>
 ```
 

@@ -130,7 +130,7 @@ pub fn resolve_text(value: Option<&str>) -> Result<Option<String>> {
     }
 
     // Check if value looks like a text file path (.md or .txt)
-    if matches!(classify_extension(val), ExtKind::Plan | ExtKind::Text) {
+    if !val.contains(' ') && matches!(classify_extension(val), ExtKind::Plan | ExtKind::Text) {
         let expanded = expand_tilde(val);
         if let Ok(content) = std::fs::read_to_string(&expanded) {
             return Ok(Some(content.trim_end().to_string()));
