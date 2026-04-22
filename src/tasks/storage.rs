@@ -46,6 +46,7 @@ pub fn clear_event_pipe_path() {
     }
 }
 
+#[cfg(unix)]
 /// Best-effort FIFO notification: writes "{change_id}\n" to the event pipe.
 /// All errors are silently ignored.
 fn notify_fifo(change_id: &str) {
@@ -68,6 +69,9 @@ fn notify_fifo(change_id: &str) {
     let _ = unsafe { libc::write(fd, msg.as_ptr() as *const libc::c_void, msg.len()) };
     unsafe { libc::close(fd) };
 }
+
+#[cfg(not(unix))]
+fn notify_fifo(_change_id: &str) {}
 
 const TASKS_BRANCH: &str = "aiki/tasks";
 const METADATA_START: &str = "[aiki-task]";

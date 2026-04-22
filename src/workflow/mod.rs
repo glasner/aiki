@@ -7,6 +7,7 @@ pub mod steps;
 use std::collections::HashMap;
 use std::fs;
 use std::io::{BufRead, BufReader};
+#[cfg(unix)]
 use std::os::fd::{FromRawFd, OwnedFd};
 use std::path::PathBuf;
 use std::thread::{self, JoinHandle};
@@ -235,17 +236,21 @@ impl RunKind {
 
 /// RAII guard for the workflow's event FIFO.
 ///
-/// On creation, `mkfifo` creates a named pipe, a keep-alive fd keeps the pipe
-/// open (preventing reader EOF), and a read thread forwards each line (change
-/// ID) to a crossbeam channel. On drop, the keep-alive fd is closed (triggering
-/// reader EOF), the read thread is joined, the FIFO file is removed, and the
-/// global `EVENT_PIPE_PATH` is cleared.
+/// On Unix, `mkfifo` creates a named pipe with a keep-alive fd so the
+/// reader thread can drain notifications while workflow steps run.
+/// On non-Unix platforms we keep a no-op fallback so code compiles and
+/// events are simply not streamed through a FIFO.
+#[cfg(unix)]
 struct FifoGuard {
     path: PathBuf,
     keep_alive: Option<OwnedFd>,
     read_handle: Option<JoinHandle<()>>,
 }
 
+#[cfg(not(unix))]
+struct FifoGuard;
+
+#[cfg(unix)]
 impl FifoGuard {
     /// Create the event FIFO and spawn the read thread.
     ///
@@ -318,6 +323,16 @@ impl FifoGuard {
     }
 }
 
+#[cfg(not(unix))]
+impl FifoGuard {
+    /// Fallback for non-Unix: skip event pipe setup and return an empty receiver.
+    fn new(_workflow_id: &str) -> std::io::Result<(Self, Receiver<String>)> {
+        let (_tx, rx) = crossbeam_channel::unbounded();
+        Ok((Self, rx))
+    }
+}
+
+#[cfg(unix)]
 impl Drop for FifoGuard {
     fn drop(&mut self) {
         // Clear the global pipe path first so no new writes target this FIFO.
@@ -335,6 +350,12 @@ impl Drop for FifoGuard {
         let _ = fs::remove_file(&self.path);
     }
 }
+
+#[cfg(not(unix))]
+impl Drop for FifoGuard {
+    fn drop(&mut self) {}
+}
+
 
 /// A sequence of steps executed against a shared context.
 pub struct Workflow {
