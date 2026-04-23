@@ -886,15 +886,25 @@ pub fn find_workspace_change_id(repo_root: &Path, workspace_name: &str) -> Resul
 /// this was a symlink; in JJ 0.38+ it's a plain text file containing the path.
 /// We try both: read as text first (modern), then as symlink (legacy).
 pub fn find_repo_root_from_workspace(workspace_path: &Path) -> Option<PathBuf> {
-    let repo_link = workspace_path.join(".jj").join("repo");
+    let jj_dir = workspace_path.join(".jj");
+    let repo_link = jj_dir.join("repo");
 
-    // Modern JJ (0.38+): .jj/repo is a plain text file containing the repo path
-    // e.g., "/Users/glasner/code/aiki/.jj/repo"
+    // Modern JJ (0.38+): .jj/repo is a plain text file containing the repo path.
+    // JJ writes relative paths (e.g., "../../../../../../Users/glasner/code/aiki/.jj/repo")
+    // which must be resolved relative to the workspace's .jj/ directory.
     if let Ok(contents) = fs::read_to_string(&repo_link) {
         let target = PathBuf::from(contents.trim());
+        let target = if target.is_relative() {
+            match jj_dir.join(&target).canonicalize() {
+                Ok(resolved) => resolved,
+                Err(_) => return None,
+            }
+        } else {
+            target
+        };
         // The path points to <original_repo>/.jj/repo — walk up to repo root
-        if let Some(jj_dir) = target.parent() {
-            if let Some(repo_root) = jj_dir.parent() {
+        if let Some(jj_parent) = target.parent() {
+            if let Some(repo_root) = jj_parent.parent() {
                 return Some(repo_root.to_path_buf());
             }
         }
@@ -902,8 +912,16 @@ pub fn find_repo_root_from_workspace(workspace_path: &Path) -> Option<PathBuf> {
 
     // Legacy JJ: .jj/repo is a symlink to <original_repo>/.jj/repo
     if let Ok(target) = fs::read_link(&repo_link) {
-        if let Some(jj_dir) = target.parent() {
-            if let Some(repo_root) = jj_dir.parent() {
+        let target = if target.is_relative() {
+            match jj_dir.join(&target).canonicalize() {
+                Ok(resolved) => resolved,
+                Err(_) => return None,
+            }
+        } else {
+            target
+        };
+        if let Some(jj_parent) = target.parent() {
+            if let Some(repo_root) = jj_parent.parent() {
                 return Some(repo_root.to_path_buf());
             }
         }
@@ -1063,6 +1081,31 @@ mod tests {
 
         let result = find_repo_root_from_workspace(&workspace_dir);
         assert_eq!(result, Some(fake_repo_root));
+    }
+
+    #[test]
+    fn test_find_repo_root_from_workspace_relative_path() {
+        // JJ writes relative paths in .jj/repo when creating workspaces.
+        // The function must resolve these relative to the workspace's .jj/
+        // directory, not the process CWD.
+        let temp_dir = tempfile::tempdir().unwrap();
+        let fake_repo_root = temp_dir.path().join("my-project");
+        let fake_jj_repo = fake_repo_root.join(".jj").join("repo");
+        fs::create_dir_all(&fake_jj_repo).unwrap();
+
+        let workspace_dir = temp_dir.path().join("workspaces").join("session-1");
+        let ws_jj_dir = workspace_dir.join(".jj");
+        fs::create_dir_all(&ws_jj_dir).unwrap();
+
+        // Write a relative path like JJ does (from .jj/ up to temp_dir, then down)
+        fs::write(ws_jj_dir.join("repo"), "../../../my-project/.jj/repo").unwrap();
+
+        let result = find_repo_root_from_workspace(&workspace_dir);
+        assert!(result.is_some(), "Should resolve relative .jj/repo path");
+        assert_eq!(
+            result.unwrap().canonicalize().unwrap(),
+            fake_repo_root.canonicalize().unwrap()
+        );
     }
 
     #[test]
